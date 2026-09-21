@@ -10,6 +10,7 @@
 - 查询最近牌谱、名次、分数并生成可点击的雀魂牌谱链接。
 - 四麻/三麻生涯统计（平均顺位、顺位率、和牌、放铳、立直、副露）与群排行。
 - 按群订阅成员；定时发现开局和结算，使用数据库原子去重，多群互不影响。
+- 可选实时网关支持真正的结算前开局检测；掉线恢复后按订阅时间补发漏掉的结算。
 - 结算牌谱自动提交 Mortal 服务；手动 `mortal` 命令支持指定座位。
 - 将评分、等级和报告链接绘制成适合 QQ 发送的 PNG 卡片。
 - Mortal 队列限流、HTTP 超时、服务错误提示、持久化绑定和订阅。
@@ -44,6 +45,8 @@ python bot.py
 | `PUPULIN_MORTAL_API_TOKEN` | 空 | 可选 Bearer Token |
 | `PUPULIN_MORTAL_TIMEOUT` | `180` | 单次分析超时 |
 | `PUPULIN_REVIEW_WORKERS` | `1` | 并行分析数量 |
+| `PUPULIN_LIVE_API_URL` | 空 | 可选实时状态网关，配置后启用结算前开局提醒 |
+| `PUPULIN_LIVE_API_TOKEN` | 空 | 实时网关 Bearer Token |
 
 ### 3. Mortal 桥接协议
 
@@ -65,6 +68,31 @@ Content-Type: application/json
 
 桥接服务负责下载雀魂牌谱、转换为 mjai、调用 Mortal，并返回汇总指标；这样不会把特定模型版本、GPU 配置或非稳定的雀魂私有协议耦合进 QQ Bot。`seat` 可以为 `null`。错误可返回 `{"status":"error","error":"原因"}`。
 
+也支持异步分析服务：首次响应可使用 `{"status":"queued","status_url":"https://.../jobs/1"}`，Bot 会每两秒查询一次，直到返回 `done`、`error` 或达到配置的超时时间。
+
+### 4. 实时开局网关协议
+
+公开牌谱索引通常只能在结算后发现牌谱。若要获得真正的开局提醒，可接入已有的雀魂实时状态服务，并配置 `PUPULIN_LIVE_API_URL`：
+
+```http
+GET /players/{account_id}/current-game
+Authorization: Bearer <optional token>
+```
+
+未在对局时返回 `404` 或 `{"playing":false}`；对局中返回：
+
+```json
+{
+  "playing": true,
+  "uuid": "game-uuid",
+  "mode": "四人南",
+  "started_at": "2026-09-21T08:00:00Z",
+  "players": [{"account_id": 123, "nickname": "雀士"}]
+}
+```
+
+这一接口边界可以适配基于雀魂 WebSocket/Liqi 协议的开源监听器，而无需让 QQ Bot 保存雀魂账号密码。未配置时仍提供可靠的牌谱屋结算监控，但不承诺能在结算前发现开局。
+
 ## 群命令
 
 | 命令 | 说明 |
@@ -74,7 +102,7 @@ Content-Type: application/json
 | `牌谱屋 [UID或昵称]` | 不带参数时查询本人最近五场 |
 | `雀魂统计 [UID或昵称] [三麻]` | 展示四麻或三麻详细统计 |
 | `群雀魂排行 [三麻]` | 对当前群已订阅成员按平均顺位排行 |
-| `雀魂监控 开` / `雀魂监控 关` | 在当前群开启或关闭本人的提醒 |
+| `雀魂监控 开 [自动分析]` / `雀魂监控 关` | 开关提醒；自动分析需显式启用 |
 | `mortal <牌谱链接或UUID> [座位0-3]` | 排队分析并发送评分图片 |
 | `麻将帮助` | 查看帮助 |
 

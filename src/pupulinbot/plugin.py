@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from contextlib import suppress
+from datetime import UTC, datetime
 
 from nonebot import get_driver, on_command, require
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
@@ -9,6 +10,7 @@ from nonebot.params import CommandArg
 from .config import settings
 from .db import Database
 from .formatting import finish_message, format_records, format_stats
+from .live import LiveServiceClient, LiveServiceError
 from .models import Player
 from .paipuya import PaipuyaClient, PaipuyaError
 from .review import MortalClient, ReviewError, ReviewQueue, extract_uuid, render_review
@@ -19,6 +21,7 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 db = Database(settings.database)
 paipuya = PaipuyaClient(settings.paipuya_base_url, settings.paipuya_timeout)
 sanma = PaipuyaClient(settings.paipuya_sanma_base_url, settings.paipuya_timeout, "三麻")
+live = LiveServiceClient(settings.live_api_url, settings.live_api_token)
 reviews = ReviewQueue(
     MortalClient(settings.mortal_api_url, settings.mortal_api_token, settings.mortal_timeout),
     settings.review_workers,
@@ -131,12 +134,14 @@ async def group_rank(event: GroupMessageEvent, args=CommandArg()):
 
 @monitor_cmd.handle()
 async def monitor(event: GroupMessageEvent, args=CommandArg()):
-    enabled = args.extract_plain_text().strip().lower() not in {"关", "关闭", "off", "0"}
+    option = args.extract_plain_text().strip().lower()
+    enabled = option not in {"关", "关闭", "off", "0"}
+    auto_review = any(word in option for word in {"分析", "复盘", "review", "mortal"})
     row = await db.binding(str(event.user_id))
     if not row:
         await monitor_cmd.finish("请先绑定雀魂 UID。")
     if enabled:
-        await db.subscribe(str(event.group_id), str(event.user_id))
+        await db.subscribe(str(event.group_id), str(event.user_id), auto_review)
         # Establish a baseline so enabling monitoring does not announce an old game.
         with suppress(PaipuyaError):
             latest = await paipuya.records(row["account_id"], 1)
@@ -146,7 +151,10 @@ async def monitor(event: GroupMessageEvent, args=CommandArg()):
                 await db.claim_game_event(game, row["account_id"], bool(game.ended_at), subscriber)
     else:
         await db.unsubscribe(str(event.group_id), str(event.user_id))
-    await monitor_cmd.finish("本群开局/结算监控已开启。" if enabled else "本群监控已关闭。")
+    if enabled:
+        suffix = "，并将在结算后自动复盘。" if auto_review else "。"
+        await monitor_cmd.finish(f"本群开局/结算监控已开启{suffix}")
+    await monitor_cmd.finish("本群监控已关闭。")
 
 
 @review_cmd.handle()
@@ -176,7 +184,8 @@ async def help_handler():
     await help_cmd.finish(
         "麻将命令\n雀魂绑定 <UID/昵称>｜雀魂解绑\n牌谱屋 [UID/昵称]\n"
         "雀魂统计 [UID/昵称] [三麻]\n群雀魂排行 [三麻]\n"
-        "雀魂监控 开/关（群聊）\nmortal <牌谱链接/UUID> [座位0-3]"
+        "雀魂监控 开 [自动分析] / 关（群聊）\n"
+        "mortal <牌谱链接/UUID> [座位0-3]"
     )
 
 
@@ -207,35 +216,49 @@ async def poll_games() -> None:
     if not isinstance(bot, Bot):
         return
     for sub in await db.subscriptions():
-        with suppress(PaipuyaError):
-            games = await paipuya.records(sub["account_id"], 1)
-            if not games:
-                continue
-            game = games[0]
-            # Public 牌谱屋 data appears after settlement, so this reliably supplies
-            # settlement notifications. Start notifications require an upstream that
-            # exposes an unfinished record and are emitted whenever ended_at is absent.
-            if game.ended_at:
-                subscriber = f"{sub['group_id']}:{sub['qq_id']}"
-                if await db.claim_game_event(game, sub["account_id"], True, subscriber):
+        subscriber = f"{sub['group_id']}:{sub['qq_id']}"
+        if live.enabled:
+            try:
+                current = await live.current_game(sub["account_id"])
+                if current and await db.claim_event(current.uuid, subscriber, "start"):
                     await bot.send_group_msg(
                         group_id=int(sub["group_id"]),
-                        message=finish_message(sub["nickname"], game, sub["account_id"]),
+                        message=f"🀄 {sub['nickname']} 开局了：{current.mode}\n{current.url}",
                     )
-                    if settings.mortal_api_url:
-                        asyncio.create_task(
-                            send_auto_review(
-                                bot,
-                                int(sub["group_id"]),
-                                sub["nickname"],
-                                game,
-                                sub["account_id"],
-                            ),
-                            name=f"auto-review-{game.uuid}",
+            except LiveServiceError:
+                pass
+        with suppress(PaipuyaError):
+            games = await paipuya.records(sub["account_id"], settings.monitor_page_size)
+            if not games:
+                continue
+            # Process oldest first so temporary downtime does not lose settlements.
+            for game in reversed(games):
+                subscribed_at = datetime.fromisoformat(sub["created_at"]).replace(tzinfo=UTC)
+                if game.started_at < subscribed_at:
+                    continue
+                # Public 牌谱屋 data appears after settlement, so this reliably supplies
+                # settlement notifications. Start notifications require an upstream that
+                # exposes an unfinished record and are emitted whenever ended_at is absent.
+                if game.ended_at:
+                    if await db.claim_game_event(game, sub["account_id"], True, subscriber):
+                        await bot.send_group_msg(
+                            group_id=int(sub["group_id"]),
+                            message=finish_message(sub["nickname"], game, sub["account_id"]),
                         )
-            else:
-                subscriber = f"{sub['group_id']}:{sub['qq_id']}"
-                if await db.claim_game_event(game, sub["account_id"], False, subscriber):
+                        if settings.mortal_api_url and sub["auto_review"]:
+                            asyncio.create_task(
+                                send_auto_review(
+                                    bot,
+                                    int(sub["group_id"]),
+                                    sub["nickname"],
+                                    game,
+                                    sub["account_id"],
+                                ),
+                                name=f"auto-review-{game.uuid}",
+                            )
+                elif not live.enabled and await db.claim_game_event(
+                    game, sub["account_id"], False, subscriber
+                ):
                     await bot.send_group_msg(
                         group_id=int(sub["group_id"]),
                         message=f"🀄 {sub['nickname']} 开局了：{game.url}",

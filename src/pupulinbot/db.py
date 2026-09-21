@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS bindings(
 CREATE TABLE IF NOT EXISTS subscriptions(
   group_id TEXT NOT NULL, qq_id TEXT NOT NULL,
   notify_start INTEGER NOT NULL DEFAULT 1, notify_finish INTEGER NOT NULL DEFAULT 1,
+  auto_review INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(group_id, qq_id), FOREIGN KEY(qq_id) REFERENCES bindings(qq_id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS games(
@@ -41,6 +43,17 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         async with self.connect() as db:
             await db.executescript(SCHEMA)
+            cursor = await db.execute("PRAGMA table_info(subscriptions)")
+            columns = {row["name"] for row in await cursor.fetchall()}
+            if "auto_review" not in columns:
+                await db.execute(
+                    "ALTER TABLE subscriptions ADD COLUMN auto_review INTEGER NOT NULL DEFAULT 0"
+                )
+            if "created_at" not in columns:
+                await db.execute("ALTER TABLE subscriptions ADD COLUMN created_at TEXT")
+                await db.execute(
+                    "UPDATE subscriptions SET created_at=CURRENT_TIMESTAMP WHERE created_at IS NULL"
+                )
             await db.commit()
 
     @asynccontextmanager
@@ -75,10 +88,12 @@ class Database:
                 await db.execute("SELECT * FROM bindings WHERE qq_id=?", (qq_id,))
             ).fetchone()
 
-    async def subscribe(self, group_id: str, qq_id: str) -> None:
+    async def subscribe(self, group_id: str, qq_id: str, auto_review: bool = False) -> None:
         async with self.connect() as db:
             await db.execute(
-                "INSERT OR IGNORE INTO subscriptions(group_id,qq_id) VALUES(?,?)", (group_id, qq_id)
+                "INSERT INTO subscriptions(group_id,qq_id,auto_review) VALUES(?,?,?) "
+                "ON CONFLICT(group_id,qq_id) DO UPDATE SET auto_review=excluded.auto_review",
+                (group_id, qq_id, int(auto_review)),
             )
             await db.commit()
 
@@ -129,6 +144,16 @@ class Database:
             cursor = await db.execute(
                 "INSERT OR IGNORE INTO game_events(uuid,subscriber,event) VALUES(?,?,?)",
                 (game.uuid, subscriber, event),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def claim_event(self, uuid: str, subscriber: str, event: str) -> bool:
+        """Claim a lightweight event, used when the live gateway has no final record yet."""
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "INSERT OR IGNORE INTO game_events(uuid,subscriber,event) VALUES(?,?,?)",
+                (uuid, subscriber, event),
             )
             await db.commit()
             return cursor.rowcount > 0

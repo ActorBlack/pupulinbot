@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     mortal_api_token: str | None = None
     mortal_timeout: float = 180
     review_workers: int = Field(default=1, ge=1, le=4)
+    live_api_url: str | None = None
+    live_api_token: str | None = None
     admin_users: set[str] = Field(default_factory=set)
 
 

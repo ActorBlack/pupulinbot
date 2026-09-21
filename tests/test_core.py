@@ -49,7 +49,11 @@ async def test_database_bind_subscribe_and_deduplicate(tmp_path):
     await db.bind("100", 42, "雀士")
     assert (await db.binding("100"))["account_id"] == 42
     await db.subscribe("200", "100")
-    assert len(await db.subscriptions()) == 1
+    subscriptions = await db.subscriptions()
+    assert len(subscriptions) == 1
+    assert subscriptions[0]["auto_review"] == 0
+    await db.subscribe("200", "100", True)
+    assert (await db.subscriptions())[0]["auto_review"] == 1
     assert await db.claim_game_event(game(), 42, True)
     assert not await db.claim_game_event(game(), 42, True)
 
