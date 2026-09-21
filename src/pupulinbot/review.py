@@ -1,5 +1,6 @@
 import asyncio
 import io
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -42,6 +43,17 @@ class MortalClient:
                 )
                 response.raise_for_status()
                 data = response.json()
+                poll_url = data.get("status_url")
+                max_polls = max(1, int(self.timeout // 2))
+                polls = 0
+                while data.get("status") in {"queued", "running", "pending"} and poll_url:
+                    if polls >= max_polls:
+                        raise ReviewError("Mortal 分析等待超时")
+                    await asyncio.sleep(2)
+                    response = await client.get(poll_url, headers=headers)
+                    response.raise_for_status()
+                    data = response.json()
+                    polls += 1
         except (httpx.HTTPError, ValueError) as exc:
             raise ReviewError(f"Mortal 服务请求失败：{exc}") from exc
         if data.get("status") == "error":
@@ -113,6 +125,6 @@ def extract_uuid(text: str) -> str:
     marker = "paipu="
     value = text.split(marker, 1)[1] if marker in text else text.strip()
     value = value.split("&", 1)[0].strip()
-    if not value or any(ch.isspace() for ch in value):
+    if not re.fullmatch(r"[A-Za-z0-9_-]{3,200}", value):
         raise ValueError("请输入雀魂牌谱 UUID 或完整牌谱链接")
     return value

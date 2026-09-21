@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 import pytest
 
 from pupulinbot.db import Database
-from pupulinbot.formatting import format_records
-from pupulinbot.models import GameRecord
+from pupulinbot.formatting import format_records, format_stats, percent
+from pupulinbot.models import GameRecord, PlayerStats
 from pupulinbot.paipuya import PaipuyaClient
 from pupulinbot.review import ReviewResult, extract_uuid, render_review
 
@@ -25,6 +25,8 @@ def test_extract_uuid():
     assert extract_uuid("abc") == "abc"
     with pytest.raises(ValueError):
         extract_uuid("")
+    with pytest.raises(ValueError):
+        extract_uuid("https://evil.invalid/path")
 
 
 def test_record_parser_and_format():
@@ -55,3 +57,13 @@ async def test_database_bind_subscribe_and_deduplicate(tmp_path):
 def test_render_png():
     data = render_review(ReviewResult(87.5, "A", None, {}), "player", "uuid")
     assert data.startswith(b"\x89PNG")
+
+
+def test_stats_format_accepts_fractional_rates():
+    stats = PlayerStats(
+        42, "四麻", 100, 0.3, 0.25, 0.25, 0.2, 2.35, 0.02, 0.22, 0.11, 0.18, 0.31, {}
+    )
+    rendered = format_stats("雀士", stats)
+    assert "平均顺位：2.35" in rendered
+    assert "和牌 22.00%" in rendered
+    assert percent(12.3) == "12.30%"

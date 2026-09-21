@@ -99,6 +99,16 @@ class Database:
                 )
             ).fetchall()
 
+    async def group_bindings(self, group_id: str):
+        async with self.connect() as db:
+            return await (
+                await db.execute(
+                    "SELECT b.* FROM subscriptions s JOIN bindings b USING(qq_id) "
+                    "WHERE s.group_id=? ORDER BY b.nickname",
+                    (group_id,),
+                )
+            ).fetchall()
+
     async def claim_game_event(
         self, game, account_id: int, finished: bool, subscriber: str = "default"
     ) -> bool:

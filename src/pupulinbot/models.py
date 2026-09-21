@@ -31,3 +31,21 @@ class GameRecord:
 
     def seat(self, account_id: int) -> dict[str, Any] | None:
         return next((p for p in self.players if int(p.get("account_id", -1)) == account_id), None)
+
+
+@dataclass(slots=True)
+class PlayerStats:
+    account_id: int
+    mode: str
+    games: int
+    first_rate: float
+    second_rate: float
+    third_rate: float
+    fourth_rate: float
+    average_rank: float
+    negative_rate: float
+    win_rate: float
+    deal_in_rate: float
+    riichi_rate: float
+    call_rate: float
+    raw: dict[str, Any]

@@ -8,6 +8,7 @@
 
 - QQ ↔ 雀魂 account ID（常称 UID）绑定，也可以用昵称检索绑定。
 - 查询最近牌谱、名次、分数并生成可点击的雀魂牌谱链接。
+- 四麻/三麻生涯统计（平均顺位、顺位率、和牌、放铳、立直、副露）与群排行。
 - 按群订阅成员；定时发现开局和结算，使用数据库原子去重，多群互不影响。
 - 结算牌谱自动提交 Mortal 服务；手动 `mortal` 命令支持指定座位。
 - 将评分、等级和报告链接绘制成适合 QQ 发送的 PNG 卡片。
@@ -37,6 +38,7 @@ python bot.py
 | --- | --- | --- |
 | `PUPULIN_DATABASE` | `data/pupulin.db` | SQLite 文件 |
 | `PUPULIN_PAIPUYA_BASE_URL` | 牌谱屋四麻 API | 可替换为兼容代理/镜像 |
+| `PUPULIN_PAIPUYA_SANMA_BASE_URL` | 牌谱屋三麻 API | 三麻兼容代理/镜像 |
 | `PUPULIN_MONITOR_INTERVAL` | `60` | 监控周期（秒，最小 20） |
 | `PUPULIN_MORTAL_API_URL` | 空 | Mortal HTTP 桥地址；空时关闭自动分析 |
 | `PUPULIN_MORTAL_API_TOKEN` | 空 | 可选 Bearer Token |
@@ -70,6 +72,8 @@ Content-Type: application/json
 | `雀魂绑定 <UID或昵称>` | 绑定当前 QQ；昵称重名时优先精确匹配 |
 | `雀魂解绑` | 解除绑定及关联订阅 |
 | `牌谱屋 [UID或昵称]` | 不带参数时查询本人最近五场 |
+| `雀魂统计 [UID或昵称] [三麻]` | 展示四麻或三麻详细统计 |
+| `群雀魂排行 [三麻]` | 对当前群已订阅成员按平均顺位排行 |
 | `雀魂监控 开` / `雀魂监控 关` | 在当前群开启或关闭本人的提醒 |
 | `mortal <牌谱链接或UUID> [座位0-3]` | 排队分析并发送评分图片 |
 | `麻将帮助` | 查看帮助 |

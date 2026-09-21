@@ -9,6 +9,7 @@ class Settings(BaseSettings):
 
     database: Path = Path("data/pupulin.db")
     paipuya_base_url: str = "https://5-data.amae-koromo.com/api/v2/pl4"
+    paipuya_sanma_base_url: str = "https://3-data.amae-koromo.com/api/v2/pl3"
     paipuya_timeout: float = 15
     monitor_interval: int = Field(default=60, ge=20)
     monitor_page_size: int = Field(default=20, ge=1, le=200)
