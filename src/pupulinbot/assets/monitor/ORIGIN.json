@@ -1,0 +1,151 @@
+{
+  "origin": "Mahjong Soul / Catfood Studio official client resources",
+  "notice": "Original artwork belongs to its rights holders and is not covered by the project code license. Original glyphs and gradient colors are preserved.",
+  "atlas_manifest": "https://game.maj-soul.com/1/resversion0.11.252.w.json",
+  "files": {
+    "room_bronze.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 1,
+        "y": 247,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_tongzhijian.png",
+      "size": [
+        259,
+        87
+      ],
+      "sha256": "ad264a12657433827633feb393d2a0e5b1dfadf81483daffe2db8338109b1aac"
+    },
+    "room_silver.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 1,
+        "y": 616,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_yinzhijian.png",
+      "size": [
+        258,
+        96
+      ],
+      "sha256": "83ce7f10a0c0726cee50d4d4f73edb12c23be7d4eed893fc67cb918517c15b24"
+    },
+    "room_gold.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby4.png",
+      "frame": {
+        "x": 1,
+        "y": 293,
+        "w": 360,
+        "h": 120,
+        "idx": 4
+      },
+      "sprite": "w_jinzhijian.png",
+      "size": [
+        253,
+        92
+      ],
+      "sha256": "cb3ca291eedfd5899d62f3c4b0858a1dc4978a032c187eba2295014c6acc1880"
+    },
+    "room_jade.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 1,
+        "y": 739,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_yuzhijian.png",
+      "size": [
+        242,
+        84
+      ],
+      "sha256": "f22a751a2f9a671fbef1923ce9f64bdff3da78d8589eda0ba1e1ae6e69c618e2"
+    },
+    "room_throne.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 364,
+        "y": 247,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_wangzuo.png",
+      "size": [
+        349,
+        96
+      ],
+      "sha256": "2a024523d21eae14864c040f18f3542d9025ec5ad8b7c732c686006f55ab010a"
+    },
+    "mode_four_east.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 364,
+        "y": 1,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_sirendong.png",
+      "size": [
+        253,
+        86
+      ],
+      "sha256": "9aa295135f192f9e87c4fbc2e74a20590197b56112793d631d1fd95815c276ed"
+    },
+    "mode_four_south.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby5.png",
+      "frame": {
+        "x": 1,
+        "y": 124,
+        "w": 360,
+        "h": 120,
+        "idx": 5
+      },
+      "sprite": "w_sirennan.png",
+      "size": [
+        255,
+        79
+      ],
+      "sha256": "a1ee974275f6e321dcf8069f754ce0d1f5bede9e9c80365c10e5a770f5e06d51"
+    },
+    "mode_three_east.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby4.png",
+      "frame": {
+        "x": 1,
+        "y": 785,
+        "w": 360,
+        "h": 120,
+        "idx": 4
+      },
+      "sprite": "w_sanrendong.png",
+      "size": [
+        258,
+        86
+      ],
+      "sha256": "09e3c480cccdc6ebd7bb039d9390bac6f892f446e2cbdce2312d269056da754a"
+    },
+    "mode_three_south.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/myres/lobby4.png",
+      "frame": {
+        "x": 364,
+        "y": 862,
+        "w": 360,
+        "h": 120,
+        "idx": 4
+      },
+      "sprite": "w_sanrennan.png",
+      "size": [
+        260,
+        79
+      ],
+      "sha256": "3791dc703a7c0180dec0c3452a0c96e8d59d335a3db2ac63f5e9dbccfefb198c"
+    }
+  }
+}

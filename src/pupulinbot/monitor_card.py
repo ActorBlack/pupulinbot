@@ -3,14 +3,15 @@
 import asyncio
 import io
 import math
+from functools import lru_cache
+from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .ms_level import delta_text, point_text, point_unit, rank_identity, rank_label, rank_progress
 from .ms_options import TZ
 from .ms_sample_chart import MODE_NAMES
-from .ms_style import analyze_style
-from .rank_assets import point_run, rank_badge
+from .rank_assets import rank_badge
 from .rate_tags import rate_tag
 from .typography import face
 
@@ -80,6 +81,71 @@ async def collect_profiles(client, game, *, budget_seconds=120):
     return profiles
 
 
+@lru_cache(maxsize=32)
+def monitor_number(size, bold=False):
+    # Matplotlib ships the same openly licensed numerals on macOS and Linux.
+    from matplotlib import get_data_path
+
+    filename = "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf"
+    return ImageFont.truetype(str(Path(get_data_path()) / "fonts" / "ttf" / filename), size)
+
+
+TITLE_ASSETS = {
+    "铜之间": "room_bronze",
+    "银之间": "room_silver",
+    "金之间": "room_gold",
+    "玉之间": "room_jade",
+    "王座之间": "room_throne",
+    "四人东": "mode_four_east",
+    "四人南": "mode_four_south",
+    "三人东": "mode_three_east",
+    "三人南": "mode_three_south",
+}
+
+
+@lru_cache(maxsize=16)
+def game_title(value):
+    """Original client lettering/colors, with a fine edge for a white header."""
+    name = TITLE_ASSETS.get(value)
+    if not name:
+        return None
+    try:
+        path = Path(__file__).parent / "assets" / "monitor" / (name + ".png")
+        with Image.open(path) as source:
+            original = source.convert("RGBA")
+    except (OSError, ValueError):
+        return None
+    original = original.resize(
+        (round(original.width * 0.55), round(original.height * 0.55)),
+        Image.Resampling.LANCZOS,
+    )
+    # Preserve the colored pixels. Only put a dark keyline behind light strokes.
+    # Work at 3x so it stays a thin edge rather than a heavy replacement font.
+    scale = 3
+    original = original.resize(
+        (original.width * scale, original.height * scale), Image.Resampling.LANCZOS
+    )
+    mask = Image.new("L", (original.width + 8 * scale, original.height + 8 * scale))
+    glyphs = original.getchannel("A").point(lambda a: 255 if a >= 110 else 0)
+    mask.paste(glyphs, (4 * scale, 4 * scale))
+    outline = Image.new("RGBA", mask.size, "#263239")
+    outline.putalpha(mask.filter(ImageFilter.MaxFilter(7)).filter(ImageFilter.GaussianBlur(0.5)))
+    outline.alpha_composite(original, (4 * scale, 4 * scale))
+    return outline.resize(
+        (outline.width // scale, outline.height // scale), Image.Resampling.LANCZOS
+    )
+
+
+def tag_palette(tag):
+    if tag in {"自爆卡车", "纯送子", "小送子", "无谋野猪", "狂战士", "发癫了"}:
+        return "#d73b39", "#ffebea"
+    if tag in {"野性打法", "火龙果", "激进对攻", "标准野猪", "猪突猛进", "莽夫上头", "每战必至"}:
+        return "#f17516", "#fff1df"
+    if tag in {"佛系观战", "铁壁地藏", "谨慎人类", "保守人类"}:
+        return "#3676da", "#edf3ff"
+    return "#268248", "#eaf5ed"
+
+
 def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
     profiles = profiles or {}
     canvas = Image.new("RGB", (1080, 706), "#f3f4f6")
@@ -96,11 +162,18 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
     )
     draw = ImageDraw.Draw(canvas)
 
+    def font(size, style="regular"):
+        return (
+            monitor_number(size, style == "number_bold")
+            if style.startswith("number")
+            else face(size, style)
+        )
+
     def text(x, y, value, size=16, color="#172033", style="regular", **kwargs):
-        draw.text((x, y), str(value), font=face(size, style), fill=color, **kwargs)
+        draw.text((x, y), str(value), font=font(size, style), fill=color, **kwargs)
 
     def width(value, size=16, style="regular"):
-        return draw.textlength(str(value), font=face(size, style))
+        return draw.textlength(str(value), font=font(size, style))
 
     def trim(value, available, size=25):
         value = str(value)
@@ -121,7 +194,7 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
     def pill(right, y, value, color, bg):
         length = width(value, 13, "bold") + 18
         box((right - length, y, right, y + 25), bg, 12)
-        text(right - length + 9, y + 4, value, 13, color, "bold")
+        text(right - length + 9, y + 12, value, 13, color, "bold", anchor="lm")
         return right - length - 7
 
     for bounds in panels:
@@ -129,33 +202,42 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
     room = MODE_NAMES.get(game.mode, str(game.mode))
     room_name = (
         "王座之间"
-        if "王座" in room
-        else ("玉之间" if "玉" in room else "金之间" if "金" in room else room)
+        if "王" in room
+        else next((name + "之间" for name in ("玉", "金", "银", "铜") if name in room), room)
     )
     length = "东" if "东" in room else "南" if "南" in room else ""
     table_name = ("三人" if len(game.players) == 3 else "四人") + length
-    title_width = width(room_name, 34, "title")
-    mode_width = width(table_name, 21, "bold") + 30
-    left = (1080 - title_width - mode_width - 22) / 2
-    eyebrow = "MAHJONG SOUL  /  MATCH REPORT"
-    text((1080 - width(eyebrow, 11, "number")) / 2, 30, eyebrow, 11, "#869b94", "number")
-    text(left, 50, room_name, 34, "#214b3e", "title")
-    badge_x = left + title_width + 22
-    box((badge_x, 55, badge_x + mode_width, 91), "#edf5f0", 10)
-    text(badge_x + 15, 59, table_name, 21, "#437962", "bold")
+    room_art, mode_art = game_title(room_name), game_title(table_name)
+    if room_art is not None and mode_art is not None:
+        title_left = (1080 - room_art.width - mode_art.width - 52) // 2
+        canvas.alpha_composite(room_art, (title_left, round(63 - room_art.height / 2)))
+        canvas.alpha_composite(
+            mode_art,
+            (title_left + room_art.width + 52, round(63 - mode_art.height / 2)),
+        )
+    else:
+        text(540, 63, f"{room_name}    {table_name}", 36, style="bold", anchor="mm")
     stamp = game.started_at.astimezone(TZ).strftime("%m-%d %H:%M")
-    subtitle = f"{stamp} 开始 · {'对局结算' if event == 'finish' else '实时开局'}"
+    subtitle = f"{stamp} 开始"
+    if event == "finish" and game.ended_at:
+        subtitle += " · " + game.ended_at.astimezone(TZ).strftime("%H:%M") + " 结束"
     if preview:
         subtitle += " · 历史牌谱预览"
-    text((1080 - width(subtitle, 13)) / 2, 101, subtitle, 13, "#839087")
+    text(540, 114, subtitle, 13, "#98a0ae", anchor="mm")
 
     for i, player in enumerate(game.players[:4]):
         x, y = 24 + (i % 2) * 526, 142 + (i // 2) * 280
-        # A clipped accent keeps the panel's outer corners smooth.
         draw.line((x + 3, y + 16, x + 3, y + 244), fill=COLORS[i], width=5)
         box((x + 26, y + 19, x + 58, y + 51), COLORS[i], 5)
-        text(x + 34, y + 24, "东南西北"[i], 18, "white", "bold")
-        text(x + 72, y + 17, trim(player.get("nickname") or "未知玩家", 406), 25, style="bold")
+        text(x + 42, y + 35, "东南西北"[i], 18, "white", "bold", anchor="mm")
+        text(
+            x + 72,
+            y + 35,
+            trim(player.get("nickname") or "未知玩家", 406),
+            25,
+            style="bold",
+            anchor="lm",
+        )
         try:
             profile = profiles.get(int(player.get("account_id", -1)), {})
         except (ValueError, TypeError):
@@ -163,68 +245,69 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
         stats = profile.get("stats")
         rank = rank_snapshot(player, stats)
         major = rank["major"] if rank else None
-        cx, cy = x + 51, y + 87
         icon = (
             rank_badge(major, rank["star"], 3 if len(game.players) == 3 else 4, 90)
             if rank
             else None
         )
         if icon is not None:
-            canvas.alpha_composite(icon, (round(cx - icon.width / 2), y + 51))
+            canvas.alpha_composite(icon, (x + 6, y + 51))
         else:
-            label = rank_label(rank) if rank else "—"
-            text(cx - width(label, 20) / 2, cy - 12, label, 20, "#8793a4")
+            text(x + 51, y + 87, rank_label(rank) if rank else "—", 20, "#8793a4", anchor="mm")
         points, cap = (rank["points"], rank["cap"]) if rank else (None, None)
         value = point_text(rank, capacity=False)
-        run = point_run(rank, 30) if points is not None else None
-        if run is not None:
-            if run.width > 175:
-                run.thumbnail((175, 34), Image.Resampling.LANCZOS)
-            canvas.alpha_composite(run, (x + 98, y + 66))
-        else:
-            text(x + 98, y + 63, value, 32, style="number")
-            text(x + 103 + width(value, 32, "number"), y + 79, point_unit(rank), 11, "#919aa8")
+        number_size = 28 if len(value) <= 5 else 23
+        text(x + 98, y + 83, value, number_size, "#151d2d", "number_bold", anchor="lm")
+        unit_x = x + 104 + width(value, number_size, "number_bold")
+        unit = point_unit(rank)
+        text(unit_x, y + 85, unit, 10, "#99a1af", anchor="lm")
+        meta_x = unit_x + width(unit, 10) + 10
         games = getattr(stats, "games", None)
-        text(x + 280, y + 56, "对战 —" if games is None else f"对战 {games}", 11, "#919aa8")
-        ranks = profile.get("ranks", [])
+        count = "对战 —" if games is None else f"对战 {games}"
+        # Keep the last ten placements in one row even with long PT/game counts.
+        tiles_left = x + 480 - 18 * 10
+        if meta_x + width(count, 10) <= tiles_left - 7:
+            text(meta_x, y + 85, count, 10, "#99a1af", anchor="lm")
+        ranks = profile.get("ranks", [])[-10:]
         if not ranks:
-            text(x + 280, y + 79, "此前顺位暂无数据", 11, "#a1a8b4")
-        for j, r in enumerate(ranks[-10:]):
-            bx = x + 280 + j * 19
-            color = {1: "#14783c", 2: "#7bcb96", 3: "#f2a29b", 4: "#c9242c"}.get(r, "#e5e7eb")
-            box((bx, y + 75, bx + 17, y + 92), color, 4)
+            text(x + 480, y + 85, "近10场 —", 11, "#a1a8b4", anchor="rm")
+        for j, r in enumerate(ranks):
+            bx = tiles_left + j * 18
+            color = {1: "#14783c", 2: "#7bcb96", 3: "#d5d9df", 4: "#c9242c"}.get(r, "#edf0f3")
+            box((bx, y + 75, bx + 16, y + 92), color, 4)
             text(
-                bx + 5,
-                y + 77,
+                bx + 8,
+                y + 83,
                 r if r in {1, 2, 3, 4} else "?",
-                11,
-                "white" if r in {1, 4} else "#374151",
-                "number",
+                10,
+                "white" if r in {1, 4} else "#465160",
+                "number_bold",
+                anchor="mm",
             )
         progress(
             x + 98, y + 111, 265, None if cap is None or points is None else points / cap, "#f4ab00"
         )
-        capacity = point_text(rank, spaced=True, unit=True) if points is not None else "—"
-        text(x + 480 - width(capacity, 11), y + 109, capacity, 11, "#8793a2")
-        style = analyze_style(stats, 3 if len(game.players) == 3 else 4)
-        label = (
-            style.label
-            if style.x is not None
-            else (f"牌风指标 {len(style.metrics)}/12" if style.supported else "三麻不套用四麻牌风")
-        )
-        tag = rate_tag(
-            rate(getattr(stats, "win_rate", None)),
-            rate(getattr(stats, "deal_in_rate", None)),
-            mode=len(game.players),
-        )
-        available = 382
-        if tag:
-            chip_width = width(tag, 11, "bold") + 18
-            chip_left = x + 480 - chip_width
-            box((chip_left, y + 125, x + 480, y + 143), "#edf5f0", 8)
-            text(chip_left + 9, y + 126, tag, 11, "#268247", "bold")
-            available -= chip_width + 10
-        text(x + 98, y + 128, trim(label, available, 11), 11, "#7c69ad")
+        capacity = point_text(rank, spaced=True, unit=major == 7) if points is not None else "—"
+        text(x + 480, y + 115, capacity, 11, "#99a1af", anchor="rm")
+
+        # Settle details stay available without competing with the PT headline.
+        if event == "finish":
+            placement, score = player.get("rank"), player.get("score")
+            parts = []
+            if placement in {1, 2, 3, 4}:
+                parts.append(f"{placement}位")
+            if finite(score):
+                parts.append(f"{score:g}点")
+            if parts:
+                separator = " · "
+                cursor = x + 480 - width(separator.join(parts), 11)
+                for index, part in enumerate(parts):
+                    text(cursor, y + 136, part, 11, "#8a94a4", anchor="lm")
+                    cursor += width(part, 11)
+                    if index < len(parts) - 1:
+                        text(cursor, y + 136, separator, 11, "#b3bac5", anchor="lm")
+                        cursor += width(separator, 11)
+
         metrics = [
             ("和", "win_rate", "#209241"),
             ("铳", "deal_in_rate", "#df302c"),
@@ -232,46 +315,43 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
             ("立直", "riichi_rate", "#2676ee"),
         ]
         for j, (label, field, color) in enumerate(metrics):
-            xx, yy = x + 26 + (j % 2) * 240, y + 148 + (j // 2) * 27
+            xx, yy = x + 26 + (j % 2) * 240, y + 152 + (j // 2) * 27
             value = rate(getattr(stats, field, None))
-            text(xx, yy - 3, label, 14, color)
-            # The visual scale saturates at 30% (win/deal-in/riichi) or 60% (calls).
+            text(xx, yy, label, 13, color, anchor="lm")
             scale = 0.6 if field == "call_rate" else 0.3
-            progress(xx + 40, yy + 5, 124, None if value is None else value / scale, color)
+            progress(xx + 40, yy - 4, 126, None if value is None else value / scale, color)
             label_value = "—" if value is None else f"{value * 100:.1f}%"
-            text(xx + 168, yy - 3, label_value, 15, "#292d34", "number")
+            text(xx + 214, yy, label_value, 13, "#292d34", "number_bold", anchor="rm")
         draw.line((x + 26, y + 204, x + 480, y + 204), fill="#eef0f3")
-        win, deal = (
-            rate(getattr(stats, "win_rate", None)),
-            rate(getattr(stats, "deal_in_rate", None)),
-        )
+        win = rate(getattr(stats, "win_rate", None))
+        deal = rate(getattr(stats, "deal_in_rate", None))
         diff = "—" if win is None or deal is None else f"{(win - deal) * 100:+.1f}"
-        text(x + 26, y + 219, f"和铳差 {diff}", 14, "#27804a", "bold")
-        right = x + 480
+        diff_color = (
+            "#258344" if win is not None and deal is not None and win - deal >= 0.08 else "#8c7c13"
+        )
+        text(x + 26, y + 228, f"和铳差 {diff}", 13, diff_color, "bold", anchor="lm")
         if event == "finish":
-            delta, placement, score = (
-                player.get("gradingScore"),
-                player.get("rank"),
-                player.get("score"),
-            )
-            delta_label = delta_text(player)
-            if finite(delta) and delta_label != "—":
-                right = pill(
-                    right,
-                    y + 215,
-                    delta_label,
-                    "#24804b" if delta >= 0 else "#ca4144",
-                    "#e8f5ec" if delta >= 0 else "#fff0ef",
+            delta = delta_text(player)
+            if delta != "—":
+                positive = finite(player.get("gradingScore")) and player["gradingScore"] >= 0
+                text(
+                    x + 253,
+                    y + 228,
+                    delta,
+                    14,
+                    "#258344" if positive else "#cf4545",
+                    "bold",
+                    anchor="mm",
                 )
-            if finite(score):
-                right = pill(right, y + 215, f"{score:g} 点", "#976b24", "#fff5e5")
-            if placement in {1, 2, 3, 4}:
-                pill(right, y + 215, f"{placement} 位", "#4e68af", "#edf1ff")
-        else:
-            pill(right, y + 215, "正在对局", "#24804b", "#e8f5ec")
+        tag = rate_tag(win, deal, mode=len(game.players))
+        if tag:
+            color, bg = tag_palette(tag)
+            pill(x + 480, y + 215, tag, color, bg)
+        elif event != "finish":
+            pill(x + 480, y + 215, "正在对局", "#24804b", "#e8f5ec")
 
     if len(game.players) == 3:
-        text(672, 535, "三人麻雀 · 三个座位", 19, "#a2aab5")
+        text(803, 550, "三人麻雀", 20, "#b0b7c2", anchor="mm")
     result = io.BytesIO()
     canvas.convert("RGB").save(result, "PNG")
     return result.getvalue()
