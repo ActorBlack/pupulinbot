@@ -1,0 +1,648 @@
+{
+  "origin": "Mahjong Soul / Catfood Studio official client resources",
+  "resource_manifest": "https://game.maj-soul.com/1/resversion0.11.252.w.json",
+  "notice": "Game artwork belongs to its original rights holders. Not covered by project code licensing.",
+  "files": {
+    "sima_fish.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_fish.png",
+      "sha256": "d9e69f6a5ba08636961b6c159dec1289d2f3316ff3fb92ec091e5e3ec90f868e",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sima_queshi.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_queshi.png",
+      "sha256": "3036479eea89cebe4a57826491ac5c2b464f2aa130af86afcd82e34b0da8c85b",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sima_quejie.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_quejie.png",
+      "sha256": "2f092ccc2f6a21dec14ab53990942af7c126945e95637a6978701f24d0fed5d4",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sima_quehao.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_quehao.png",
+      "sha256": "a3d3037d64e924b03f898ad1ab9b4b4fa7f4e494047d89a6b5728c41949a1dff",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sima_quesheng.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_quesheng.png",
+      "sha256": "0fecb168bceab13b9f3b53cea1fddbbef54732682adc7f74576cae58069c3a68",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sima_huntian.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sima_huntian.png",
+      "sha256": "99e3140a9643dd819730dafcc37abb6fd52e286f4dd6ceed9e6d98a250f65724",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_fish.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_fish.png",
+      "sha256": "f79d64a8effcfcd4153aa9d11effda7ba70d71918cfabfa09aa5d4b3051d4a36",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_queshi.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_queshi.png",
+      "sha256": "4b8204d22cbc260e0367773745e92d23b66516d503e58a42b87f3faeaa54e569",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_quejie.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_quejie.png",
+      "sha256": "8191dc1cf3d96a1522d685252e0d9d11f958962ff417d5b723ed5058c69f3dca",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_quehao.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_quehao.png",
+      "sha256": "d2c30ea5a7615b60ffb6e19d4db5525046f6ec52363e08e7b46a0115f22db889",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_quesheng.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_quesheng.png",
+      "sha256": "8405be67ae1fe9302ab393a4bdcae38278587755f070df45c45f5c0def076429",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "sanma_huntian.png": {
+      "url": "https://game.maj-soul.com/1/v0.10.1.w/extendRes/level/sanma_huntian.png",
+      "sha256": "21a01572a2f7fe671cc4620d1fc385645ba89c26cf784016bb274b61633ccee0",
+      "size": [
+        256,
+        256
+      ]
+    },
+    "ui_rank_bg.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "b7d2e4134f26541f3d1823c8368f91e6164283e2132e508ca7280419e72d534d",
+      "size": [
+        245,
+        228
+      ],
+      "frame": {
+        "x": 693,
+        "y": 1,
+        "w": 245,
+        "h": 228,
+        "idx": 0
+      }
+    },
+    "ui_star_dark.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "b07a1382f8af848382525aaf7d64f9e19cfe9f7872f644ae8e1628db5aecc561",
+      "size": [
+        67,
+        64
+      ],
+      "frame": {
+        "x": 938,
+        "y": 524,
+        "w": 67,
+        "h": 64,
+        "idx": 0
+      }
+    },
+    "ui_star_shine.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "35749bf71b5cd7d5fda60c5636af1ad5ca0bd14dadd99a46b43dd45ee45ade5d",
+      "size": [
+        67,
+        64
+      ],
+      "frame": {
+        "x": 941,
+        "y": 1,
+        "w": 67,
+        "h": 64,
+        "idx": 0
+      }
+    },
+    "ui_Lv.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "ea97af12abedcd9776343ebeddc2336694ad55d0590340b71cc65962f8b6f182",
+      "size": [
+        41,
+        36
+      ],
+      "frame": {
+        "x": 859,
+        "y": 573,
+        "w": 41,
+        "h": 36,
+        "idx": 0
+      }
+    },
+    "ui_hpoint_l.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "79225f462111b5b0d899241b12cc7475c0f06630a0200b5340573472da68edf9",
+      "size": [
+        20,
+        24
+      ],
+      "frame": {
+        "x": 967,
+        "y": 205,
+        "w": 20,
+        "h": 24,
+        "idx": 0
+      }
+    },
+    "ui_hl_0.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "e9f2dc9a4f2ef79b4d9259e84519ad71c681cb74ba0766b0aec0471364589309",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 996,
+        "y": 743,
+        "w": 26,
+        "h": 36,
+        "idx": 0
+      }
+    },
+    "ui_hl_1.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres.png",
+      "sha256": "5e7912ad01bf6517dc01c9815ee99b8967d3943bb302c0e2457d696f368a581e",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 996,
+        "y": 782,
+        "w": 26,
+        "h": 36,
+        "idx": 0
+      }
+    },
+    "ui_hl_2.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "d9547812f08bfbbaead481adc538c29193853ad5983a6b43d3b7a2bc7ef48bff",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 677,
+        "y": 862,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_3.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "72be1eabeb6035f8ce42ed093f58c48aa171e9d6e87a0265c43aa9ff208ea52e",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 794,
+        "y": 719,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_4.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "8f50f4af7cc0784a1a23a050c6d2638c2406273620f70bb394b7f892ce74478e",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 794,
+        "y": 758,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_5.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "3a49bb15794cf061bf26e97f6ea841207687bcfd7f219b30f7b362136d087d15",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 806,
+        "y": 612,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_6.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "a66b523bb8c7de69e9caeba1351bc9ea7ae72dd2991a3b0e74b1f32750b1eb42",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 819,
+        "y": 563,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_7.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "050c6b556077cbd3878b235b2c42af420e1323371a3fa1f5978b9c84f11114d6",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 823,
+        "y": 719,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_8.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "1dc815e1f6830c8f8b1c6caeea232f5c62bc6e4a65826c11811b34c39567dac3",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 823,
+        "y": 758,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "ui_hl_9.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.101.w/res/atlas/myres1.png",
+      "sha256": "621c3d7549cba18b8e7cbd81a26a7955813f4f65b156848a4033327a85484e70",
+      "size": [
+        26,
+        36
+      ],
+      "frame": {
+        "x": 829,
+        "y": 513,
+        "w": 26,
+        "h": 36,
+        "idx": 1
+      }
+    },
+    "font_youyuan_48.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "cc2c9f78d134b8209d585650a06d114d71342fee0fdba9c1f4d5e2c8136d6cea",
+      "size": [
+        16,
+        23
+      ],
+      "glyph": "0",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_49.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "b32d53e90deb84ab72300268c10feb31798da342dcd97f8a82be62743afa34bf",
+      "size": [
+        12,
+        23
+      ],
+      "glyph": "1",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_50.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "50c8021c32fd60a05d37103d755c6ae3cf06424dc838888096812bab2c497898",
+      "size": [
+        15,
+        23
+      ],
+      "glyph": "2",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_51.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "2f51159480a7e9d60121fd97ce46562c95a319ee7cfb43118ef1dba004f232f3",
+      "size": [
+        15,
+        23
+      ],
+      "glyph": "3",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_52.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "2aacf7425c5bd22af1e1bdb49cec77923eef6926e9eb745cdd9f854755c52c7e",
+      "size": [
+        16,
+        25
+      ],
+      "glyph": "4",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_53.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "5ca8e03c62c1df91550aa3a5e8332c309e97709109e29b51bc7bb5afd7e40f18",
+      "size": [
+        15,
+        23
+      ],
+      "glyph": "5",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_54.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "00c1bcf030d9f2c5937685b86b330ad2825163acf2b377e80e45ca30a11fefc8",
+      "size": [
+        16,
+        23
+      ],
+      "glyph": "6",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_55.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "f83610b00ea648923b04be6084d5327c6f6ad5ca0ccc1e2cbd22e34d482b9765",
+      "size": [
+        15,
+        23
+      ],
+      "glyph": "7",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_56.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "99317de482b957baeeac49aac6ef6becdc4fbc1bf0ed4062e0b176acf97ed0f9",
+      "size": [
+        16,
+        23
+      ],
+      "glyph": "8",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_57.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "38854ddba4871dd12cc85464c76e6ee783ecbb77c1e457abf279bf213e96de69",
+      "size": [
+        16,
+        23
+      ],
+      "glyph": "9",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_46.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "b4946d633215dba60ce0736114b26ea5447c3ddd36f6fb39619f7634bbce011b",
+      "size": [
+        5,
+        4
+      ],
+      "glyph": ".",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_43.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "ade265469816a5da28f32b8bb448ea9de28404b4047e5203b40f209c519729a8",
+      "size": [
+        17,
+        17
+      ],
+      "glyph": "+",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_45.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "2ec5db7add97fa54988e4738a22e8eee51167f71753a8b59bb4a492a17418f98",
+      "size": [
+        17,
+        1
+      ],
+      "glyph": "-",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_112.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "aabc10453620efcfd25d6c62f2290aed6588a4f76be8f2fc876e5ae6404e2f0a",
+      "size": [
+        17,
+        22
+      ],
+      "glyph": "p",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_116.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "66420c18b5ff975851cff7972c3537969b960d226440a9c7d8efaa6c1e2e2814",
+      "size": [
+        15,
+        20
+      ],
+      "glyph": "t",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_youyuan_47.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont4.png",
+      "sha256": "6aaf8ab20ba37394a64ac89fb4e1443da75f0dec7c29c36423550f50d12821ee",
+      "size": [
+        16,
+        30
+      ],
+      "glyph": "/",
+      "source_font": "bitmapfont/youyuan.fnt"
+    },
+    "font_hanyi_48.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "a719a53fadf46573f0a25f5b1992da17459cf94c55300a315301a0bd69d215bb",
+      "size": [
+        18,
+        26
+      ],
+      "glyph": "0",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_49.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "fc1c1e71ac58b0b481501104f90361e637d5cbd1125375682b4c2cce5b3115b7",
+      "size": [
+        12,
+        28
+      ],
+      "glyph": "1",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_50.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "f476043364286e7d62d7656e9478de100309e7d9dc46f00ee7700908b283c09e",
+      "size": [
+        21,
+        27
+      ],
+      "glyph": "2",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_51.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "173ad55abcb38010c02ba8fc2f0e1554e649411ae27ac1e5061bafb39eca0579",
+      "size": [
+        19,
+        28
+      ],
+      "glyph": "3",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_52.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "2855dcb5b1afe4d29579279bcebf7e4ea8fd1d5c250986fe0022bd24e0748adb",
+      "size": [
+        23,
+        27
+      ],
+      "glyph": "4",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_53.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "2aa235f0447e849495d773d2e88b705b9cc94e6fcaef4bcb763165f6ec747182",
+      "size": [
+        23,
+        26
+      ],
+      "glyph": "5",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_54.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "c86a727d45a8da2f5669f5e9331c1f168081c936a1f67cfcf9001775bf7b2f6a",
+      "size": [
+        20,
+        26
+      ],
+      "glyph": "6",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_55.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "c79b4e750850d828f08bc1d7190b845942f668279ade92e996a8fea04adecc91",
+      "size": [
+        20,
+        27
+      ],
+      "glyph": "7",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_56.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "2e777a72d91fcdda1315cf26a35b1b9aa02e29629190984c202ea3f8295242a7",
+      "size": [
+        19,
+        26
+      ],
+      "glyph": "8",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_57.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "9980aa5a42ae4166e56b218fb80e812e25d64827fad065e672eefe91ee4f5038",
+      "size": [
+        19,
+        26
+      ],
+      "glyph": "9",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_46.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "1b3fc0f9bfa0d6061be36adcec764283288e5d0545c575e2fed91a957db888ab",
+      "size": [
+        8,
+        7
+      ],
+      "glyph": ".",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_43.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "690e32035cdd897c6e49baa4eda615d07c73ff5eb6062640247c98a0e537e77a",
+      "size": [
+        16,
+        17
+      ],
+      "glyph": "+",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_45.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "79c357c7324cf2f292a81c4c85c9b8c37d0a15418d4e7060788150d5faa7ed2a",
+      "size": [
+        15,
+        5
+      ],
+      "glyph": "-",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_112.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "6cb51afe786d350a271b64c47f49213a20954da24ecb4c520e9aacc4cce9ddc7",
+      "size": [
+        19,
+        27
+      ],
+      "glyph": "p",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_116.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "c6cb98f58821eff82ea2c4fbe49bd230df2e20897672995d3ca76b3b044e95db",
+      "size": [
+        15,
+        17
+      ],
+      "glyph": "t",
+      "source_font": "bitmapfont/hanyi.fnt"
+    },
+    "font_hanyi_47.png": {
+      "url": "https://game.maj-soul.com/1/v0.11.243.w/res/atlas/bitmapfont3.png",
+      "sha256": "7fafcf620dbbfc7dfcc0e9d608000cf7fefc40e415b05ecd3296c9460eb23a94",
+      "size": [
+        20,
+        27
+      ],
+      "glyph": "/",
+      "source_font": "bitmapfont/hanyi.fnt"
+    }
+  }
+}

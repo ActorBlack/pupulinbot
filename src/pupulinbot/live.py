@@ -44,20 +44,26 @@ class LiveServiceClient:
                     return None
                 response.raise_for_status()
                 data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            if not isinstance(data, dict):
+                raise ValueError("响应必须为 JSON 对象")
+            if not data or data.get("playing") is False:
+                return None
+            if not data.get("uuid"):
+                raise ValueError("缺少对局 UUID")
+            started = data.get("started_at") or data.get("start_time") or 0
+            if isinstance(started, str):
+                started_at = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                if started_at.tzinfo is None:
+                    started_at = started_at.replace(tzinfo=UTC)
+            else:
+                if started > 10_000_000_000:
+                    started /= 1000
+                started_at = datetime.fromtimestamp(started, UTC)
+            return LiveGame(
+                uuid=str(data["uuid"]),
+                mode=str(data.get("mode", "未知场")),
+                started_at=started_at,
+                players=list(data.get("players") or []),
+            )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, OverflowError, OSError) as exc:
             raise LiveServiceError(f"实时网关请求失败：{exc}") from exc
-        if not data or data.get("playing") is False:
-            return None
-        started = data.get("started_at") or data.get("start_time") or 0
-        if isinstance(started, str):
-            started_at = datetime.fromisoformat(started.replace("Z", "+00:00"))
-        else:
-            if started > 10_000_000_000:
-                started /= 1000
-            started_at = datetime.fromtimestamp(started, UTC)
-        return LiveGame(
-            uuid=str(data["uuid"]),
-            mode=str(data.get("mode", "未知场")),
-            started_at=started_at,
-            players=list(data.get("players") or []),
-        )

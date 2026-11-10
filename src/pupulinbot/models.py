@@ -44,8 +44,8 @@ class PlayerStats:
     fourth_rate: float
     average_rank: float
     negative_rate: float
-    win_rate: float
-    deal_in_rate: float
-    riichi_rate: float
-    call_rate: float
+    win_rate: float | None
+    deal_in_rate: float | None
+    riichi_rate: float | None
+    call_rate: float | None
     raw: dict[str, Any]

@@ -1,4 +1,6 @@
+import sqlite3
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
 
@@ -56,6 +58,69 @@ async def test_database_bind_subscribe_and_deduplicate(tmp_path):
     assert (await db.subscriptions())[0]["auto_review"] == 1
     assert await db.claim_game_event(game(), 42, True)
     assert not await db.claim_game_event(game(), 42, True)
+
+
+@pytest.mark.asyncio
+async def test_delivery_retry_lease_and_group_isolation(tmp_path):
+    db = Database(tmp_path / "delivery.db")
+    await db.initialize()
+    assert await db.claim_event("game", "group1:user", "finish")
+    assert not await db.claim_event("game", "group1:user", "finish")
+    assert await db.claim_event("game", "group2:user", "finish")
+    await db.release_event("game", "group1:user", "finish")
+    assert await db.claim_event("game", "group1:user", "finish")
+    with patch("pupulinbot.db.time.time", return_value=10**12):
+        assert await db.claim_event("game", "group1:user", "finish")
+    await db.complete_event("game", "group1:user", "finish")
+    await db.release_event("game", "group1:user", "finish")
+    with patch("pupulinbot.db.time.time", return_value=10**13):
+        assert not await db.claim_event("game", "group1:user", "finish")
+
+
+@pytest.mark.asyncio
+async def test_old_database_migration_and_new_subscriptions(tmp_path):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE bindings(qq_id TEXT PRIMARY KEY, account_id INTEGER NOT NULL,
+                nickname TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE subscriptions(group_id TEXT, qq_id TEXT,
+                notify_start INTEGER DEFAULT 1, notify_finish INTEGER DEFAULT 1,
+                PRIMARY KEY(group_id,qq_id),
+                FOREIGN KEY(qq_id) REFERENCES bindings(qq_id) ON DELETE CASCADE);
+            CREATE TABLE game_events(uuid TEXT, subscriber TEXT, event TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(uuid,subscriber,event));
+            INSERT INTO bindings(qq_id,account_id,nickname) VALUES('1',42,'old');
+            INSERT INTO subscriptions(group_id,qq_id) VALUES('2','1');
+            INSERT INTO game_events(uuid,subscriber,event) VALUES('old','2:1','finish');
+        """)
+    db = Database(path)
+    await db.initialize()
+    await db.initialize()
+    assert (await db.subscriptions())[0]["created_at"]
+    assert not await db.claim_event("old", "2:1", "finish")
+    await db.subscribe("3", "1")
+    assert all(row["created_at"] for row in await db.subscriptions())
+    # Repair NULL timestamps inserted by the older nullable-column migration.
+    async with db.connect() as conn:
+        await conn.execute("UPDATE subscriptions SET created_at=NULL")
+        await conn.commit()
+    await db.initialize()
+    assert all(row["created_at"] for row in await db.subscriptions())
+    await db.unbind("1")
+    assert not await db.subscriptions()
+
+
+@pytest.mark.asyncio
+async def test_game_record_is_updated_on_settlement(tmp_path):
+    db = Database(tmp_path / "games.db")
+    await db.initialize()
+    assert await db.claim_game_event(game(False), 42, False)
+    assert await db.claim_game_event(game(True), 42, True)
+    async with db.connect() as conn:
+        row = await (await conn.execute("SELECT ended_at FROM games")).fetchone()
+        assert row["ended_at"] == game(True).ended_at.isoformat()
 
 
 def test_render_png():

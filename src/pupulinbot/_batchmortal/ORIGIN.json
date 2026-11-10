@@ -1,0 +1,15 @@
+{
+  "source": "/Users/bytedance/Downloads/batchmortal",
+  "imported": "2026-11-07",
+  "hashes": {
+    "batchmortal/browser.py": "d578fcd8980918527e9a459e4d87ea709bde988872478f7b5779ef4b009db89a",
+    "batchmortal/results.py": "985d0fa8f47e904048d9afeeb20a0c4270518be1e6e460f9589ca4252ae59da9",
+    "batchmortal/bot.py": "8d01dc6f39556dd4d4c9fe47532f594aef5f4fd67c9bfee67f2e48e6700b45eb",
+    "LICENSE": "a85997436b17ed89e10dbfce63c67fbd160d24abdb17fa819720a288a8074856"
+  },
+  "vendored": [
+    "browser.py",
+    "results.py"
+  ],
+  "adaptation": "Adapter is separate; vendored files remain unchanged."
+}

@@ -1,0 +1,38 @@
+[
+  {
+    "info": {
+      "kuitanari": 1,
+      "akaari": 1,
+      "rapid": 0,
+      "playernum": 4,
+      "playerlevel": 3,
+      "playlength": 2,
+      "yami": 0,
+      "speed": 0,
+      "starttime": 1794095280,
+      "id": "F2821E7D"
+    },
+    "players": [
+      {
+        "name": "むぎちゃ派",
+        "rate": 2295,
+        "grade": 18
+      },
+      {
+        "name": "ねこになりたい",
+        "rate": 2103,
+        "grade": 16
+      },
+      {
+        "name": "水月れん。",
+        "rate": 2069,
+        "grade": 16
+      },
+      {
+        "name": "ねこにゃん",
+        "rate": 2015,
+        "grade": 16
+      }
+    ]
+  }
+]

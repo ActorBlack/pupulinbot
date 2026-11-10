@@ -1,0 +1,12 @@
+Public endpoint samples read 2026-11-08 (Asia/Shanghai).
+live.json: https://nodocchi.moe/s/wg.js (one complete public spectator entry)
+result.json: https://nodocchi.moe/api/listuser.php?name=applePie&start=1794000000
+profile.json: https://nodocchi.moe/api/phoenix_status.php?all=1&username=ププリン
+Public nicknames only; no private login ID, token or account credential.
+Result scores cross-checked against the user-provided exact game example.
+Rule mapping/inverse: nodocchi public tenhoulog/min/base.js THR.ptcfg.uma.
+
+rank-oracle.json: synthetic history cases; expected grade/PT/high/count generated
+with the individually inspected nodocchi assumegrade/getPtcfg/_checkseq functions.
+Cases cover sanma/yonma, pre-2008/2017 changes, expiry, sequence reset, tenhou-i.
+Runtime uses independently written Python and no copied site executable code.

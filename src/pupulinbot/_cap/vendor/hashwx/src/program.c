@@ -1,0 +1,336 @@
+/* Copyright (c) 2020-2026 tevador <tevador@gmail.com> */
+/* See LICENSE for licensing information */
+
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#include "program.h"
+#include "platform.h"
+#include "siphash_rng.h"
+
+#define TRACE false
+#define TRACE_PRINT(...) do { if (TRACE) printf(__VA_ARGS__); } while (false)
+
+#define NUM_MUL_IMMS 3
+#define NUM_SRC_PERM_SHALLOW 256
+#define NUM_SRC_PERM_DEEP 24
+#define NUM_OPCODE_TPL 35
+#define NUM_MUL_OPCODES 3
+#define NUM_XAS_OPCODES 9
+
+/* Immediates for the MUL family of instructions */
+static const uint8_t mul_imms[NUM_MUL_IMMS] = {
+    1, 9, 33
+};
+
+/* Lookup table for the XAS opcodes */
+static const instr_type xas_lookup[NUM_XAS_OPCODES] = {
+    INSTR_XORROR,
+    INSTR_ADDROR,
+    INSTR_SUBROR,
+    INSTR_XORASR,
+    INSTR_ADDASR,
+    INSTR_SUBASR,
+    INSTR_XORLSR,
+    INSTR_ADDLSR,
+    INSTR_SUBLSR
+};
+
+/* 1 = MUL, 0 = XAS. */
+static const uint8_t opcode_tpl_lookup[NUM_OPCODE_TPL] = {
+    0x07, /* MMMXXXX */ 0x0b, /* MMXMXXX */ 0x13, /* MMXXMXX */ 0x23, /* MMXXXMX */ 0x43, /* MMXXXXM */
+    0x0d, /* MXMMXXX */ 0x15, /* MXMXMXX */ 0x25, /* MXMXXMX */ 0x45, /* MXMXXXM */ 0x19, /* MXXMMXX */
+    0x29, /* MXXMXMX */ 0x49, /* MXXMXXM */ 0x31, /* MXXXMMX */ 0x51, /* MXXXMXM */ 0x61, /* MXXXXMM */
+    0x0e, /* XMMMXXX */ 0x16, /* XMMXMXX */ 0x26, /* XMMXXMX */ 0x46, /* XMMXXXM */ 0x1a, /* XMXMMXX */
+    0x2a, /* XMXMXMX */ 0x4a, /* XMXMXXM */ 0x32, /* XMXXMMX */ 0x52, /* XMXXMXM */ 0x62, /* XMXXXMM */
+    0x1c, /* XXMMMXX */ 0x2c, /* XXMMXMX */ 0x4c, /* XXMMXXM */ 0x34, /* XXMXMMX */ 0x54, /* XXMXMXM */
+    0x64, /* XXMXXMM */ 0x38, /* XXXMMMX */ 0x58, /* XXXMMXM */ 0x68, /* XXXMXMM */ 0x70, /* XXXXMMM */
+};
+
+/* the shallow permutations produce 3 memory load dependency chains of depth 2 */
+static const uint8_t src_lookup_shallow[NUM_SRC_PERM_SHALLOW][8] = {
+    { 0, 2, 1, 4, 3, 6, 7, 5 }, { 0, 3, 4, 1, 6, 7, 5, 2 },
+    { 0, 4, 5, 6, 7, 1, 2, 3 }, { 0, 6, 3, 7, 5, 2, 1, 4 },
+    { 1, 0, 4, 5, 2, 3, 7, 6 }, { 1, 3, 0, 2, 5, 4, 7, 6 },
+    { 1, 3, 5, 2, 0, 4, 7, 6 }, { 1, 3, 6, 2, 7, 0, 5, 4 },
+    { 1, 3, 7, 2, 0, 6, 4, 5 }, { 1, 3, 7, 2, 0, 6, 5, 4 },
+    { 1, 3, 7, 2, 5, 4, 0, 6 }, { 1, 3, 7, 2, 6, 0, 5, 4 },
+    { 1, 4, 5, 0, 3, 2, 7, 6 }, { 1, 4, 5, 7, 2, 3, 0, 6 },
+    { 1, 4, 6, 0, 3, 7, 2, 5 }, { 1, 4, 6, 7, 2, 0, 3, 5 },
+    { 1, 4, 6, 7, 2, 0, 5, 3 }, { 1, 4, 7, 0, 2, 6, 5, 3 },
+    { 1, 4, 7, 0, 3, 6, 2, 5 }, { 1, 4, 7, 5, 2, 3, 0, 6 },
+    { 1, 4, 7, 5, 3, 2, 0, 6 }, { 1, 4, 7, 6, 3, 0, 5, 2 },
+    { 1, 5, 6, 7, 0, 2, 3, 4 }, { 1, 5, 6, 7, 0, 2, 4, 3 },
+    { 1, 5, 7, 0, 6, 2, 3, 4 }, { 1, 5, 7, 0, 6, 2, 4, 3 },
+    { 1, 5, 7, 6, 0, 3, 2, 4 }, { 1, 5, 7, 6, 0, 4, 2, 3 },
+    { 1, 6, 4, 7, 2, 0, 5, 3 }, { 1, 6, 5, 7, 0, 2, 4, 3 },
+    { 1, 7, 3, 2, 0, 6, 5, 4 }, { 1, 7, 3, 2, 6, 0, 4, 5 },
+    { 1, 7, 3, 2, 6, 0, 5, 4 }, { 1, 7, 4, 6, 2, 0, 3, 5 },
+    { 1, 7, 4, 6, 3, 0, 5, 2 }, { 1, 7, 5, 0, 6, 2, 3, 4 },
+    { 1, 7, 5, 0, 6, 2, 4, 3 }, { 1, 7, 5, 6, 0, 2, 3, 4 },
+    { 1, 7, 5, 6, 0, 2, 4, 3 }, { 1, 7, 6, 0, 5, 2, 4, 3 },
+    { 1, 7, 6, 4, 2, 0, 5, 3 }, { 1, 7, 6, 4, 3, 0, 5, 2 },
+    { 1, 7, 6, 5, 0, 2, 3, 4 }, { 2, 0, 4, 6, 3, 7, 1, 5 },
+    { 2, 3, 0, 1, 7, 6, 4, 5 }, { 2, 3, 1, 0, 6, 7, 4, 5 },
+    { 2, 3, 1, 7, 0, 6, 4, 5 }, { 2, 3, 1, 7, 0, 6, 5, 4 },
+    { 2, 4, 0, 7, 1, 6, 5, 3 }, { 2, 4, 1, 7, 3, 6, 5, 0 },
+    { 2, 4, 5, 7, 1, 3, 0, 6 }, { 2, 4, 5, 7, 3, 1, 0, 6 },
+    { 2, 4, 6, 7, 1, 0, 3, 5 }, { 2, 4, 7, 5, 3, 1, 0, 6 },
+    { 2, 5, 0, 6, 7, 3, 4, 1 }, { 2, 5, 1, 6, 7, 0, 3, 4 },
+    { 2, 5, 1, 6, 7, 3, 0, 4 }, { 2, 5, 1, 7, 0, 6, 3, 4 },
+    { 2, 5, 1, 7, 6, 0, 3, 4 }, { 2, 5, 6, 0, 7, 1, 3, 4 },
+    { 2, 5, 6, 7, 0, 1, 3, 4 }, { 2, 5, 7, 6, 0, 1, 4, 3 },
+    { 2, 5, 7, 6, 0, 3, 1, 4 }, { 2, 5, 7, 6, 0, 3, 4, 1 },
+    { 2, 5, 7, 6, 0, 4, 1, 3 }, { 2, 6, 1, 5, 7, 3, 0, 4 },
+    { 2, 6, 1, 5, 7, 4, 0, 3 }, { 2, 6, 1, 5, 7, 4, 3, 0 },
+    { 2, 6, 1, 7, 5, 3, 4, 0 }, { 2, 6, 1, 7, 5, 4, 3, 0 },
+    { 2, 7, 1, 0, 5, 6, 4, 3 }, { 2, 7, 1, 4, 3, 6, 0, 5 },
+    { 2, 7, 1, 4, 3, 6, 5, 0 }, { 2, 7, 1, 5, 0, 6, 4, 3 },
+    { 2, 7, 1, 5, 6, 0, 3, 4 }, { 2, 7, 1, 5, 6, 3, 0, 4 },
+    { 2, 7, 1, 5, 6, 3, 4, 0 }, { 2, 7, 1, 6, 5, 3, 0, 4 },
+    { 2, 7, 1, 6, 5, 4, 0, 3 }, { 2, 7, 3, 1, 0, 6, 5, 4 },
+    { 2, 7, 6, 5, 0, 3, 4, 1 }, { 3, 0, 4, 1, 6, 7, 2, 5 },
+    { 3, 0, 4, 2, 6, 7, 5, 1 }, { 3, 0, 5, 2, 6, 7, 4, 1 },
+    { 3, 0, 6, 1, 5, 4, 7, 2 }, { 3, 2, 0, 1, 6, 7, 4, 5 },
+    { 3, 2, 0, 1, 7, 6, 4, 5 }, { 3, 2, 1, 0, 5, 4, 7, 6 },
+    { 3, 2, 1, 0, 6, 7, 4, 5 }, { 3, 2, 1, 0, 7, 6, 5, 4 },
+    { 3, 2, 1, 5, 7, 4, 0, 6 }, { 3, 2, 1, 6, 0, 7, 5, 4 },
+    { 3, 2, 7, 1, 6, 0, 4, 5 }, { 3, 2, 7, 1, 6, 0, 5, 4 },
+    { 3, 4, 0, 7, 1, 6, 5, 2 }, { 3, 4, 6, 1, 7, 0, 2, 5 },
+    { 3, 4, 6, 2, 7, 0, 5, 1 }, { 3, 4, 6, 7, 2, 0, 5, 1 },
+    { 3, 4, 7, 2, 0, 6, 5, 1 }, { 3, 5, 0, 7, 6, 4, 2, 1 },
+    { 3, 5, 6, 0, 7, 1, 2, 4 }, { 3, 5, 6, 2, 7, 0, 4, 1 },
+    { 3, 5, 6, 7, 0, 1, 2, 4 }, { 3, 5, 6, 7, 0, 2, 4, 1 },
+    { 3, 5, 6, 7, 0, 4, 2, 1 }, { 3, 5, 7, 1, 6, 0, 4, 2 },
+    { 3, 5, 7, 2, 6, 0, 1, 4 }, { 3, 5, 7, 6, 0, 1, 2, 4 },
+    { 3, 6, 5, 0, 7, 1, 2, 4 }, { 3, 6, 7, 0, 5, 4, 2, 1 },
+    { 3, 6, 7, 1, 5, 4, 0, 2 }, { 3, 7, 4, 1, 2, 6, 5, 0 },
+    { 3, 7, 5, 1, 6, 0, 4, 2 }, { 3, 7, 5, 1, 6, 4, 0, 2 },
+    { 3, 7, 6, 1, 5, 0, 4, 2 }, { 3, 7, 6, 1, 5, 2, 4, 0 },
+    { 3, 7, 6, 1, 5, 4, 0, 2 }, { 4, 0, 3, 2, 1, 6, 7, 5 },
+    { 4, 0, 3, 2, 6, 7, 1, 5 }, { 4, 2, 0, 5, 1, 3, 7, 6 },
+    { 4, 2, 0, 6, 3, 7, 1, 5 }, { 4, 2, 0, 6, 3, 7, 5, 1 },
+    { 4, 2, 1, 0, 3, 6, 7, 5 }, { 4, 2, 1, 0, 7, 6, 3, 5 },
+    { 4, 2, 1, 5, 3, 0, 7, 6 }, { 4, 2, 1, 7, 6, 0, 5, 3 },
+    { 4, 2, 6, 7, 3, 0, 1, 5 }, { 4, 2, 7, 0, 3, 6, 1, 5 },
+    { 4, 2, 7, 5, 1, 3, 0, 6 }, { 4, 3, 0, 1, 2, 6, 7, 5 },
+    { 4, 3, 0, 1, 6, 7, 5, 2 }, { 4, 3, 0, 2, 5, 1, 7, 6 },
+    { 4, 3, 0, 2, 6, 7, 1, 5 }, { 4, 3, 0, 2, 7, 6, 1, 5 },
+    { 4, 3, 0, 2, 7, 6, 5, 1 }, { 4, 3, 0, 6, 2, 7, 1, 5 },
+    { 4, 3, 5, 2, 7, 1, 0, 6 }, { 4, 3, 5, 7, 2, 1, 0, 6 },
+    { 4, 3, 6, 0, 2, 7, 1, 5 }, { 4, 3, 6, 2, 0, 7, 5, 1 },
+    { 4, 3, 6, 2, 7, 0, 1, 5 }, { 4, 3, 6, 2, 7, 0, 5, 1 },
+    { 4, 5, 0, 6, 1, 7, 3, 2 }, { 4, 5, 3, 0, 2, 1, 7, 6 },
+    { 4, 5, 3, 1, 7, 2, 0, 6 }, { 4, 5, 3, 2, 7, 1, 0, 6 },
+    { 4, 5, 3, 7, 2, 1, 0, 6 }, { 4, 6, 3, 2, 0, 7, 1, 5 },
+    { 4, 6, 3, 2, 7, 0, 1, 5 }, { 4, 6, 3, 7, 1, 0, 5, 2 },
+    { 4, 6, 7, 5, 1, 2, 3, 0 }, { 4, 7, 3, 0, 1, 6, 2, 5 },
+    { 4, 7, 3, 0, 2, 6, 5, 1 }, { 4, 7, 5, 6, 1, 2, 0, 3 },
+    { 5, 0, 3, 2, 6, 4, 7, 1 }, { 5, 0, 3, 4, 1, 2, 7, 6 },
+    { 5, 0, 3, 4, 2, 1, 7, 6 }, { 5, 0, 4, 6, 1, 2, 7, 3 },
+    { 5, 0, 4, 6, 1, 7, 3, 2 }, { 5, 0, 4, 6, 3, 7, 2, 1 },
+    { 5, 0, 4, 7, 3, 6, 1, 2 }, { 5, 0, 7, 4, 2, 6, 3, 1 },
+    { 5, 2, 0, 4, 1, 3, 7, 6 }, { 5, 2, 0, 4, 3, 1, 7, 6 },
+    { 5, 2, 0, 6, 7, 3, 4, 1 }, { 5, 2, 0, 6, 7, 4, 1, 3 },
+    { 5, 2, 1, 0, 6, 7, 3, 4 }, { 5, 2, 3, 1, 7, 4, 0, 6 },
+    { 5, 2, 4, 0, 3, 1, 7, 6 }, { 5, 2, 7, 4, 3, 1, 0, 6 },
+    { 5, 2, 7, 6, 0, 3, 4, 1 }, { 5, 3, 0, 2, 6, 7, 4, 1 },
+    { 5, 3, 4, 0, 2, 1, 7, 6 }, { 5, 3, 4, 2, 0, 1, 7, 6 },
+    { 5, 3, 7, 4, 1, 2, 0, 6 }, { 5, 3, 7, 4, 2, 1, 0, 6 },
+    { 5, 4, 0, 6, 2, 7, 1, 3 }, { 5, 4, 0, 6, 3, 1, 7, 2 },
+    { 5, 4, 3, 0, 2, 1, 7, 6 }, { 5, 4, 3, 1, 7, 2, 0, 6 },
+    { 5, 4, 6, 0, 7, 1, 2, 3 }, { 5, 4, 6, 0, 7, 1, 3, 2 },
+    { 5, 4, 7, 6, 1, 3, 2, 0 }, { 5, 6, 0, 4, 1, 7, 2, 3 },
+    { 5, 6, 0, 4, 3, 7, 1, 2 }, { 5, 6, 0, 4, 3, 7, 2, 1 },
+    { 5, 6, 4, 0, 2, 7, 1, 3 }, { 5, 6, 4, 0, 3, 7, 2, 1 },
+    { 5, 6, 7, 4, 1, 2, 0, 3 }, { 6, 0, 3, 1, 5, 4, 7, 2 },
+    { 6, 0, 3, 1, 5, 7, 2, 4 }, { 6, 0, 3, 2, 5, 4, 7, 1 },
+    { 6, 0, 3, 7, 5, 4, 1, 2 }, { 6, 0, 4, 5, 1, 2, 7, 3 },
+    { 6, 0, 4, 5, 1, 3, 7, 2 }, { 6, 0, 4, 5, 1, 7, 2, 3 },
+    { 6, 0, 4, 5, 1, 7, 3, 2 }, { 6, 0, 4, 5, 2, 3, 7, 1 },
+    { 6, 0, 4, 5, 2, 7, 3, 1 }, { 6, 0, 4, 7, 5, 3, 1, 2 },
+    { 6, 0, 4, 7, 5, 3, 2, 1 }, { 6, 0, 5, 4, 1, 2, 7, 3 },
+    { 6, 0, 5, 4, 2, 1, 7, 3 }, { 6, 0, 5, 4, 2, 7, 3, 1 },
+    { 6, 0, 5, 4, 3, 1, 7, 2 }, { 6, 0, 5, 4, 3, 2, 7, 1 },
+    { 6, 0, 7, 4, 5, 3, 1, 2 }, { 6, 2, 0, 4, 3, 7, 5, 1 },
+    { 6, 2, 1, 5, 7, 3, 4, 0 }, { 6, 2, 4, 0, 3, 7, 1, 5 },
+    { 6, 3, 0, 1, 5, 4, 7, 2 }, { 6, 3, 5, 2, 7, 4, 0, 1 },
+    { 6, 4, 3, 1, 7, 0, 2, 5 }, { 6, 4, 5, 0, 2, 3, 7, 1 },
+    { 6, 4, 5, 7, 1, 2, 3, 0 }, { 6, 4, 5, 7, 1, 3, 2, 0 },
+    { 6, 4, 5, 7, 2, 1, 3, 0 }, { 6, 5, 0, 4, 2, 1, 7, 3 },
+    { 6, 5, 0, 4, 7, 3, 2, 1 }, { 6, 7, 3, 1, 5, 2, 0, 4 },
+    { 6, 7, 3, 1, 5, 4, 0, 2 }, { 6, 7, 3, 1, 5, 4, 2, 0 },
+    { 6, 7, 5, 4, 1, 2, 3, 0 }, { 7, 0, 4, 5, 2, 6, 1, 3 },
+    { 7, 0, 5, 4, 3, 6, 1, 2 }, { 7, 2, 1, 4, 3, 6, 5, 0 },
+    { 7, 2, 1, 6, 5, 3, 4, 0 }, { 7, 2, 1, 6, 5, 4, 3, 0 },
+    { 7, 2, 5, 6, 0, 1, 3, 4 }, { 7, 3, 4, 1, 5, 2, 0, 6 },
+    { 7, 3, 5, 1, 6, 4, 2, 0 }, { 7, 3, 5, 2, 6, 4, 1, 0 },
+    { 7, 3, 6, 1, 5, 4, 0, 2 }, { 7, 3, 6, 5, 0, 4, 1, 2 },
+    { 7, 4, 6, 5, 1, 0, 2, 3 }, { 7, 4, 6, 5, 1, 2, 3, 0 },
+    { 7, 5, 0, 4, 1, 6, 2, 3 }, { 7, 5, 3, 1, 6, 2, 4, 0 },
+    { 7, 5, 3, 1, 6, 4, 2, 0 }, { 7, 5, 3, 2, 6, 1, 4, 0 },
+    { 7, 6, 0, 4, 5, 2, 1, 3 }, { 7, 6, 0, 4, 5, 3, 1, 2 },
+    { 7, 6, 3, 0, 5, 4, 1, 2 }, { 7, 6, 3, 1, 5, 4, 2, 0 },
+    { 7, 6, 3, 2, 5, 4, 1, 0 }, { 7, 6, 4, 5, 1, 0, 3, 2 },
+    { 7, 6, 4, 5, 1, 2, 3, 0 }, { 7, 6, 4, 5, 1, 3, 2, 0 },
+    { 7, 6, 4, 5, 2, 1, 3, 0 }, { 7, 6, 4, 5, 2, 3, 1, 0 },
+    { 7, 6, 4, 5, 3, 1, 2, 0 }, { 7, 6, 4, 5, 3, 2, 1, 0 },
+    { 7, 6, 5, 4, 0, 3, 1, 2 }, { 7, 6, 5, 4, 1, 2, 3, 0 },
+    { 7, 6, 5, 4, 1, 3, 2, 0 }, { 7, 6, 5, 4, 2, 1, 3, 0 },
+};
+
+/* the deep permutations produce a memory load dependency chain of depth 6 */
+static const uint8_t src_lookup_deep[NUM_SRC_PERM_DEEP][8] = {
+    { 0, 2, 7, 1, 3, 4, 5, 6 }, { 0, 3, 1, 7, 2, 4, 5, 6 },
+    { 0, 4, 1, 2, 7, 3, 5, 6 }, { 0, 5, 1, 2, 3, 7, 4, 6 },
+    { 0, 6, 1, 2, 3, 4, 7, 5 }, { 1, 0, 7, 2, 3, 4, 5, 6 },
+    { 1, 7, 0, 2, 3, 4, 5, 6 }, { 2, 0, 7, 1, 3, 4, 5, 6 },
+    { 2, 7, 0, 1, 3, 4, 5, 6 }, { 3, 0, 1, 7, 2, 4, 5, 6 },
+    { 3, 7, 1, 0, 2, 4, 5, 6 }, { 4, 0, 1, 2, 7, 3, 5, 6 },
+    { 4, 7, 1, 2, 0, 3, 5, 6 }, { 5, 0, 1, 2, 3, 7, 4, 6 },
+    { 5, 7, 1, 2, 3, 0, 4, 6 }, { 6, 0, 1, 2, 3, 4, 7, 5 },
+    { 6, 7, 1, 2, 3, 4, 0, 5 }, { 6, 7, 1, 2, 3, 4, 5, 0 },
+    { 7, 2, 0, 1, 3, 4, 5, 6 }, { 7, 3, 1, 0, 2, 4, 5, 6 },
+    { 7, 4, 1, 2, 0, 3, 5, 6 }, { 7, 5, 1, 2, 3, 0, 4, 6 },
+    { 7, 6, 1, 2, 3, 4, 0, 5 }, { 7, 6, 1, 2, 3, 4, 5, 0 },
+};
+
+static inline instr_type gen_mul_opcode(uint64_t select, uint32_t* select_hi) {
+    uint32_t select_lo = (uint32_t)select;
+    *select_hi = (uint32_t)(select >> 32);
+    return (instr_type)(select_lo % NUM_MUL_OPCODES);
+}
+
+static inline instr_type gen_xas_opcode(uint64_t select, uint32_t* select_hi) {
+    uint32_t select_lo = (uint32_t)select;
+    *select_hi = (uint32_t)(select >> 32);
+    return xas_lookup[select_lo % NUM_XAS_OPCODES];
+}
+
+static void gen_destinations(uint32_t dst[8], const uint32_t select[7]) {
+    /* Fisher-Yates shuffle */
+    dst[0] = 0;
+    for (int i = 1; i < 8; ++i) {
+        dst[i] = i;
+        uint32_t j = select[i - 1] % (i + 1);
+        dst[i] = dst[j];
+        dst[j] = i;
+    }
+}
+
+static void gen_sources(uint32_t src[8], uint32_t dst[8], uint64_t select, bool is_deep) {
+    const uint8_t* src_perm;
+    if (!is_deep) {
+        src_perm = src_lookup_shallow[select % NUM_SRC_PERM_SHALLOW];
+    }
+    else {
+        src_perm = src_lookup_deep[select % NUM_SRC_PERM_DEEP];
+    }
+    for (int i = 1; i < 8; ++i) {
+        src[i] = dst[src_perm[i]];
+    }
+    src[0] = 8;
+}
+
+static uint32_t gen_imm(instr_type opcode, uint64_t select) {
+    if (opcode <= INSTR_MULADD) {
+        return mul_imms[select % NUM_MUL_IMMS]; /* 1, 9, 33 */
+    }
+    if (opcode <= INSTR_SUBROR) {
+        return 1 + (select % 63); /* 1-63 */
+    }
+    return 1 + (select % 3); /* 1-3 */
+}
+
+static void program_generate(siphash_rng* rng, hashwx_program* program, bool is_last, bool is_deep) {
+    /*
+        The program layout is as follows:
+
+        INSTR_STORE
+        INSTR_RMCG (dst, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_XAS* / INSTR_MUL* (dst, src, imm)
+        INSTR_CBRANCH / INSTR_UBRANCH
+        INSTR_HALT
+
+        Here INSTR_XAS* is one of the nine XOR/ADD/SUB opcodes and INSTR_MUL*
+        is one of the three MUL opcodes.
+        The branch instruction, if taken, jumps to the start of the program.
+        Every program uses INSTR_CBRANCH, except for the last program in the
+        list, which uses INSTR_UBRANCH to ensure that BC is zero at the end
+        of the phase.
+
+        Each program implements one of 35 possible templates of 3 INSTR_MUL*
+        and 4 INSTR_XAS* opcodes.
+
+        Eight instructions have a dst register. Destinations are selected
+        as a random permutation of R0-R7.
+
+        Seven instructions have a src register. Sources are selected from
+        either the 256 "shallow" permutations of the destinations or from
+        the 24 "deep" permutations of the destinations.
+
+        For INSTR_MUL*, the imm value is chosen from the set  { 1, 9, 33 }.
+        For INSTR_*ASR and INSTR_*LSR, the imm range is 1-3.
+        The other instructions have an imm range of 1-63.
+
+        In total, the generator calls hashwx_rng_next 16x.
+    */
+
+    uint64_t gen[8];
+    uint32_t dst_select[7];
+
+    /* gen[0] ... gen[7] */
+    for (int i = 0; i < 8; ++i) {
+        gen[i] = hashwx_rng_next(rng);
+    }
+
+    /* opcodes */
+    uint32_t seq = opcode_tpl_lookup[gen[7] % NUM_OPCODE_TPL];
+    program->code[0].opcode = INSTR_STORE;
+    program->code[1].opcode = INSTR_RMCG;
+    for (int i = 0; i < 7; ++i) {
+        program->code[i + 2].opcode = ((seq >> i) & 1)
+            ? gen_mul_opcode(gen[i], &dst_select[i])
+            : gen_xas_opcode(gen[i], &dst_select[i]);
+    }
+
+    /* instruction destination registers */
+    uint32_t dst[8];
+    gen_destinations(dst, dst_select);
+
+    /* instruction source registers */
+    uint32_t src[8];
+    gen_sources(src, dst, gen[7], is_deep);
+
+    /* instruction immediate values */
+    for (int i = 0; i < 8; ++i) {
+        program->code[i + 1].dst = dst[i];
+        program->code[i + 1].src = src[i];
+        program->code[i + 1].imm = gen_imm(program->code[i + 1].opcode, hashwx_rng_next(rng));
+    }
+
+    /* branch */
+    program->code[9].opcode = is_last ? INSTR_UBRANCH : INSTR_CBRANCH;
+
+    /* halt */
+    program->code[10].opcode = INSTR_HALT;
+}
+
+void hashwx_program_list_generate(const siphash_key* key, hashwx_program_list* program_list) {
+    siphash_rng gen;
+    hashwx_rng_init(&gen, key, (uint64_t)-1);
+    for (int i = 0; i < HASHWX_NUM_PROGRAMS - 1; ++i) {
+        /* program is deep if i is divisible by 6 */
+        program_generate(&gen, &program_list->prog[i], false, (i % 6) == 0);
+    }
+    program_generate(&gen, &program_list->prog[HASHWX_NUM_PROGRAMS - 1], true, false);
+}
