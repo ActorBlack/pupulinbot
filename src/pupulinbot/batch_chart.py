@@ -55,12 +55,12 @@ def _render_single_card(job: dict) -> bytes:
 
     row = job["rows"][0]
     metric = (row.get("metrics") or {}) if row.get("status") == "done" else {}
-    image = Image.new("RGBA", (1000, 300), "#f2f5fa")
+    image = Image.new("RGBA", (1000, 280), "#f2f5fa")
     shadow = Image.new("RGBA", image.size)
     painter = ImageDraw.Draw(shadow)
-    for i in range(4):
-        x = 28 + 240 * i
-        painter.rounded_rectangle((x, 109, x + 224, 249), 18, fill=(34, 50, 75, 14))
+    for i in range(5):
+        x = 28 + 192 * i
+        painter.rounded_rectangle((x, 109, x + 176, 229), 18, fill=(34, 50, 75, 14))
     image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(8)))
     draw = ImageDraw.Draw(image)
     ink, muted = "#22324b", "#7f8da3"
@@ -76,24 +76,37 @@ def _render_single_card(job: dict) -> bytes:
         name = name[:-2] + "…"
     draw.text((972, 46), name, font=name_font, fill=ink, anchor="rm")
     cards = (
-        ("Rating", "rating", "#3872c6"),
+        ("Rating", "rating", ink),
         ("AI 一致率", "agreement", "#138b83"),
         ("≤5% 恶手率", "bad5_rate", "#d9952e"),
         ("≤10% 恶手率", "bad10_rate", "#d57773"),
+        ("切牌次数", "matches", ink),
     )
     for i, (label, key, color) in enumerate(cards):
-        x = 28 + 240 * i
-        draw.rounded_rectangle((x, 104, x + 224, 244), 18, fill="white")
-        draw.text((x + 20, 130), label, font=face(20), fill=muted, anchor="lm")
+        x = 28 + 192 * i
+        draw.rounded_rectangle((x, 104, x + 176, 224), 18, fill="white")
+        draw.text((x + 16, 130), label, font=face(18), fill=muted, anchor="lm")
         value = metric.get(key)
         formatted = "—"
-        if type(value) in (int, float) and math.isfinite(value):
+        if key == "matches":
+            total = metric.get("decisions")
+            if type(value) is int and type(total) is int and 0 <= value <= total and total > 0:
+                formatted = f"{value} / {total}"
+        elif type(value) in (int, float) and math.isfinite(value):
             formatted = f"{value:.2f}" + ("%" if key != "rating" else "")
-        draw.text((x + 20, 187), formatted, font=face(40, "number"), fill=color, anchor="lm")
+        if key == "rating" and rating_color(value) in {GOLD_RATING, RAINBOW_RATING}:
+            _draw_shiny_rating(
+                image, x + 88, 177, formatted, rainbow=rating_color(value) == RAINBOW_RATING
+            )
+        else:
+            size = 32
+            while draw.textlength(formatted, font=face(size, "number")) > 144 and size > 18:
+                size -= 1
+            draw.text((x + 88, 177), formatted, font=face(size, "number"), fill=color, anchor="mm")
     model = metric.get("model")
     if model:
-        draw.text((32, 276), str(model), font=face(16), fill=muted, anchor="lm")
-    draw.text((968, 276), job.get("id", ""), font=face(16), fill=muted, anchor="rm")
+        draw.text((32, 256), str(model), font=face(16), fill=muted, anchor="lm")
+    draw.text((968, 256), job.get("id", ""), font=face(16), fill=muted, anchor="rm")
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()
@@ -349,8 +362,165 @@ def render_batch_animation(job: dict) -> bytes:
         return output.getvalue()
 
 
-def _render_table_chart(job, *, shimmer_phase=None):
+def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None):
     from PIL import Image, ImageChops, ImageDraw, ImageFilter
+
+    from .typography import face
+
+    draw = ImageDraw.Draw(image)
+    font = face(32, "number")
+    width = math.ceil(draw.textlength(value, font=font))
+    size = (width + 90, 76) if rainbow else (width + 44, 66)
+    center = (size[0] / 2, size[1] / 2)
+    mask = Image.new("L", size)
+    ImageDraw.Draw(mask).text(center, value, font=font, fill=255, anchor="mm")
+    bounds = mask.getbbox()
+    if bounds is None:
+        return
+    glow = Image.new("RGBA", size, "#bc92ff" if rainbow else "#ffcd40")
+    glow.putalpha(mask.filter(ImageFilter.GaussianBlur(3)).point(lambda alpha: int(alpha * 0.42)))
+    outline = Image.new("RGBA", size)
+    ImageDraw.Draw(outline).text(
+        center,
+        value,
+        font=font,
+        fill="#9571c6" if rainbow else "#d39412",
+        stroke_width=1,
+        stroke_fill="#ffffff" if rainbow else "#cf941c",
+        anchor="mm",
+    )
+    stops = (
+        (0.0, (224, 154, 18)),
+        (0.26, (255, 211, 60)),
+        (0.43, (255, 244, 170)),
+        (0.57, (255, 205, 45)),
+        (0.82, (242, 173, 18)),
+        (1.0, (216, 145, 11)),
+    )
+    if rainbow:
+        stops = (
+            (0.0, (255, 128, 218)),
+            (0.17, (199, 151, 255)),
+            (0.34, (101, 190, 255)),
+            (0.50, (37, 211, 235)),
+            (0.66, (62, 217, 166)),
+            (0.83, (255, 189, 76)),
+            (1.0, (255, 160, 120)),
+        )
+    gradient = Image.new("RGBA", size)
+    painter = ImageDraw.Draw(gradient)
+    axis = 0 if rainbow else 1
+    for line in range(size[axis]):
+        position = min(
+            1, max(0, (line - bounds[axis]) / max(1, bounds[axis + 2] - bounds[axis] - 1))
+        )
+        for (start, first), (end, last) in zip(stops, stops[1:], strict=False):
+            if start <= position <= end:
+                weight = (position - start) / (end - start)
+                color = tuple(round(a + (b - a) * weight) for a, b in zip(first, last, strict=True))
+                segment = (line, 0, line, size[1]) if rainbow else (0, line, size[0], line)
+                painter.line(segment, fill=(*color, 255))
+                break
+    if rainbow:
+        # Keep the colored halo and ornaments inside this rating's table cell.
+        halo = gradient.copy()
+        halo.putalpha(mask.filter(ImageFilter.GaussianBlur(6)))
+        glow = halo
+        decoration = Image.new("RGBA", size)
+        ornament = ImageDraw.Draw(decoration)
+        cx, cy = center
+        ornament.arc((18, 13, size[0] - 18, size[1] - 13), 30, 90, fill="#a7deef", width=1)
+
+        def star(sx, sy, radius, color):
+            points = []
+            for point in range(8):
+                angle = math.pi * point / 4 - math.pi / 2
+                length = radius if point % 2 == 0 else radius * 0.22
+                points.append((sx + math.cos(angle) * length, sy + math.sin(angle) * length))
+            ornament.polygon(points, fill=color)
+            ornament.ellipse((sx - 1, sy - 1, sx + 1, sy + 1), fill="white")
+
+        for sx, sy, radius, color in (
+            (cx - width / 2 - 17, cy + 7, 5, "#db9cf3"),
+            (cx + width / 2 + 17, cy - 7, 6, "#a6acff"),
+            (cx - 13, cy - 22, 3, "#efaddb"),
+        ):
+            star(sx, sy, radius, color)
+        for dx, dy, color in ((19, -20, "#99dce9"), (-26, 22, "#cbb4f5")):
+            ornament.ellipse((cx + dx - 1, cy + dy - 1, cx + dx + 1, cy + dy + 1), fill=color)
+        star_glow = Image.new("RGBA", size, "#ce8bff")
+        star_glow.putalpha(
+            decoration.getchannel("A")
+            .filter(ImageFilter.GaussianBlur(3))
+            .point(lambda alpha: round(alpha * 0.65))
+        )
+        glow.alpha_composite(star_glow)
+        glow.alpha_composite(decoration)
+        sheen = Image.new("RGBA", size)
+        shine = ImageDraw.Draw(sheen)
+        # An even pearly highlight avoids washing out one side of the rainbow.
+        highlight_y = bounds[1] + (bounds[3] - bounds[1]) * 0.3
+        shine.rectangle(
+            (0, highlight_y - 1, size[0], highlight_y + 2),
+            fill=(255, 255, 255, 40),
+        )
+        gradient = Image.alpha_composite(gradient, sheen.filter(ImageFilter.GaussianBlur(2)))
+        # The moving highlight is clipped to the digits, leaving the table still.
+        if shimmer_phase is not None:
+            sweep = Image.new("RGBA", size)
+            sweep_draw = ImageDraw.Draw(sweep)
+            sweep_x = bounds[0] - 36 + shimmer_phase * (bounds[2] - bounds[0] + 72)
+            for dx in range(-15, 16):
+                alpha = round(195 * math.exp(-((dx / 7) ** 2)))
+                sweep_draw.line(
+                    (sweep_x + dx - 12, 0, sweep_x + dx + 12, size[1]),
+                    fill=(255, 255, 255, alpha),
+                )
+            gradient = Image.alpha_composite(gradient, sweep)
+        # A colored rim and a shallow extrusion keep the original type size
+        # while giving the rainbow the same raised finish as the gold score.
+        rim_mask = mask.filter(ImageFilter.MaxFilter(3))
+        outline = gradient.convert("RGB").point(lambda channel: round(channel * 0.9 + 8))
+        outline = outline.convert("RGBA")
+        outline.putalpha(rim_mask)
+        depth = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
+        depth = depth.convert("RGBA")
+        depth.putalpha(rim_mask.point(lambda alpha: round(alpha * 0.35)))
+        glow.alpha_composite(depth, (1, 1))
+    gradient.putalpha(mask)
+    glow.alpha_composite(outline)
+    glow.alpha_composite(gradient)
+    if rainbow:
+        top_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, 1))
+        highlight = Image.new("RGBA", size, "#ffffff")
+        highlight.putalpha(top_edge.point(lambda alpha: round(alpha * 0.8)))
+        glow.alpha_composite(highlight)
+        bottom_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, -1))
+        bevel = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
+        bevel = bevel.convert("RGBA")
+        bevel.putalpha(bottom_edge.point(lambda alpha: round(alpha * 0.18)))
+        glow.alpha_composite(bevel)
+    image.alpha_composite(glow, (round(x - size[0] / 2), round(y - size[1] / 2)))
+    if rainbow:
+        return
+    for sx, sy, radius in ((x + width / 2 + 12, y - 10, 5), (x - width / 2 - 10, y + 10, 3)):
+        draw.polygon(
+            [
+                (sx, sy - radius),
+                (sx + radius * 0.28, sy - radius * 0.28),
+                (sx + radius, sy),
+                (sx + radius * 0.28, sy + radius * 0.28),
+                (sx, sy + radius),
+                (sx - radius * 0.28, sy + radius * 0.28),
+                (sx - radius, sy),
+                (sx - radius * 0.28, sy - radius * 0.28),
+            ],
+            fill="#ab7dea" if rainbow else "#f3c841",
+        )
+
+
+def _render_table_chart(job, *, shimmer_phase=None):
+    from PIL import Image, ImageDraw, ImageFilter
 
     from .typography import face
 
@@ -367,161 +537,6 @@ def _render_table_chart(job, *, shimmer_phase=None):
 
     def text(x, y, value, size=26, color=ink, style="regular", anchor="mm"):
         draw.text((x, y), str(value), font=face(size, style), fill=color, anchor=anchor)
-
-    def shiny_rating(x, y, value, *, rainbow=False):
-        font = face(32, "number")
-        width = math.ceil(draw.textlength(value, font=font))
-        size = (width + 90, 76) if rainbow else (width + 44, 66)
-        center = (size[0] / 2, size[1] / 2)
-        mask = Image.new("L", size)
-        ImageDraw.Draw(mask).text(center, value, font=font, fill=255, anchor="mm")
-        bounds = mask.getbbox()
-        if bounds is None:
-            return
-        glow = Image.new("RGBA", size, "#bc92ff" if rainbow else "#ffcd40")
-        glow.putalpha(
-            mask.filter(ImageFilter.GaussianBlur(3)).point(lambda alpha: int(alpha * 0.42))
-        )
-        outline = Image.new("RGBA", size)
-        ImageDraw.Draw(outline).text(
-            center,
-            value,
-            font=font,
-            fill="#9571c6" if rainbow else "#d39412",
-            stroke_width=1,
-            stroke_fill="#ffffff" if rainbow else "#cf941c",
-            anchor="mm",
-        )
-        stops = (
-            (0.0, (224, 154, 18)),
-            (0.26, (255, 211, 60)),
-            (0.43, (255, 244, 170)),
-            (0.57, (255, 205, 45)),
-            (0.82, (242, 173, 18)),
-            (1.0, (216, 145, 11)),
-        )
-        if rainbow:
-            stops = (
-                (0.0, (255, 128, 218)),
-                (0.17, (199, 151, 255)),
-                (0.34, (101, 190, 255)),
-                (0.50, (37, 211, 235)),
-                (0.66, (62, 217, 166)),
-                (0.83, (255, 189, 76)),
-                (1.0, (255, 160, 120)),
-            )
-        gradient = Image.new("RGBA", size)
-        painter = ImageDraw.Draw(gradient)
-        axis = 0 if rainbow else 1
-        for line in range(size[axis]):
-            position = min(
-                1, max(0, (line - bounds[axis]) / max(1, bounds[axis + 2] - bounds[axis] - 1))
-            )
-            for (start, first), (end, last) in zip(stops, stops[1:], strict=False):
-                if start <= position <= end:
-                    weight = (position - start) / (end - start)
-                    color = tuple(
-                        round(a + (b - a) * weight) for a, b in zip(first, last, strict=True)
-                    )
-                    segment = (line, 0, line, size[1]) if rainbow else (0, line, size[0], line)
-                    painter.line(segment, fill=(*color, 255))
-                    break
-        if rainbow:
-            # Keep the colored halo and ornaments inside this rating's table cell.
-            halo = gradient.copy()
-            halo.putalpha(mask.filter(ImageFilter.GaussianBlur(6)))
-            glow = halo
-            decoration = Image.new("RGBA", size)
-            ornament = ImageDraw.Draw(decoration)
-            cx, cy = center
-            ornament.arc((18, 13, size[0] - 18, size[1] - 13), 30, 90, fill="#a7deef", width=1)
-
-            def star(sx, sy, radius, color):
-                points = []
-                for point in range(8):
-                    angle = math.pi * point / 4 - math.pi / 2
-                    length = radius if point % 2 == 0 else radius * 0.22
-                    points.append((sx + math.cos(angle) * length, sy + math.sin(angle) * length))
-                ornament.polygon(points, fill=color)
-                ornament.ellipse((sx - 1, sy - 1, sx + 1, sy + 1), fill="white")
-
-            for sx, sy, radius, color in (
-                (cx - width / 2 - 17, cy + 7, 5, "#db9cf3"),
-                (cx + width / 2 + 17, cy - 7, 6, "#a6acff"),
-                (cx - 13, cy - 22, 3, "#efaddb"),
-            ):
-                star(sx, sy, radius, color)
-            for dx, dy, color in ((19, -20, "#99dce9"), (-26, 22, "#cbb4f5")):
-                ornament.ellipse((cx + dx - 1, cy + dy - 1, cx + dx + 1, cy + dy + 1), fill=color)
-            star_glow = Image.new("RGBA", size, "#ce8bff")
-            star_glow.putalpha(
-                decoration.getchannel("A")
-                .filter(ImageFilter.GaussianBlur(3))
-                .point(lambda alpha: round(alpha * 0.65))
-            )
-            glow.alpha_composite(star_glow)
-            glow.alpha_composite(decoration)
-            sheen = Image.new("RGBA", size)
-            shine = ImageDraw.Draw(sheen)
-            # An even pearly highlight avoids washing out one side of the rainbow.
-            highlight_y = bounds[1] + (bounds[3] - bounds[1]) * 0.3
-            shine.rectangle(
-                (0, highlight_y - 1, size[0], highlight_y + 2),
-                fill=(255, 255, 255, 40),
-            )
-            gradient = Image.alpha_composite(gradient, sheen.filter(ImageFilter.GaussianBlur(2)))
-            # The moving highlight is clipped to the digits, leaving the table still.
-            if shimmer_phase is not None:
-                sweep = Image.new("RGBA", size)
-                sweep_draw = ImageDraw.Draw(sweep)
-                sweep_x = bounds[0] - 36 + shimmer_phase * (bounds[2] - bounds[0] + 72)
-                for dx in range(-15, 16):
-                    alpha = round(195 * math.exp(-((dx / 7) ** 2)))
-                    sweep_draw.line(
-                        (sweep_x + dx - 12, 0, sweep_x + dx + 12, size[1]),
-                        fill=(255, 255, 255, alpha),
-                    )
-                gradient = Image.alpha_composite(gradient, sweep)
-            # A colored rim and a shallow extrusion keep the original type size
-            # while giving the rainbow the same raised finish as the gold score.
-            rim_mask = mask.filter(ImageFilter.MaxFilter(3))
-            outline = gradient.convert("RGB").point(lambda channel: round(channel * 0.9 + 8))
-            outline = outline.convert("RGBA")
-            outline.putalpha(rim_mask)
-            depth = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
-            depth = depth.convert("RGBA")
-            depth.putalpha(rim_mask.point(lambda alpha: round(alpha * 0.35)))
-            glow.alpha_composite(depth, (1, 1))
-        gradient.putalpha(mask)
-        glow.alpha_composite(outline)
-        glow.alpha_composite(gradient)
-        if rainbow:
-            top_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, 1))
-            highlight = Image.new("RGBA", size, "#ffffff")
-            highlight.putalpha(top_edge.point(lambda alpha: round(alpha * 0.8)))
-            glow.alpha_composite(highlight)
-            bottom_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, -1))
-            bevel = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
-            bevel = bevel.convert("RGBA")
-            bevel.putalpha(bottom_edge.point(lambda alpha: round(alpha * 0.18)))
-            glow.alpha_composite(bevel)
-        image.alpha_composite(glow, (round(x - size[0] / 2), round(y - size[1] / 2)))
-        if rainbow:
-            return
-        for sx, sy, radius in ((x + width / 2 + 12, y - 10, 5), (x - width / 2 - 10, y + 10, 3)):
-            draw.polygon(
-                [
-                    (sx, sy - radius),
-                    (sx + radius * 0.28, sy - radius * 0.28),
-                    (sx + radius, sy),
-                    (sx + radius * 0.28, sy + radius * 0.28),
-                    (sx, sy + radius),
-                    (sx - radius * 0.28, sy + radius * 0.28),
-                    (sx - radius, sy),
-                    (sx - radius * 0.28, sy - radius * 0.28),
-                ],
-                fill="#ab7dea" if rainbow else "#f3c841",
-            )
 
     def fit(value, width, size=28):
         while draw.textlength(value, font=face(size, "bold")) > width and size > 20:
@@ -579,8 +594,13 @@ def _render_table_chart(job, *, shimmer_phase=None):
         for i, value in enumerate(row["values"]):
             label = "—" if value is None else f"{value:.2f}" + ("%" if i else "")
             if i == 0 and rating_color(value) in {GOLD_RATING, RAINBOW_RATING}:
-                shiny_rating(
-                    centers[i + 2], y, label, rainbow=rating_color(value) == RAINBOW_RATING
+                _draw_shiny_rating(
+                    image,
+                    centers[i + 2],
+                    y,
+                    label,
+                    rainbow=rating_color(value) == RAINBOW_RATING,
+                    shimmer_phase=shimmer_phase,
                 )
             else:
                 text(
