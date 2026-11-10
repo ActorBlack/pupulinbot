@@ -26,7 +26,7 @@ def font_source(style="regular"):
                 "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
                 if bold
                 else "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-                0,
+                2,  # Noto Sans CJK SC; face 0 uses Japanese glyph variants.
             ),
             (
                 "/System/Library/Fonts/STHeiti Medium.ttc"
