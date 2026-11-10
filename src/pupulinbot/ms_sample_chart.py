@@ -32,6 +32,23 @@ def save(figure):
     return result.getvalue()
 
 
+def tag_lines(labels, measure, width):
+    """Wrap complete labels by actual rendered width instead of a fixed tag count."""
+    parts = labels.split(" #")
+    tokens = [parts[0]] + ["#" + part for part in parts[1:]]
+    lines, line = [], "样本牌风 ·"
+    for token in tokens:
+        candidate = line + " " + token
+        if measure(candidate) > width and line != "样本牌风 ·":
+            lines.append(line)
+            line = token
+        else:
+            line = candidate
+    if line:
+        lines.append(line)
+    return lines
+
+
 def render_sample(player, games, truncated, options, stats=None):
     summary = sample_summary(games, player.account_id, options.mode)
     if not summary["games"]:
@@ -141,20 +158,23 @@ def render_sample(player, games, truncated, options, stats=None):
             games=games,
             account_id=player.account_id,
         )[0].removeprefix("牌风: ")
-        # Keep supplementary tags readable on mobile without stretching the chart.
-        parts = labels.split(" #")
-        for index, line in enumerate((" #".join(parts[:3]), " #".join(parts[3:]))):
-            if line:
-                if index and not line.startswith("#"):
-                    line = "#" + line
-                figure.text(
-                    0.08,
-                    0.125 - index * 0.035,
-                    ("样本牌风 · " if not index else "") + line,
-                    fontproperties=fp,
-                    fontsize=12,
-                    color="#7561a8",
-                )
+        renderer = figure.canvas.get_renderer()
+        label_font = fp.copy()
+        label_font.set_size(12)
+        lines = tag_lines(
+            labels,
+            lambda text: renderer.get_text_width_height_descent(text, label_font, False)[0],
+            figure.bbox.width * 0.87,
+        )
+        for index, line in enumerate(lines):
+            figure.text(
+                0.08,
+                0.125 - index * 0.035,
+                line,
+                fontproperties=label_font,
+                fontsize=12,
+                color="#7561a8",
+            )
         return save(figure)
 
 

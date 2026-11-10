@@ -1,0 +1,10 @@
+{
+  "font": "Pupulin Tenhou Brush",
+  "derived_from": "Yuji Boku Regular",
+  "source": "https://github.com/google/fonts/tree/main/ofl/yujiboku",
+  "download": "https://fonts.googleapis.com/css2?family=Yuji+Boku&text=三四般上特鳳東南喰赤速%3F",
+  "source_sha256": "459ed263394938b89bd4ea735e24ec2a79ef5000857bb047f0a9ec4cb00a4635",
+  "license": "SIL Open Font License 1.1; see OFL.txt",
+  "modification": "Renamed family. Contains only title characters supplied by Google Fonts text subsetting.",
+  "characters": "三四般上特鳳東南喰赤速?"
+}

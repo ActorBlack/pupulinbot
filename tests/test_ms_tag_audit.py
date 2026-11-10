@@ -1,0 +1,309 @@
+import io
+import math
+from datetime import UTC, datetime
+
+import pytest
+from PIL import Image
+from test_ms_tags import records, stats
+from test_ms_trait_tags import classify, sample_raw
+
+from pupulinbot.models import Player
+from pupulinbot.ms_options import parse_options
+from pupulinbot.ms_sample_chart import Figure, render_sample
+from pupulinbot.ms_tags import MAX_TAGS, reference_for, supplemental_tags
+from pupulinbot.ms_trait_tags import efficiency_metrics, trait_tags, yakuman_victim
+
+
+@pytest.mark.parametrize(
+    "key,side,label",
+    [
+        ("立直后放铳率", "high", "立直撞铳"),
+        ("立直后放铳率", "low", "立直护体"),
+        ("立直后和牌率", "high", "立直收割机"),
+        ("立直后和牌率", "low", "立直苦战"),
+        ("立直后流局率", "high", "立直流局王"),
+        ("立直多面", "high", "多面立直流"),
+        ("立直多面", "low", "窄听立直流"),
+    ],
+)
+def test_new_riichi_traits_use_room_thresholds_and_inclusive_boundaries(key, side, label):
+    raw = sample_raw()
+    if key == "立直后和牌率":
+        raw.pop("立直和了")
+    raw[key] = reference_for("12")["traits"][key][side]
+    assert label in classify(raw)["style"]
+    raw[key] += -1e-7 if side == "high" else 1e-7
+    assert label not in classify(raw)["style"]
+
+
+def test_riichi_traits_need_50_declarations_not_just_many_hands():
+    raw = sample_raw()
+    raw.update(立直率=49 / 3600, 立直后放铳率=0.3)
+    raw.pop("立直和了")
+    assert "立直撞铳" not in classify(raw)["style"]
+    raw["立直率"] = 50 / 3600
+    assert "立直撞铳" in classify(raw)["style"]
+
+
+def test_chase_risk_is_a_combination_and_does_not_invent_a_conditional_deal_in_rate():
+    raw = sample_raw()
+    raw.update(追立率=0.35, 先制率=0.65, 立直后放铳率=0.3)
+    tags = classify(raw)["style"]
+    assert "追立冒险家" in tags
+    assert "追立斗士" not in tags and "立直撞铳" not in tags
+    raw.pop("立直后放铳率")
+    raw["追立放铳率"] = 0.9  # Not an endpoint field; do not consume invented data.
+    assert "追立冒险家" not in classify(raw)["style"]
+
+
+def test_inconsistent_riichi_outcomes_and_win_counter_are_rejected():
+    raw = sample_raw()
+    raw.update(立直后放铳率=0.9, 立直后和牌率=0.9, 立直后流局率=0.9)
+    assert not {"立直撞铳", "立直收割机", "立直流局王"} & set(classify(raw)["style"])
+    raw = sample_raw()
+    raw["立直后和牌率"] = 0.7  # Contradicts the exact 342 wins / 684 declarations.
+    assert "立直收割机" not in classify(raw)["style"]
+    raw["里宝率"] = 0.9
+    assert "里宝超人" not in classify(raw)["luck"]
+
+
+def test_multisided_does_not_mean_good_shape_and_requires_full_collection_period():
+    raw = sample_raw()
+    raw["立直多面"] = 0.95
+    raw["立直好型2"] = 0.1
+    assert "多面立直流" in classify(raw)["style"]
+    old = records(count=300)
+    old[0].started_at = datetime(2021, 9, 1, tzinfo=UTC)
+    assert "多面立直流" not in trait_tags(raw, reference_for("12"), 3600, games=old)["style"]
+    raw.pop("立直多面")
+    raw["立直好型"] = 0.95
+    assert "多面立直流" not in classify(raw)["style"]
+
+
+def efficiency_raw():
+    raw = sample_raw()
+    for key in ("打点效率", "铳点损失", "净打点效率"):
+        raw.pop(key, None)
+    raw.update(和牌率=0.22, 放铳率=0.12, 平均打点=6500, 平均铳点=5400)
+    return raw
+
+
+@pytest.mark.parametrize(
+    "key,side,label",
+    [
+        ("打点效率", "high", "火力全开"),
+        ("铳点损失", "high", "铳点漏财"),
+        ("铳点损失", "low", "铳点节流"),
+        ("净打点效率", "high", "攻防高效"),
+        ("净打点效率", "low", "攻防承压"),
+    ],
+)
+def test_efficiency_traits_compare_real_products_not_pt_or_round_income(key, side, label):
+    raw = efficiency_raw()
+    target = reference_for("12")["traits"][key][side]
+
+    def set_target(value):
+        if key == "打点效率":
+            raw["平均打点"] = value / raw["和牌率"]
+        elif key == "铳点损失":
+            raw["平均铳点"] = value / raw["放铳率"]
+        else:
+            raw["平均打点"] = (value + raw["放铳率"] * raw["平均铳点"]) / raw["和牌率"]
+
+    # Move a tiny amount inside to avoid arithmetic round-trip cancellation.
+    set_target(target + (1e-7 if side == "high" else -1e-7))
+    assert label in classify(raw)["style"]
+    set_target(target + (-1e-7 if side == "high" else 1e-7))
+    assert label not in classify(raw)["style"]
+    raw["局收支"] = 1000000
+    raw["gradingScore"] = 1000000
+    assert label not in classify(raw)["style"]
+
+
+def test_net_efficiency_can_be_negative_and_accepts_only_consistent_rounding():
+    raw = efficiency_raw()
+    raw.update(和牌率=0.1, 放铳率=0.3, 平均打点=5000, 平均铳点=7000)
+    assert efficiency_metrics(raw) == {"打点效率": 500, "铳点损失": 2100, "净打点效率": -1600}
+    assert {"铳点漏财", "攻防承压"} <= set(classify(raw)["style"])
+    raw.update(打点效率=500, 铳点损失=2100, 净打点效率=-1599)
+    assert efficiency_metrics(raw)["净打点效率"] == -1600
+    raw["净打点效率"] = 9999
+    assert "净打点效率" not in efficiency_metrics(raw)
+    assert "攻防高效" not in classify(raw)["style"]
+    raw["铳点损失"] = None
+    assert "铳点损失" not in efficiency_metrics(raw)
+    assert "净打点效率" not in efficiency_metrics(raw)
+
+
+def test_efficiency_traits_need_actual_win_and_deal_sample_sizes():
+    raw = efficiency_raw()
+    raw.update(放铳率=0.005, 平均铳点=1000)
+    assert "铳点节流" not in classify(raw)["style"]
+    raw.update(和牌率=0.005, 平均打点=400000)
+    assert "火力全开" not in classify(raw)["style"]
+
+
+@pytest.mark.parametrize("mode", ["8", "9", "11", "12", "16"])
+def test_high_points_threshold_is_mean_plus_500_rounded_up_to_100(mode):
+    reference = reference_for(mode)
+    threshold = reference["thresholds"]["points_high"]
+    assert threshold == math.ceil((reference["means"]["平均打点"] + 500) / 100) * 100
+    rows = records(count=300)
+    for row in rows:
+        row.mode = mode
+    sample = stats(300, win_rate=0.15, raw={"平均打点": threshold})
+    assert "高打点" in supplemental_tags(sample, rows, 42)
+    sample.raw["平均打点"] = threshold - 1
+    assert "高打点" not in supplemental_tags(sample, rows, 42)
+
+
+def test_high_points_does_not_round_less_than_30_wins_up_to_minimum():
+    sample = stats(100, win_rate=0.0296, raw={"_hand_count": 1000, "平均打点": 10000})
+    assert "高打点" not in supplemental_tags(sample, records(), 42)
+    sample.win_rate = 0.03
+    assert "高打点" in supplemental_tags(sample, records(), 42)
+
+
+def loss_record(game, *, count=0, limit=1):
+    return {
+        "id": game.uuid,
+        "start_time": game.started_at.timestamp(),
+        "fans": [{"id": 43, "label": "国士无双", "count": count, "役满": limit}],
+    }
+
+
+def test_yakuman_victim_requires_confirmed_fans_and_sample_uuid_and_time():
+    rows = records()
+    raw = {"最近大铳": loss_record(rows[0])}
+    assert yakuman_victim(raw, rows)
+    assert "役满受害者" in supplemental_tags(stats(raw=raw), rows, 42)
+    raw["最近大铳"]["id"] = "outside-selected-sample"
+    assert not yakuman_victim(raw, rows)
+    raw["最近大铳"] = loss_record(rows[0])
+    raw["最近大铳"]["start_time"] -= 10000
+    assert not yakuman_victim(raw, rows)
+    raw["最近大铳"] = loss_record(rows[0], count=13, limit=0)
+    assert yakuman_victim(raw, rows)  # Kazoe is also a yakuman-sized deal-in.
+    raw["最近大铳"] = loss_record(rows[0], count=12, limit=0)
+    assert not yakuman_victim(raw, rows)
+    rows[0].players[0]["score"] = -48000
+    assert not yakuman_victim({}, rows)  # Final scores cannot identify a hand's yaku.
+
+
+@pytest.mark.parametrize(
+    "fans",
+    [None, [], [None], [{"count": 13}], [{"count": True, "役满": 1}], [{"count": 13, "役满": -1}]],
+)
+def test_bad_yakuman_loss_fan_evidence_does_not_create_achievement(fans):
+    rows = records()
+    loss = loss_record(rows[0])
+    loss["fans"] = fans
+    assert not yakuman_victim({"最近大铳": loss}, rows)
+
+
+def test_double_riichi_counter_has_no_display_label():
+    raw = sample_raw()
+    raw["W立直"] = 10
+    assert classify(raw)["achievement"] == []
+
+
+@pytest.mark.parametrize("key,label", [("役满", "役满达成"), ("流满", "流局满贯")])
+def test_real_achievement_can_appear_in_one_game_without_style_sample(key, label):
+    rows = records(count=1)
+    sample = stats(1, win_rate=1, raw={"_hand_count": 1, key: 1})
+    assert supplemental_tags(sample, rows, 42) == [label]
+    sample.games = 2
+    assert supplemental_tags(sample, rows, 42) == []
+
+
+def test_yakuman_victim_only_needs_one_matched_record_not_hand_count():
+    rows = records(count=1)
+    sample = stats(1, raw={"_hand_count": None, "最近大铳": loss_record(rows[0])})
+    assert supplemental_tags(sample, rows, 42) == ["役满受害者"]
+    sample.raw["最近大铳"]["id"] = "not-in-sample"
+    assert supplemental_tags(sample, rows, 42) == []
+
+
+def test_style_needs_twenty_games_and_one_hundred_hands_but_not_one_hundred_games():
+    rows = records(count=20)
+    sample = stats(20, call_rate=0.6, raw={"_hand_count": 99})
+    assert "副露流" not in supplemental_tags(sample, rows, 42)
+    sample.raw["_hand_count"] = 100
+    assert "副露流" in supplemental_tags(sample, rows, 42)
+    sample.games = 19
+    assert "副露流" not in supplemental_tags(sample, rows[:19], 42)
+
+
+def test_value_and_income_traits_are_available_before_fifty_games():
+    rows = records(count=20)
+    sample = stats(20, win_rate=0.1, raw={"_hand_count": 300, "平均打点": 7100, "局收支": 150})
+    assert {"高打点", "高局收支"} <= set(supplemental_tags(sample, rows, 42))
+    sample.raw["_hand_count"] = 299
+    tags = supplemental_tags(sample, rows, 42)
+    assert "高局收支" not in tags and "高打点" not in tags
+
+
+def test_recent_form_uses_thirty_previous_and_twenty_recent_games():
+    rows = records([4] * 30 + [1] * 20)
+    assert "好调中" in supplemental_tags(stats(50), rows, 42)
+    assert "好调中" not in supplemental_tags(stats(49), rows[1:], 42)
+
+
+def test_starting_hand_trait_requires_three_hundred_hands_and_a_tenth_shanten_gap():
+    reference = reference_for("12")
+    raw = sample_raw()
+    raw.update(平均起手向听=reference["traits"]["平均起手向听"]["low"])
+    assert "配牌眷顾" not in trait_tags(raw, reference, 299)["luck"]
+    assert "配牌眷顾" in trait_tags(raw, reference, 300)["luck"]
+    raw["平均起手向听"] += 1e-7
+    assert "配牌眷顾" not in trait_tags(raw, reference, 300)["luck"]
+
+
+def test_efficiency_minimum_is_four_hundred_hands_and_thirty_relevant_events():
+    raw = efficiency_raw()
+    raw.update(和牌率=0.3, 平均打点=8000)
+    reference = reference_for("12")
+    assert "火力全开" not in trait_tags(raw, reference, 399)["style"]
+    assert "火力全开" in trait_tags(raw, reference, 400)["style"]
+    raw.update(放铳率=29 / 400, 平均铳点=1000)
+    assert "铳点节流" not in trait_tags(raw, reference, 400)["style"]
+    raw["放铳率"] = 30 / 400
+    assert "铳点节流" in trait_tags(raw, reference, 400)["style"]
+
+
+def test_ten_additional_tags_wrap_completely_inside_sample_picture(monkeypatch):
+    tags = [
+        "役满受害者",
+        "流局听牌王",
+        "窄听立直流",
+        "攻防承压",
+        "里宝绝缘体",
+        "立直收割机",
+        "一发绝缘体",
+        "立直流局王",
+        "追立冒险家",
+        "铳点节流",
+    ]
+    label = "#超重度后手反击型 " + " ".join("#" + tag for tag in tags)
+    monkeypatch.setattr(
+        "pupulinbot.ms_sample_chart.style_lines", lambda *a, **k: ["牌风: " + label]
+    )
+    artists = []
+    original = Figure.text
+
+    def capture(self, x, y, value, **kwargs):
+        artist = original(self, x, y, value, **kwargs)
+        if value.startswith(("样本牌风 ·", "#")):
+            artists.append(artist)
+        return artist
+
+    monkeypatch.setattr(Figure, "text", capture)
+    png = render_sample(Player(42, "标签排版示例"), records(), False, parse_options("-l 100"))
+    assert Image.open(io.BytesIO(png)).size == (1680, 1260)
+    assert 1 < len(artists) <= 3
+    assert " ".join(artist.get_text() for artist in artists).removeprefix("样本牌风 · ") == label
+    for artist in artists:
+        box = artist.get_window_extent(artist.figure.canvas.get_renderer())
+        assert box.x0 >= 0 and box.x1 <= 1680 * 0.96
+        assert box.y0 >= 0
+    assert MAX_TAGS == 10
