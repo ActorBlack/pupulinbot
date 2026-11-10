@@ -4,13 +4,15 @@ import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from nonebot.adapters.onebot.v11 import Message
 from PIL import Image
 
 from pupulinbot.db import Database
+from pupulinbot.qq_delivery import send_verified_image
 from pupulinbot.tenhou import (
     TenhouClient,
     TenhouError,
@@ -20,7 +22,7 @@ from pupulinbot.tenhou import (
     table_scores,
 )
 from pupulinbot.tenhou_card import render_start
-from pupulinbot.tenhou_monitor import TenhouMonitor, TenhouStore
+from pupulinbot.tenhou_monitor import TenhouMonitor, TenhouStartNotice, TenhouStore
 
 FIXTURES = Path(__file__).parent / "fixtures/tenhou"
 
@@ -182,7 +184,13 @@ async def test_start_is_persisted_retried_after_disappearing_and_group_scoped(se
     client.live.return_value = []
     send = AsyncMock()
     await monitor.poll(send)
-    send.assert_awaited_once_with("test", b"png")
+    send.assert_awaited_once_with(
+        "test",
+        TenhouStartNotice(
+            b"png",
+            "四鳳南喰赤 · 对局开始\n" + " / ".join(p["name"] for p in game["players"]),
+        ),
+    )
     assert await store.pending() == []
     client.live.return_value = [game]
     await monitor.poll(send)
@@ -201,6 +209,40 @@ async def test_disabled_subscriptions_never_receive_queued_start(setup):
     await monitor.poll(send)
     send.assert_not_awaited()
     assert await store.pending() == []
+
+
+@pytest.mark.asyncio
+async def test_empty_qq_ack_keeps_start_pending_until_image_is_verified(setup):
+    db, store = setup
+    game = fixture("live")[0]
+    await store.add("42", "a", game["players"][0]["name"])
+    client = SimpleNamespace(
+        live=AsyncMock(return_value=[game]), history=AsyncMock(return_value=[])
+    )
+    monitor = TenhouMonitor(store, client)
+    monitor.start_message = AsyncMock(return_value=b"png")
+    bot = SimpleNamespace(
+        send_group_msg=AsyncMock(return_value={"message_id": 123}),
+        get_msg=AsyncMock(return_value={"message": []}),
+    )
+
+    async def send(group, notice):
+        await send_verified_image(bot, group, Message())
+
+    with patch("pupulinbot.qq_delivery.asyncio.sleep", new=AsyncMock()):
+        await monitor.poll(send)
+    assert len(await store.pending()) == 1
+    async with db.connect() as conn:
+        row = await (
+            await conn.execute("SELECT COUNT(*) FROM game_events WHERE status='sent'")
+        ).fetchone()
+        assert row[0] == 0
+    client.live.return_value = []
+    bot.get_msg.return_value = {"message": [{"type": "image", "data": {"file": "image.png"}}]}
+    await monitor.poll(send)
+    assert await store.pending() == []
+    await monitor.poll(send)
+    assert bot.send_group_msg.await_count == 2
 
 
 @pytest.mark.asyncio

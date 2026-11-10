@@ -4,12 +4,21 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass
 
 from .promotion import promotion_line
-from .tenhou import TenhouError, format_result, record_id, validate_name
+from .tenhou import TenhouError, format_result, record_id, rule_name, validate_name
 from .tenhou_card import render_start
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TenhouStartNotice:
+    picture: bytes
+    text: str
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tenhou_bindings(
  qq_id TEXT PRIMARY KEY, name TEXT NOT NULL,
@@ -164,7 +173,7 @@ class TenhouMonitor:
         try:
             if callable(message):
                 message = await message()
-            await asyncio.wait_for(send(group, message), timeout=95)
+            await asyncio.wait_for(send(group, message), timeout=115)
         except BaseException:
             await self.store.db.release_event(uuid, subscriber, event)
             raise
@@ -243,7 +252,13 @@ class TenhouMonitor:
                         continue
                     # Include start timestamp in the key: short watch IDs can be reused.
                     key = f"wg:{game['info']['id']}:{game['info']['starttime']}"
-                    if not await self.deliver(pending["group_id"], key, "start", picture, send):
+                    notice = TenhouStartNotice(
+                        picture,
+                        rule_name(game["info"])
+                        + " · 对局开始\n"
+                        + " / ".join(p["name"] for p in game["players"]),
+                    )
+                    if not await self.deliver(pending["group_id"], key, "start", notice, send):
                         continue
                 except Exception:
                     log.exception("Tenhou start delivery failed; retained for retry")

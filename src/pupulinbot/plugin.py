@@ -5,7 +5,13 @@ import logging
 import httpx
 from nonebot import get_driver, on_command, require
 from nonebot.adapters import Event
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import (
+    Bot,
+    GroupMessageEvent,
+    Message,
+    MessageEvent,
+    MessageSegment,
+)
 from nonebot.message import run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.typing import T_State
@@ -31,12 +37,13 @@ from .online_pool import OnlinePool
 from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
+from .qq_delivery import send_verified_image
 from .record_names import RecordNames
 from .review import MortalClient, ReviewError, ReviewQueue, parse_review_link, render_review
 from .spectator import BrowserSpectatorClient
 from .tenhou import TenhouClient
 from .tenhou_commands import install_tenhou_commands
-from .tenhou_monitor import TenhouMonitor, TenhouStore
+from .tenhou_monitor import TenhouMonitor, TenhouStartNotice, TenhouStore
 
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler  # noqa: E402
@@ -655,11 +662,15 @@ async def poll_tenhou() -> None:
         return
 
     async def send(group, message):
-        if isinstance(message, bytes):
-            message = MessageSegment.image("base64://" + base64.b64encode(message).decode("ascii"))
+        if isinstance(message, TenhouStartNotice):
+            picture = MessageSegment.image(
+                "base64://" + base64.b64encode(message.picture).decode("ascii")
+            )
+            payload = Message([MessageSegment.text(message.text + "\n"), picture])
+            await send_verified_image(bot, group, payload)
         else:
             # Treat public nicknames as text, never as CQ codes.
-            message = MessageSegment.text(message)
-        await bot.send_group_msg(group_id=int(group), message=message, _timeout=90)
+            payload = Message(MessageSegment.text(message))
+            await bot.send_group_msg(group_id=int(group), message=payload, _timeout=90)
 
     await tenhou_monitor.poll(send)

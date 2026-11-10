@@ -150,6 +150,34 @@ async def verify_mortal_short_options():
         assert create.call_args.args[0] == 3
 asyncio.run(verify_mortal_short_options())
 
+async def verify_tenhou_picture_delivery():
+    import json
+    from unittest.mock import AsyncMock, patch
+    from nonebot.utils import DataclassEncoder
+    from pupulinbot.plugin import poll_tenhou, tenhou_monitor
+    from pupulinbot.tenhou_monitor import TenhouStartNotice
+    class FakeBot:
+        send_group_msg = AsyncMock(return_value={'message_id': 123})
+        get_msg = AsyncMock(return_value={
+            'group_id': 1131357545,
+            'message': [{'type':'image','data':{'file':'test.png'}}],
+        })
+    fake = FakeBot()
+    caption = '四特南喰赤 · 对局开始\\nlingran / [CQ:at,qq=all]'
+    async def poll(send):
+        await send('1131357545', TenhouStartNotice(b'png', caption))
+    with patch('pupulinbot.plugin.Bot', FakeBot), \
+         patch('pupulinbot.plugin.get_driver', return_value=SimpleNamespace(bots={'1':fake})), \
+         patch.object(tenhou_monitor, 'poll', new=poll):
+        await poll_tenhou()
+    payload = json.loads(json.dumps(fake.send_group_msg.call_args.kwargs,
+                                    cls=DataclassEncoder))
+    assert isinstance(payload['message'], list)
+    assert [s['type'] for s in payload['message']] == ['text', 'image']
+    assert payload['message'][0]['data']['text'] == caption + '\\n'
+    fake.get_msg.assert_awaited_once_with(message_id=123, _timeout=4)
+asyncio.run(verify_tenhou_picture_delivery())
+
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS
 for command in ('雀魂绑定', '绑定雀魂', '雀魂解绑', '解绑雀魂', '雀魂牌谱', '牌谱屋', '最近牌谱',
