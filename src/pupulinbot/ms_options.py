@@ -38,6 +38,7 @@ def parse_options(
     single_room: bool = False,
     default_room: str | None = "玉",
     max_last: int = 2000,
+    allow_all: bool = True,
 ) -> MSOptions:
     result = MSOptions(mode=mode)
     now = (now or datetime.now(TZ)).astimezone(TZ)
@@ -74,8 +75,9 @@ def parse_options(
                 number = int(value)
                 if key == "mode" and number not in {3, 4}:
                     raise ValueError("mode 只能为 3 或 4")
-                if key == "last" and not 0 <= number <= max_last:
-                    raise ValueError(f"last 范围为 1–{max_last}；0 表示最多查询 {max_last} 场")
+                if key == "last" and not (0 if allow_all else 1) <= number <= max_last:
+                    hint = f"；0 表示最多查询 {max_last} 场" if allow_all else ""
+                    raise ValueError(f"last 范围为 1–{max_last}" + hint)
                 if key == "gap" and not 1 <= number <= 1440:
                     raise ValueError("gap 范围为 1–1440 分钟")
                 setattr(result, key, (number or max_last) if key == "last" else number)

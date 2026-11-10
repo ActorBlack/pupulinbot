@@ -68,7 +68,7 @@ def test_fifty_game_report_preserves_all_points():
     rows, series = chart_series(job)
     assert len(rows) == 50 and len(series[("4.1b", 0.1)]) == 50
     image = Image.open(io.BytesIO(render_batch_chart(job)))
-    assert image.size == (2240, 1600)
+    assert image.size == (1440, 1140)
 
 
 def test_table_shows_names_first_and_final_rank_instead_of_model_and_seat():
@@ -122,7 +122,7 @@ def test_table_uses_game_placement_and_rating_highlights():
     assert rating_color(94) == "#a855f7"
     assert rating_color(93.99) == "#f2ba28"
     assert rating_color(90.01) == "#f2ba28"
-    assert rating_color(90) == "#22324b"
+    assert rating_color(90) == "#f2ba28"
     assert rating_color(float("nan")) == "#22324b"
     image = Image.open(io.BytesIO(render_batch_chart({**job, "kind": "table"})))
 

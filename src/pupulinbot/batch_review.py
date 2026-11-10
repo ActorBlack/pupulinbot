@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from ._batchmortal.metrics import parse_killerducky_bad_move_stats
+from .batch_limits import MAX_BATCH_COUNT
 from .ms_ids import account_to_perspective
 from .review import ReviewError, parse_review_link
 from .review_metadata import apply_report_result
@@ -231,7 +232,7 @@ class BatchReviews:
         (path.parent / "report.html").write_text(render_report(job))
 
     async def create(self, count: int, group_id: str, owner: str, player, *, games=None) -> dict:
-        if type(count) is not int or not 1 <= count <= 100:
+        if type(count) is not int or not 1 <= count <= MAX_BATCH_COUNT:
             raise ReviewError("批量场数必须是 1–100")
         games = (
             games
@@ -291,7 +292,7 @@ class BatchReviews:
     async def create_links(self, links, group_id, owner, *, seat=None, table=False):
         if seat is not None and (type(seat) is not int or seat not in range(4)):
             raise ReviewError("座位必须是0–3")
-        if not 1 <= len(links) <= 100 or (table and len(links) != 1):
+        if not 1 <= len(links) <= MAX_BATCH_COUNT or (table and len(links) != 1):
             raise ReviewError("链接任务支持1–100条；全桌任务只接受1条链接")
         rows, seen = [], set()
         for link in links:

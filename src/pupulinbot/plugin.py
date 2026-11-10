@@ -17,6 +17,7 @@ from nonebot.params import CommandArg
 from nonebot.typing import T_State
 
 from .batch_chart import render_batch_chart
+from .batch_limits import MAX_BATCH_COUNT, batch_count
 from .batch_review import STATUS_LABELS, BatchReviews, summaries, upload_report
 from .config import settings
 from .db import Database
@@ -373,15 +374,16 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
             batches.start(job["id"], group_id, owner)
         await review_cmd.finish(task_start_reply(job["id"], started=batches.available))
     if action == "batch":
-        if len(parts) != 2 or not parts[1].isdecimal() or not 1 <= int(parts[1]) <= 100:
-            raise ReviewError("用法：mortal batch <1–100>，分析本人最近四麻半庄")
+        if len(parts) > 2:
+            raise ReviewError("用法：mortal batch [1–100]，默认 10 场")
+        count = batch_count(parts[1] if len(parts) == 2 else None)
         binding = await db.binding(owner)
         if not binding:
             raise ReviewError("请先绑定雀魂账号")
         await review_cmd.send("正在建立批量任务，读取最近四麻半庄牌谱……")
         try:
             job = await batches.create(
-                int(parts[1]),
+                count,
                 group_id,
                 owner,
                 Player(binding["account_id"], binding["nickname"]),
@@ -545,9 +547,9 @@ async def mortal_status(event: GroupMessageEvent, args=CommandArg()):
 async def ms_mortal(event: GroupMessageEvent, args=CommandArg()):
     try:
         text = args.extract_plain_text().strip()
-        options = parse_options(text)
-        count = options.last if options.last_explicit else 10
-        if options.mode != 4 or not 1 <= count <= 100:
+        options = parse_options(text, max_last=MAX_BATCH_COUNT, allow_all=False)
+        count = batch_count(options.last if options.last_explicit else None)
+        if options.mode != 4:
             raise ValueError("Mortal 批跑仅支持四麻半庄，-l 场数范围为 1–100")
         if options.subscription or options.group or options.image or options.gap != 60:
             raise ValueError("msmortal 支持玩家、-l 场数、-r 房间、start/end、-m/-y 和 -n")

@@ -144,11 +144,60 @@ async def verify_mortal_short_options():
          patch.object(paipuya, 'history', new=AsyncMock(return_value=([],False))) as history, \
          patch.object(batches, 'create', new=create_job) as create, \
          patch.object(batches, 'start'), \
-         patch.object(msmortal_cmd, 'finish', new=AsyncMock()):
+         patch.object(msmortal_cmd, 'finish', new=AsyncMock()) as finish:
         await ms_mortal(event, Message('玩家 -l 3 -r 玉'))
         history.assert_awaited_once_with(42, 3, start=None, end=None, modes=[12])
         assert create.call_args.args[0] == 3
+        for text, count in [('玩家', 10), ('玩家 -l 100', 100)]:
+            history.reset_mock()
+            create.reset_mock()
+            await ms_mortal(event, Message(text))
+            assert history.call_args.args[1] == count
+            assert create.call_args.args[0] == count
+        for text in ('玩家 -l 101', '玩家 last=0', '玩家 -l -1'):
+            history.reset_mock()
+            create.reset_mock()
+            await ms_mortal(event, Message(text))
+            history.assert_not_awaited()
+            create.assert_not_awaited()
+            assert '100' in finish.call_args.args[0]
 asyncio.run(verify_mortal_short_options())
+
+async def verify_mortal_batch_default_and_limit():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.exception import FinishedException
+    from pupulinbot.plugin import batch_command, db, review_cmd
+    event = GroupMessageEvent.model_construct(
+        post_type='message', group_id=1131357545, user_id=285843647,
+        message=Message('/mortal batch'),
+    )
+    binding = AsyncMock(return_value={'account_id':42,'nickname':'玩家'})
+    create = AsyncMock(return_value={'id':'test','rows':[]})
+    with patch.object(db, 'binding', new=binding), \
+         patch.object(batches, 'create', new=create), \
+         patch.object(batches, 'start'), \
+         patch.object(review_cmd, 'send', new=AsyncMock()), \
+         patch.object(review_cmd, 'finish', new=AsyncMock(side_effect=FinishedException)):
+        for parts, count in [(['batch'],10), (['batch','100'],100)]:
+            try:
+                await batch_command(event, parts)
+            except FinishedException:
+                pass
+            else:
+                raise AssertionError('Missing command completion')
+            assert create.call_args.args[0] == count
+        binding.reset_mock()
+        create.reset_mock()
+        for value in ('101','0','-1'):
+            try:
+                await batch_command(event, ['batch',value])
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('Over-limit request was accepted')
+        binding.assert_not_awaited()
+        create.assert_not_awaited()
+asyncio.run(verify_mortal_batch_default_and_limit())
 
 async def verify_tenhou_picture_delivery():
     import json

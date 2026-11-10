@@ -9,8 +9,8 @@ from pathlib import Path
 os.environ.setdefault("MPLCONFIGDIR", str(Path("data/chart-cache").resolve()))
 
 from matplotlib import font_manager as font_manager  # noqa: E402
-from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: E402
-from matplotlib.figure import Figure  # noqa: E402
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvasAgg  # noqa: E402
+from matplotlib.figure import Figure as Figure  # noqa: E402
 
 _RENDER_LOCK = threading.Lock()
 
@@ -113,187 +113,9 @@ def _render_single_card(job: dict) -> bytes:
 
 
 def _render_batch_chart(job: dict) -> bytes:
-    from matplotlib.patches import FancyBboxPatch
+    from .batch_dashboard import render_dashboard
 
-    from .batch_review import summaries
-    from .ms_charts import font as chinese_font
-
-    rows, groups = chart_series(job)
-    fp = chinese_font()
-    fig = Figure(figsize=(14, 10), dpi=160, facecolor="#f2f5fa")
-    FigureCanvasAgg(fig)
-    ink, muted = "#182b49", "#71829a"
-    done = sum(r["status"] == "done" for r in rows)
-    failed = sum(r["status"] == "failed" for r in rows)
-    fig.text(0.06, 0.95, "MORTAL  /  REVIEW REPORT", fontsize=12, color="#3872c6", weight="bold")
-    fig.text(
-        0.06,
-        0.904,
-        f"{job['nickname']} · 最近 {job['requested']} 场复盘",
-        fontproperties=chinese_font("bold"),
-        fontsize=28,
-        color=ink,
-    )
-    fig.text(
-        0.94,
-        0.915,
-        f"{done:02d} / {len(rows):02d} 已完成",
-        ha="right",
-        fontproperties=fp,
-        fontsize=15,
-        color="#3872c6",
-    )
-    dates = [r.get("started_at", "")[:10] for r in rows if r.get("started_at")]
-    date_text = f"{min(dates)} — {max(dates)}" if dates else "导入顺序 · 对局时间未知"
-    fig.text(
-        0.06,
-        0.87,
-        date_text + "   ·   四麻半庄" + f"   ·   失败 {failed} 场",
-        fontproperties=fp,
-        fontsize=11,
-        color=muted,
-    )
-    aggregates = summaries(rows)
-    summary = aggregates[0] if len(aggregates) == 1 else {}
-
-    def fmt(key):
-        value = summary.get(key)
-        return "—" if value is None else f"{value:.2f}"
-
-    cards = [
-        ("平均 Rating", fmt("mean_rating"), "#3872c6"),
-        ("AI 一致率", fmt("agreement") + "%" if summary else "—", "#138b83"),
-        ("≤5% 恶手率", fmt("bad5_rate") + "%" if summary else "—", "#e19a34"),
-        ("≤10% 恶手率", fmt("bad10_rate") + "%" if summary else "—", "#d57773"),
-    ]
-    for index, (label, value, color) in enumerate(cards):
-        x = 0.06 + index * 0.225
-        fig.add_artist(
-            FancyBboxPatch(
-                (x, 0.745),
-                0.205,
-                0.095,
-                boxstyle="round,pad=0.009,rounding_size=0.012",
-                facecolor="white",
-                edgecolor="#e4eaf3",
-                linewidth=0.7,
-                transform=fig.transFigure,
-                zorder=0,
-            )
-        )
-        fig.text(x + 0.012, 0.811, label, fontproperties=fp, fontsize=11, color=muted)
-        fig.text(
-            x + 0.012, 0.765, value, fontproperties=chinese_font("number"), fontsize=26, color=color
-        )
-    top = fig.add_axes((0.075, 0.39, 0.855, 0.285))
-    agree = fig.add_axes((0.075, 0.115, 0.385, 0.19))
-    bad = fig.add_axes((0.545, 0.115, 0.385, 0.19))
-    xs = list(range(1, len(rows) + 1))
-    for axis, title in (
-        (top, "逐场评分与 5 场移动平均"),
-        (agree, "AI 一致率"),
-        (bad, "恶手率 · 越低越好"),
-    ):
-        axis.set_facecolor("white")
-        axis.set_title(
-            title, loc="left", fontproperties=chinese_font("bold"), fontsize=14, color=ink, pad=15
-        )
-        axis.grid(axis="y", color="#e8edf5", linewidth=0.8)
-        axis.set_axisbelow(True)
-        axis.spines[["top", "right", "left"]].set_visible(False)
-        axis.spines["bottom"].set_color("#dce4ef")
-        axis.set_xlim(0.5, max(len(rows), 1) + 0.5)
-        axis.tick_params(colors=muted, labelsize=9, length=0, pad=8)
-        count = max(len(rows), 1)
-        ticks = sorted({1, count, *range(10, count + 1, 10)})
-        axis.set_xticks(ticks)
-        axis.set_xlabel(
-            "场次 · 从旧到新" if dates else "链接导入顺序",
-            fontproperties=fp,
-            fontsize=10,
-            color=muted,
-            labelpad=8,
-        )
-    observed = [v for values in groups.values() for v in values if math.isfinite(v)]
-    rating_floor = max(0, math.floor(min(observed) / 10) * 10 - 10) if observed else 0
-    top.set_ylim(rating_floor, 102)
-    agree.set_ylim(0, 102)
-    bad.set_ylim(0, 100)
-    colors = ["#3872c6", "#8b69bd", "#138b83", "#d57773"]
-    bad_values = []
-    for number, (key, values) in enumerate(groups.items()):
-        color = colors[number % len(colors)]
-        label = f"{key[0]} / T={key[1]}"
-        top.plot(
-            xs, values, "o-", color=color, linewidth=1.5, markersize=3.5, alpha=0.65, label=label
-        )
-        top.fill_between(xs, values, color=color, alpha=0.045)
-        moving = [math.nan] * len(values)
-        for index in range(4, len(values)):
-            window = values[index - 4 : index + 1]
-            if all(math.isfinite(v) for v in window):
-                moving[index] = sum(window) / 5
-        if any(math.isfinite(v) for v in moving):
-            top.plot(
-                xs,
-                moving,
-                color="#f0ad42" if len(groups) == 1 else color,
-                linewidth=2.8,
-                label="5 场均线" if len(groups) == 1 else label + " · 均线",
-            )
-        for field, axis, field_color, style, suffix in (
-            ("agreement", agree, "#138b83", "-", "一致率"),
-            ("bad5_rate", bad, "#e19a34", "-", "≤5%"),
-            ("bad10_rate", bad, "#d57773", "--", "≤10%"),
-        ):
-            series = []
-            for row in rows:
-                metric = row.get("metrics") or {}
-                same = (metric.get("model", "未标注模型"), metric.get("temperature")) == key
-                value = metric.get(field) if row["status"] == "done" and same else None
-                series.append(float(value) if value is not None else math.nan)
-            if any(math.isfinite(v) for v in series):
-                axis.plot(
-                    xs,
-                    series,
-                    style,
-                    color=field_color if len(groups) == 1 else color,
-                    marker="o",
-                    markersize=2.5,
-                    linewidth=1.6,
-                    label=suffix if len(groups) == 1 else label + " · " + suffix,
-                )
-                if axis is bad:
-                    bad_values.extend(v for v in series if math.isfinite(v))
-    if bad_values:
-        bad.set_ylim(0, min(100, max(20, math.ceil(max(bad_values) / 10) * 10 + 5)))
-    for axis in (top, agree, bad):
-        if axis.lines:
-            axis.legend(
-                prop=fp,
-                loc="lower right"
-                if axis is top
-                else "lower left"
-                if axis is agree
-                else "upper right",
-                bbox_to_anchor=(1, 1.03) if axis is top else None,
-                frameon=False,
-                ncol=2,
-                fontsize=9,
-            )
-    if done < 2:
-        top.text(
-            0.5,
-            0.4,
-            "成功结果不足 2 场，暂不能形成趋势",
-            transform=top.transAxes,
-            ha="center",
-            fontproperties=fp,
-            color=muted,
-        )
-    output = io.BytesIO()
-    fig.savefig(output, format="png", facecolor=fig.get_facecolor())
-    return output.getvalue()
+    return render_dashboard(job)
 
 
 GOLD_RATING = "#f2ba28"
@@ -302,10 +124,12 @@ RAINBOW_RATING = "#a855f7"
 TABLE_HEADERS = ("游戏昵称", "最终名次", "Rating", "一致率", "≤5% 恶手率", "≤10% 恶手率")
 
 
-def rating_color(value):
-    if type(value) in (int, float) and math.isfinite(value) and value >= 94:
+def rating_color(value, *, games=1):
+    from .batch_insights import rainbow_threshold
+
+    if type(value) in (int, float) and math.isfinite(value) and value >= rainbow_threshold(games):
         return RAINBOW_RATING
-    if type(value) in (int, float) and math.isfinite(value) and value > 90:
+    if type(value) in (int, float) and math.isfinite(value) and value >= 90:
         return GOLD_RATING
     return "#22324b"
 
