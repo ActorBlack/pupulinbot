@@ -42,7 +42,61 @@ def render_batch_chart(job: dict) -> bytes:
     with _RENDER_LOCK:
         if job.get("kind") == "table":
             return _render_table_chart(job)
+        if len(job["rows"]) == 1:
+            return _render_single_card(job)
         return _render_batch_chart(job)
+
+
+def _render_single_card(job: dict) -> bytes:
+    from PIL import Image, ImageDraw, ImageFilter
+
+    from .batch_review import seat_nickname
+    from .typography import face
+
+    row = job["rows"][0]
+    metric = (row.get("metrics") or {}) if row.get("status") == "done" else {}
+    image = Image.new("RGBA", (1000, 300), "#f2f5fa")
+    shadow = Image.new("RGBA", image.size)
+    painter = ImageDraw.Draw(shadow)
+    for i in range(4):
+        x = 28 + 240 * i
+        painter.rounded_rectangle((x, 109, x + 224, 249), 18, fill=(34, 50, 75, 14))
+    image = Image.alpha_composite(image, shadow.filter(ImageFilter.GaussianBlur(8)))
+    draw = ImageDraw.Draw(image)
+    ink, muted = "#22324b", "#7f8da3"
+    draw.rounded_rectangle((28, 29, 33, 65), 2, fill="#4479d7")
+    draw.text((48, 46), "Mortal · 复盘", font=face(32, "title"), fill=ink, anchor="lm")
+    name = seat_nickname(row)
+    if name in {"—", "昵称读取中"}:
+        name = job.get("nickname", "")
+        if name in {"导入牌谱", "同桌四人"}:
+            name = ""
+    name_font = face(24, "bold")
+    while draw.textlength(name, font=name_font) > 530:
+        name = name[:-2] + "…"
+    draw.text((972, 46), name, font=name_font, fill=ink, anchor="rm")
+    cards = (
+        ("Rating", "rating", "#3872c6"),
+        ("AI 一致率", "agreement", "#138b83"),
+        ("≤5% 恶手率", "bad5_rate", "#d9952e"),
+        ("≤10% 恶手率", "bad10_rate", "#d57773"),
+    )
+    for i, (label, key, color) in enumerate(cards):
+        x = 28 + 240 * i
+        draw.rounded_rectangle((x, 104, x + 224, 244), 18, fill="white")
+        draw.text((x + 20, 130), label, font=face(20), fill=muted, anchor="lm")
+        value = metric.get(key)
+        formatted = "—"
+        if type(value) in (int, float) and math.isfinite(value):
+            formatted = f"{value:.2f}" + ("%" if key != "rating" else "")
+        draw.text((x + 20, 187), formatted, font=face(40, "number"), fill=color, anchor="lm")
+    model = metric.get("model")
+    if model:
+        draw.text((32, 276), str(model), font=face(16), fill=muted, anchor="lm")
+    draw.text((968, 276), job.get("id", ""), font=face(16), fill=muted, anchor="rm")
+    output = io.BytesIO()
+    image.convert("RGB").save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 def _render_batch_chart(job: dict) -> bytes:
