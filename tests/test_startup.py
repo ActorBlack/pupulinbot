@@ -42,7 +42,7 @@ import asyncio
 from nonebot.message import _apply_run_preprocessors
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from pupulinbot.plugin import (
-    settings, help_cmd, notify_batch, send_auto_review, superusers, batches, db,
+    settings, help_cmd, help_handler, notify_batch, send_auto_review, superusers, batches, db,
     manage_vip2, vip2_cmd,
 )
 assert "285843647" in superusers and "285843647" in batches.superusers
@@ -68,6 +68,16 @@ async def verify_group_policy():
     assert '已在名单' in await call_vip2(admin, Message('add 234567'))
     assert '234567' in await call_vip2(admin, Message('list'))
     assert await db.is_vip2('234567')
+    with patch('pupulinbot.plugin.send_help', new=AsyncMock()) as send_help, \
+         patch.object(help_cmd, 'finish', new=AsyncMock()):
+        for group, caller in ((706530575, 123456), (706530575, 234567), (546573626, 285843647)):
+            event = GroupMessageEvent.model_construct(group_id=group, user_id=caller)
+            await help_handler(None, event)
+        options = [call.kwargs for call in send_help.await_args_list]
+        assert options[0] == options[1] == options[2]
+        from pupulinbot.help_menu import help_sections
+        text = '\\n'.join(body for _, body in help_sections(**options[0]))
+        assert all(cmd in text for cmd in ('/ms2', '/mortal', '/mswatch', '/vip2'))
     for group in (706530575, 546573626):
         for caller in (285843647, 123456, 234567):
             commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
@@ -121,7 +131,8 @@ async def verify_group_policy():
             fake.send_group_msg.assert_awaited_once()
             sent = fake.send_group_msg.call_args.kwargs
             assert sent['group_id'] == int(group)
-            assert sent['message'].type == 'image'
+            assert [segment.type for segment in sent['message']] == ['at','text','image']
+            assert sent['message'][0].data['qq'] == '285843647'
         fake.send_group_msg.reset_mock()
         with patch('pupulinbot.plugin.render_batch_chart') as render:
             await notify_batch({**job, 'status':'retry_wait', 'message':'30秒后重试'})
@@ -132,8 +143,10 @@ async def verify_group_policy():
         with patch('pupulinbot.plugin.render_batch_chart', side_effect=RuntimeError('render')):
             await notify_batch(done)
         fake.send_group_msg.assert_awaited_once()
-        assert '分析结果已保存' in fake.send_group_msg.call_args.kwargs['message']
-        assert 'mortal report abc' in fake.send_group_msg.call_args.kwargs['message']
+        fallback = fake.send_group_msg.call_args.kwargs['message']
+        assert fallback[0].type == 'at' and fallback[0].data['qq'] == '285843647'
+        assert '分析结果已保存' in fallback.extract_plain_text()
+        assert 'mortal report abc' in fallback.extract_plain_text()
     with patch('pupulinbot.plugin.paipuya.promotion', new=AsyncMock(return_value='雀圣3星')), \
          patch('pupulinbot.plugin.collect_profiles', new=AsyncMock(return_value={})), \
          patch('pupulinbot.plugin.render_monitor_card', return_value=b'png'):

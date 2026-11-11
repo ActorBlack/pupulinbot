@@ -214,6 +214,13 @@ async def test_ms2_allows_query_and_authorized_binding_without_overwriting(tmp_p
     service = MahjongQueries(db, client, client, admins={"345678"})
     target = "234567"
 
+    assert "尚未绑定" in await service.query("ms2", "", "123456", "706530575", mentioned=target)
+    for options in ("-i", "-o", "mode=3", f"{nickname} -l 10"):
+        with pytest.raises(ValueError, match="用法"):
+            await service.query(
+                "ms2", options, "123456", "706530575", role="admin", mentioned=target
+            )
+
     with pytest.raises(ValueError, match="群管理员"):
         await service.query("ms2", nickname, "123456", "706530575", mentioned=target)
     assert await db.binding(target) is None
@@ -230,8 +237,8 @@ async def test_ms2_allows_query_and_authorized_binding_without_overwriting(tmp_p
     client.resolve.assert_awaited_once()
 
     result = await service.query("ms2", "", "123456", "706530575", mentioned=target)
-    assert nickname in result
-    client.stats.assert_awaited_once_with(ACCOUNT)
+    assert result == f"雀魂账号：{nickname}（{ACCOUNT}）"
+    client.stats.assert_not_awaited()
 
 
 def test_registration_and_help_only_advertise_retained_commands(monkeypatch):

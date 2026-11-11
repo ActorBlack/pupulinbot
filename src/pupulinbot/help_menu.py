@@ -19,35 +19,20 @@ BATCH_ACTIONS = frozenset(
 )
 
 
-def help_sections(
-    *,
-    live_enabled=False,
-    mortal_enabled=False,
-    show_monitor=True,
-    show_mortal=True,
-    manage_vip2=False,
-):
+def help_sections(*, live_enabled=False, mortal_enabled=False):
     mortal = (
         "已配置分析引擎，实际状态请查看 /mortalstatus。"
         if mortal_enabled
         else ("分析引擎未配置，任务可以保存，但不会自动跑完。")
     )
-    monitor_commands = (
-        "\n/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
-        "/thwatch off <昵称>：移除监控（仅负责人）；off all 清空\n"
-        "/thwatch list / thstatus：本群监控与数据源状态\n"
-        "开局使用公开观战列表，约5分钟延迟；仅覆盖公开观战的桌。\n"
-        "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。"
-        if show_monitor
-        else ""
-    )
-    sections = [
+    return [
         (
             "普普林 Bot · 入门",
             "命令可带 /，也可直接发送；仅英文命令生效，说明和玩家昵称仍可使用中文。\n"
             "/msbind 普普林：绑定雀魂昵称或 account ID\n/msbind friend <好友码>：通过好友码绑定\n"
             "/msunbind：解除自己的绑定\n"
-            "/ms2 @群友：查询绑定账号；加昵称可代绑（仅管理员，已有绑定保留）\n"
+            "/ms2 @群友：查询绑定昵称和 account ID\n"
+            "/ms2 @群友 <昵称或 ID>：代绑（仅管理员，已有绑定保留）\n"
             "/ms4 -i：查看自己的四麻面板\n/ms3 -i：三麻面板\n"
             "/help：重新查看本说明\n"
             "省略玩家时使用自己的绑定；参数中的 <…> 不需要输入尖括号。",
@@ -107,7 +92,12 @@ def help_sections(
             "绑定后省略昵称查本人；三麻可用 mode=3；-l 最多500场。\n"
             "房间 -r 般/上/特/凤（默认南），加东查东风；支持 start/end、-m/-y。\n"
             "详细和/铳统计单列凤凰桌数据，不等同于最近 N 场。\n"
-            "使用昵称，不要提供天凤私密登录 ID。" + monitor_commands,
+            "使用昵称，不要提供天凤私密登录 ID。\n"
+            "/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
+            "/thwatch off <昵称>：移除监控（仅负责人）；off all 清空\n"
+            "/thwatch list / thstatus：本群监控与数据源状态\n"
+            "开局使用公开观战列表，约5分钟延迟；仅覆盖公开观战的桌。\n"
+            "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。",
         ),
         (
             "Mortal · 单场与批量",
@@ -122,37 +112,21 @@ def help_sections(
             "/mortal export <任务编号> csv：导出（也支持 xlsx）\n"
             "/mortal links <链接1> <链接2>：多链接任务\n"
             "/mortal import <任务编号> <场次编号> <报告链接>：导入报告\n"
-            "/mortal file <任务编号>：HTML 群文件\n/mortalstatus：分析服务状态\n" + mortal,
+            "/mortal file <任务编号>：HTML 群文件\n/mortalstatus：分析服务状态\n"
+            "跑谱完成后会在结果消息中 @任务发起者。\n" + mortal,
         ),
         (
             "使用规则 · 数据说明",
             "① 查询来自牌谱屋，主要覆盖金之间及以上；无数据不代表没打牌。\n"
             "② 结算提醒要等牌谱屋收录，有延迟；同群同账号同场去重，发送失败会重试。\n"
             "③ 监控名单由负责人维护，各群独立。\n"
-            "④ 请勿连续刷命令。"
-            + (
-                "\n⑤ 成员仅管理本人在原群的 Mortal 任务；超级管理员可管理全部任务。"
-                "\n⑥ 暂停后已提交的场次可能继续。"
-                if show_mortal
-                else ""
-            ),
+            "④ 部分命令按群和账号权限开放，请勿连续刷命令。\n"
+            "⑤ 成员仅管理本人在原群的 Mortal 任务；超级管理员可管理全部任务。\n"
+            "⑥ 暂停后已提交的场次可能继续。\n"
+            "⑦ 二级会员由超级管理员管理。\n"
+            "/vip2 add <QQ号或@群友>：添加\n/vip2 del <QQ号或@群友>：移除\n/vip2 list：查看名单",
         ),
     ]
-    hidden = set()
-    if not show_monitor:
-        hidden.add("雀魂 · 本群监控")
-    if not show_mortal:
-        hidden.add("Mortal · 单场与批量")
-    if manage_vip2:
-        sections.append(
-            (
-                "二级会员 · 超级管理员",
-                "/vip2 add <QQ号或@群友>：添加\n"
-                "/vip2 del <QQ号或@群友>：移除\n"
-                "/vip2 list：查看名单",
-            )
-        )
-    return [section for section in sections if section[0] not in hidden]
 
 
 def forward_nodes(bot_id, **options):

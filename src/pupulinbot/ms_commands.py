@@ -67,36 +67,10 @@ class MahjongQueries:
     async def query(self, command, text, user_id, group_id, *, role="member", mentioned=None):
         if command not in QUERY_COMMANDS:
             raise ValueError("不支持的雀魂查询命令")
+        if command == "ms2":
+            return await self.member_binding(text, user_id, role=role, mentioned=mentioned)
         last_limit = 500 if command == "ms" else 2000
         options = parse_options(text, mode=3 if command == "ms3" else 4, max_last=last_limit)
-        if command == "ms2":
-            if not mentioned:
-                raise ValueError("用法：ms2 @一位群友 [雀魂昵称或 account ID]")
-            if options.player:
-                if str(mentioned) != str(user_id) and (
-                    role not in {"admin", "owner"} and str(user_id) not in self.admins
-                ):
-                    raise ValueError("只有本人、群管理员或 Bot 管理员可以代绑雀魂账号。")
-                if (
-                    options.subscription
-                    or options.group
-                    or options.observe
-                    or options.image
-                    or options.start
-                    or options.end
-                    or options.modes
-                    or options.last_explicit
-                    or options.gap != 60
-                ):
-                    raise ValueError("代绑用法：ms2 @群友 <雀魂昵称或 account ID>")
-                target = str(mentioned)
-                if await self.db.binding(target):
-                    return "该群友已绑定雀魂账号，请由本人修改。"
-                player = await self.clients[options.mode].resolve(options.player)
-                if not await self.db.bind_if_absent(target, player.account_id, player.nickname):
-                    return "该群友已绑定雀魂账号，请由本人修改。"
-                return f"绑定成功：{player.nickname}（{player.account_id}）"
-            command, user_id = f"ms{options.mode}", mentioned
         if command == "msstyle" and options.mode != 4:
             raise ValueError("msstyle 的参考模型仅适用于四麻；请使用 mode=4")
         if command == "ms3" and options.mode != 3:
@@ -383,6 +357,35 @@ class MahjongQueries:
         except TimeoutError:
             pass
         return format_summary(player, games, truncated, options, context, now=now)
+
+    async def member_binding(self, text, user_id, *, role, mentioned):
+        usage = "用法：ms2 @一位群友 [雀魂昵称或 account ID]"
+        if not mentioned:
+            raise ValueError(usage)
+        target = str(mentioned)
+        player_query = text.strip()
+        option_names = {"mode", "room", "r", "game", "last", "start", "end", "gap"}
+        if any(
+            word.startswith("-") or ("=" in word and word.split("=", 1)[0] in option_names)
+            for word in player_query.split()
+        ):
+            raise ValueError(usage)
+        if not player_query:
+            bound = await self.db.binding(target)
+            if not bound:
+                return "该群友尚未绑定雀魂账号。"
+            return f"雀魂账号：{bound['nickname']}（{bound['account_id']}）"
+        if target != str(user_id) and (
+            role not in {"admin", "owner"} and str(user_id) not in self.admins
+        ):
+            raise ValueError("只有本人、群管理员或 Bot 管理员可以代绑雀魂账号。")
+        already_bound = "该群友已绑定雀魂账号，请由本人修改。"
+        if await self.db.binding(target):
+            return already_bound
+        player = await self.clients[4].resolve(player_query)
+        if not await self.db.bind_if_absent(target, player.account_id, player.nickname):
+            return already_bound
+        return f"绑定成功：{player.nickname}（{player.account_id}）"
 
     async def friend(self, command, options, user_id):
         async with self.gate:

@@ -28,7 +28,6 @@ from .group_policy import (
     MORTAL_COMMANDS,
     check_group_command,
     command_name,
-    monitor_allowed,
 )
 from .help_menu import BATCH_ACTIONS, send_help
 from .live import LiveServiceClient
@@ -145,6 +144,13 @@ async def mortal_allowed(group_id, owner):
     )
 
 
+def mention_requester(owner, result):
+    qq = str(owner)
+    if qq.isascii() and qq.isdecimal() and int(qq) > 0:
+        return MessageSegment.at(int(qq)) + MessageSegment.text("\n") + result
+    return result
+
+
 async def notify_batch(job):
     if not await mortal_allowed(job["group_id"], job.get("owner")):
         return
@@ -156,17 +162,21 @@ async def notify_batch(job):
             picture = await asyncio.to_thread(render_batch_chart, job)
             await bot.send_group_msg(
                 group_id=int(job["group_id"]),
-                message=MessageSegment.image(
-                    "base64://" + base64.b64encode(picture).decode("ascii")
+                message=mention_requester(
+                    job.get("owner"),
+                    MessageSegment.image("base64://" + base64.b64encode(picture).decode("ascii")),
                 ),
             )
         except Exception:
             logger.exception("Mortal 结果图生成或发送失败：job=%s", job["id"])
             await bot.send_group_msg(
                 group_id=int(job["group_id"]),
-                message=(
-                    f"Mortal 任务 {job['id']}：结果图生成或发送失败，分析结果已保存。\n"
-                    f"发送 mortal report {job['id']} 重试。"
+                message=mention_requester(
+                    job.get("owner"),
+                    MessageSegment.text(
+                        f"Mortal 任务 {job['id']}：结果图生成或发送失败，分析结果已保存。\n"
+                        f"发送 mortal report {job['id']} 重试。"
+                    ),
                 ),
             )
         return
@@ -411,7 +421,7 @@ async def mortal(event: GroupMessageEvent, args=CommandArg()):
         await review_cmd.send("已加入 Mortal 分析队列，请稍候……")
         result = await reviews.submit(log.url, log.seat)
         image = base64.b64encode(render_review(result, str(event.user_id), log.game_id)).decode()
-        message = MessageSegment.image(f"base64://{image}")
+        message = mention_requester(event.user_id, MessageSegment.image(f"base64://{image}"))
         if result.details_url:
             message += MessageSegment.text(f"\n详细报告：{result.details_url}")
         await review_cmd.finish(message)
@@ -533,22 +543,7 @@ async def event_bot_upload(event, path):
 
 @help_cmd.handle()
 async def help_handler(bot: Bot, event: MessageEvent):
-    user = str(event.user_id)
-    admin = user in superusers
-    group = isinstance(event, GroupMessageEvent)
-    restricted = group and str(event.group_id) in settings.monitor_only_groups
-    vip2 = group and not admin and await db.is_vip2(user)
-    await send_help(
-        bot,
-        event,
-        live_enabled=live.enabled,
-        mortal_enabled=batches.available,
-        show_mortal=not restricted or admin or vip2,
-        show_monitor=monitor_allowed(
-            restricted, vip2, maintainer=admin or user == settings.monitor_owner
-        ),
-        manage_vip2=admin,
-    )
+    await send_help(bot, event, live_enabled=live.enabled, mortal_enabled=batches.available)
     await help_cmd.finish()
 
 

@@ -417,7 +417,7 @@ Mortal 子命令增加 `batch/table/links/status/report/chart/pause/resume/expor
 | --- | --- |
 | `msbind <UID或昵称>` | 绑定当前 QQ；多个同名候选时要求改用 account ID |
 | `msunbind` | 解除本人绑定 |
-| `ms2 @群友 [雀魂昵称或 account ID]` | 查询群友已绑定账号；加昵称或 ID 可代绑，限本人、群管理员或 Bot 管理员，已有绑定不覆盖 |
+| `ms2 @群友 [雀魂昵称或 account ID]` | 查询绑定昵称和 account ID；加昵称或 ID 可代绑，限本人、群管理员或 Bot 管理员，已有绑定不覆盖 |
 | `mslast [玩家] last=10 [-i]` | 最近对局，支持图片和筛选 |
 | `msstats [UID或昵称] [sanma]` | 展示四麻或三麻详细统计 |
 | `msrank [sanma]` | 当前群监控玩家按段位、同段位 PT 从高到低排行；每行显示 `昵称 圣2 3785 / 6000`，不加单位 |
@@ -635,4 +635,5 @@ Mortal 全桌图片按最终名次排列，依次显示游戏昵称、最终名�
 超级管理员通过 NoneBot 的 `SUPERUSERS` 配置指定，例如 `SUPERUSERS=["285843647"]`。
 超级管理员可在所有群（包括仅监控群）使用全部有效命令、替群友绑定雀魂、管理任何 Mortal 任务。
 超级管理员和二级会员在受限群创建的 Mortal 任务会正常发送进度及结果。
+所有群使用同一份 `help`。执行命令时检查群和账号权限。Mortal 完成后在结果消息中 @任务发起者。
 权限例外不改变各群独立的监控名单，也不放宽数据验证或 API 限速。
