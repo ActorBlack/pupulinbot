@@ -211,7 +211,7 @@ def render_start(game, profiles):
             else "段位战 —"
         )
         phoenix = stats.get("totalrecord")
-        counts += f" · 鳳桌 {phoenix} 战" if phoenix is not None else " · 鳳桌 —"
+        counts += f"　鳳桌 {phoenix} 战" if phoenix is not None else "　鳳桌 —"
         count_size = 12
         while width(counts, count_size) > 249 and count_size > 10:
             count_size -= 1

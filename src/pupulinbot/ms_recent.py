@@ -19,7 +19,7 @@ def render_recent(player, games, mode=4):
         figure.text(
             0.07,
             0.94,
-            f"{player.nickname} · 最近{len(games)}场（{'三麻' if mode == 3 else '四麻'}）",
+            f"{player.nickname}　最近 {len(games)} 场（{'三麻' if mode == 3 else '四麻'}）",
             fontproperties=font("bold"),
             fontsize=21,
             weight="bold",

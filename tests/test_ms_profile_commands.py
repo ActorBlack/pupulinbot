@@ -74,9 +74,7 @@ async def test_count_and_room_select_profile_card_with_exact_sample_not_lifetime
     assert rendered.games == 4 and rendered.win_rate == 0.223
     assert rendered.raw["level"] == client.metadata.return_value.raw["level"]
     assert client.range_stats.return_value.raw == original  # No cached-object mutation.
-    assert (
-        render.call_args.kwargs["scope"] == f"{'三麻' if mode == 3 else '四麻'} · 玉南 · 最近 4 场"
-    )
+    assert render.call_args.kwargs["scope"] == f"{'三麻' if mode == 3 else '四麻'}玉南　最近 4 场"
     assert render.call_args.kwargs["games"] == selected
     client.stats.assert_not_awaited()
     other.resolve.assert_not_awaited()
@@ -93,7 +91,7 @@ async def test_room_only_filters_all_recorded_games_without_loading_history(mode
     args = client.range_stats.call_args.kwargs
     assert args["modes"] == [room] and args["start"].timestamp() == 0
     assert args["end"] <= datetime.now(UTC)
-    assert "金南 · 已收录 4 场" in render.call_args.kwargs["scope"]
+    assert "金南　已收录 4 场" in render.call_args.kwargs["scope"]
     client.query_history.assert_not_awaited()
     client.history.assert_not_awaited()
     client.stats.assert_not_awaited()
@@ -172,7 +170,7 @@ def test_filtered_profile_scope_and_three_four_player_metrics_render_cleanly(mon
     from pupulinbot.ms_charts import render_profile
 
     value = client_for(mode).range_stats.return_value
-    scope = f"{'三麻' if mode == 3 else '四麻'} · 玉南 · 最近 4 场"
+    scope = f"{'三麻' if mode == 3 else '四麻'}玉南　最近 4 场"
     drawn = []
     original = ImageDraw.ImageDraw.text
 

@@ -130,34 +130,42 @@ async def test_watch_commands_permissions_and_mode_isolation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_poller_routes_sanma_shares_fetch_and_sends_once_per_group(tmp_path):
+@pytest.mark.parametrize(("mode", "room"), [(3, "24"), (4, "12")])
+async def test_settlement_uses_each_groups_end_time_cutoff_and_dedup(tmp_path, mode, room):
     db = await database(tmp_path)
-    await db.subscribe("g", "alice", mode=3)
-    await db.follow("user", "bob", Player(42, "雀士"), 3, group_id="g")
-    await db.set_follow_monitor("user", "bob", "g", 3, True)
-    await db.set_follow_monitor("user", "bob", "other", 3, True)
-    await db.follow("user", "bob", Player(42, "雀士"), 3, group_id="other")
+    await db.subscribe("g", "alice", mode=mode)
+    for group in ("g", "other", "late"):
+        await db.follow("user", "bob", Player(42, "雀士"), mode, group_id=group)
+        await db.set_follow_monitor("user", "bob", group, mode, True)
     async with db.connect() as c:
         for table in ("subscriptions", "ms_follows", "follow_monitors"):
             await c.execute(f"UPDATE {table} SET created_at='2020-01-01'")
+        await c.execute(
+            "UPDATE ms_follows SET created_at='2026-01-01T00:30:00Z' WHERE group_id='other'"
+        )
+        await c.execute(
+            "UPDATE follow_monitors SET created_at='2026-01-01T01:01:00Z' WHERE group_id='late'"
+        )
         await c.commit()
     record = GameRecord(
-        "sanma",
+        "shared-game",
         datetime(2026, 1, 1, tzinfo=UTC),
         datetime(2026, 1, 1, 1, tzinfo=UTC),
-        "24",
+        room,
         [{"account_id": 42, "rank": 1, "score": 40000}],
         {},
     )
-    four = SimpleNamespace(records=AsyncMock())
-    three = SimpleNamespace(records=AsyncMock(return_value=[record]))
+    selected = SimpleNamespace(records=AsyncMock(return_value=[record]))
+    unused = SimpleNamespace(records=AsyncMock())
+    four, three = (unused, selected) if mode == 3 else (selected, unused)
     send = AsyncMock()
     monitor = GameMonitor(db, four, SimpleNamespace(enabled=False), sanma_client=three)
     rows = await db.subscriptions()
     await monitor.poll(rows, send)
-    assert send.await_count == 2 and three.records.await_count == 1
-    four.records.assert_not_called()
-    await monitor.poll(rows, send)
+    assert sorted(call.args[0]["group_id"] for call in send.await_args_list) == ["g", "other"]
+    selected.records.assert_awaited_once_with(42, 20)
+    unused.records.assert_not_called()
+    await GameMonitor(db, four, SimpleNamespace(enabled=False), sanma_client=three).poll(rows, send)
     assert send.await_count == 2
 
 

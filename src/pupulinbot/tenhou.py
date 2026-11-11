@@ -102,7 +102,7 @@ def history_rows(data, name):
 
 
 def record_id(row):
-    match = LOG_ID.search(row.get("url", ""))
+    match = LOG_ID.search(row.get("url") or "")
     if match:
         return match[1].lower()
     # Old public records sometimes have no replay URL. Still deduplicate them.
@@ -119,7 +119,7 @@ def table_scores(row):
         return None
     if row.get("lobby", 0) not in (0, "0", None) or row.get("shuugi") is not None:
         return None
-    match = LOG_ID.search(row.get("url", ""))
+    match = LOG_ID.search(row.get("url") or "")
     if match and match[1].split("-")[2] != "0000":
         return None
     scores = [
@@ -141,11 +141,9 @@ def format_result(row):
     for i in range(1, int(row["playernum"]) + 1):
         score = str(scores[i - 1]) if scores else f"{float(row[f'player{i}ptr']):+.1f}"
         lines.append(f"{row[f'player{i}']}({score})")
-    match = LOG_ID.search(row.get("url", ""))
+    match = LOG_ID.search(row.get("url") or "")
     if match:
         lines.extend(("", f"https://tenhou.net/4/?log={match[1]}"))
-    else:
-        lines.extend(("", "该公开记录未提供牌谱链接。"))
     return "\n".join(lines)
 
 

@@ -62,6 +62,29 @@ def test_delta_not_absolute_pt_and_missing_value_not_zero():
     assert len(sessions([missing, game(1)])) == 2
 
 
+def test_mslife_reports_peak_to_trough_drawdown_and_marks_incomplete_totals(monkeypatch):
+    from pupulinbot.batch_chart import Figure
+
+    labels = []
+    original = Figure.text
+
+    def capture(figure, x, y, value, *args, **kwargs):
+        labels.append(str(value))
+        return original(figure, x, y, value, *args, **kwargs)
+
+    monkeypatch.setattr(Figure, "text", capture)
+    games = [game(i, delta) for i, delta in enumerate([100, -40, -70, 0, 20])]
+    player, options = Player(42, "测试"), parse_options("-l 5 -r 玉南")
+    render_history("mslife", player, games, False, options)
+    assert {"净变化", "+10", "+120", "-110", "最大回撤", "110"} <= set(labels)
+    assert any("单场最高升分 +100（第 1 场）　最大掉分 -70（第 3 场）" in s for s in labels)
+    labels.clear()
+    games[1] = game(1, None)
+    render_history("mslife", player, games, False, options)
+    assert {"已记录净变化", "+50", "—"} <= set(labels)
+    assert any("有效 4/5 场" in s for s in labels)
+
+
 @pytest.mark.parametrize("kind", ["mslife", "msheat", "msstat", "mssession"])
 def test_chart_outputs_real_png(kind):
     data = render_history(

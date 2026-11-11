@@ -77,9 +77,9 @@ def render_profile(view):
     c.card((40, 32, 1560, 210))
     mode = "三麻" if view["mode"] == 3 else "四麻"
     subtitle = (
-        f"{mode} · {view['scope']}最近{view['count']:,}战"
+        f"{mode}　{view['scope']}最近 {view['count']:,} 场"
         if view["recent"]
-        else f"{mode} · 已收录 {view['count']:,} 场"
+        else f"{mode}　已收录 {view['count']:,} 场"
     )
     progress = view["progress"]
     current_grade, highest_grade = progress.get("estimated_grade"), progress.get("high_grade")
@@ -130,15 +130,15 @@ def render_profile(view):
         c.text(x + 84, 529, value(count / view["count"], percent=True), 30, style="number")
     p = view["phoenix"]
     caption = (
-        f"凤凰桌统计 · {view['phoenix_scope']} · {p.get('totalrecord', '—')} 战"
+        f"凤凰桌统计　{view['phoenix_scope']}（{p.get('totalrecord', '—')} 战）"
         if p
-        else "凤凰桌统计 · 暂时不可用"
+        else "凤凰桌统计暂时不可用"
         if view["phoenix_error"]
-        else "凤凰桌统计 · 暂无收录"
+        else "暂无凤凰桌统计"
     )
     c.text(64, 599, caption, 25, style="bold", width=880)
     positions = view.get("percentiles", {})
-    legend = "同类分布 · 左低右高 · 中线为中位数" if positions else "暂无可用对照分布"
+    legend = "同类百分位（中线为中位数）" if positions else "暂无可用对照分布"
     c.text(1534, 599, legend, 18, MUTED, anchor="rm", width=550)
     groups = [
         (
@@ -215,14 +215,14 @@ def render_profile(view):
     )
     if view["tag"]:
         c.text(1500, 1262, "#" + view["tag"], 23, "#288772", "bold", "rm", width=370)
-    c.text(64, 1326, "水表网 nodocchi · 段位积分为公开历史推定", 18, "#8b99ae")
+    c.text(64, 1326, "水表网 nodocchi　段位积分为公开历史推定", 18, "#8b99ae")
     return c.png()
 
 
 def render_recent(name, rows, mode):
     c = Canvas((1600, 220 + 94 * len(rows)))
     c.card((40, 32, 1560, 166 + 94 * len(rows)))
-    c.text(76, 86, f"{name} · 最近{len(rows)}战", 40, style="title", width=1100)
+    c.text(76, 86, f"{name}　最近 {len(rows)} 场", 40, style="title", width=1100)
     labels = [(76, "时间"), (315, "规则"), (565, "顺位"), (700, "得点"), (920, "同桌玩家")]
     for x, label in labels:
         c.text(x, 143, label, 21, MUTED)
@@ -257,7 +257,7 @@ def render_life(view):
         fig.text(
             0.07,
             0.94,
-            f"{view['name']} · 最近{view['count']}战",
+            f"{view['name']}　最近 {view['count']} 场",
             fontproperties=font("bold"),
             fontsize=25,
             color=INK,
@@ -265,8 +265,8 @@ def render_life(view):
         fig.text(
             0.07,
             0.89,
-            f"{'三麻' if view['mode'] == 3 else '四麻'} · {view['scope']} · "
-            f"均顺 {view['average']:.2f} · 连对率 {view['top2'] * 100:.1f}%",
+            f"{'三麻' if view['mode'] == 3 else '四麻'}　{view['scope']}　"
+            f"均顺 {view['average']:.2f}　连对率 {view['top2'] * 100:.1f}%",
             fontproperties=font(),
             fontsize=13,
             color=MUTED,

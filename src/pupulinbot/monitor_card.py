@@ -219,9 +219,9 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
     stamp = game.started_at.astimezone(TZ).strftime("%m-%d %H:%M")
     subtitle = f"{stamp} 开始"
     if event == "finish" and game.ended_at:
-        subtitle += " · " + game.ended_at.astimezone(TZ).strftime("%H:%M") + " 结束"
+        subtitle += "　" + game.ended_at.astimezone(TZ).strftime("%H:%M") + " 结束"
     if preview:
-        subtitle += " · 历史牌谱预览"
+        subtitle += "　历史牌谱预览"
     text(540, 114, subtitle, 13, "#98a0ae", anchor="mm")
 
     for i, player in enumerate(game.players[:4]):
@@ -298,7 +298,7 @@ def render_monitor_card(game, event="finish", profiles=None, *, preview=False):
             if finite(score):
                 parts.append(f"{score:g}点")
             if parts:
-                separator = " · "
+                separator = "　"
                 cursor = x + 480 - width(separator.join(parts), 11)
                 for index, part in enumerate(parts):
                     text(cursor, y + 136, part, 11, "#8a94a4", anchor="lm")

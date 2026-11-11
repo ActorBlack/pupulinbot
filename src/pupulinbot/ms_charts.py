@@ -4,10 +4,11 @@ import io
 import math
 from collections import Counter
 from datetime import timedelta
+from functools import partial
 
 from .batch_chart import _RENDER_LOCK, Figure, FigureCanvasAgg
-from .ms_level import point_unit, rank_identity, seat_delta
-from .ms_options import TZ
+from .ms_level import point_number, point_unit, rank_identity, seat_delta
+from .ms_options import MODE_NAMES, TZ
 from .ms_profile import render_profile as render_profile_card
 from .typography import mpl_font
 
@@ -30,7 +31,7 @@ def pt_series(games, account_id, unit=None):
             return [math.nan] * len(ordered)
     total = 0.0
     values = []
-    for game in sorted(games, key=lambda g: g.started_at):
+    for game in ordered:
         seat = game.seat(account_id) or {}
         delta, actual_unit = seat_delta(seat)
         if delta is None:
@@ -70,11 +71,204 @@ def render_history(kind, player, games, truncated, options):
         return _render_history(kind, player, games, truncated, options)
 
 
+def _render_life(player, games, options):
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import FancyBboxPatch, Patch
+    from matplotlib.ticker import MaxNLocator
+
+    moves = [seat_delta(game.seat(player.account_id) or {}) for game in games]
+    units = [unit for unit in ("PT", "魂珠", "积分") if any(u == unit for _, u in moves)]
+    height = 1.5 + max(1, len(units)) * 5.35
+    figure = Figure(figsize=(10.8, height), dpi=150, facecolor="#eef3f8")
+    FigureCanvasAgg(figure)
+    ink, muted = "#192d45", "#566a82"
+    up, down, flat = "#148772", "#c04f69", "#7b8b9f"
+    fp, bold = font(), font("bold")
+
+    def text(x, top, label, size, color=ink, *, strong=False, align="left"):
+        figure.text(
+            x,
+            1 - top / height,
+            label,
+            va="top",
+            ha=align,
+            color=color,
+            fontsize=size,
+            fontproperties=bold if strong else fp,
+            parse_math=False,
+        )
+
+    def axes(top, depth):
+        ax = figure.add_axes((0.111, 1 - (top + depth) / height, 0.82, depth / height))
+        ax.spines[["top", "right", "left"]].set_visible(False)
+        ax.spines["bottom"].set_color("#cdd8e5")
+        ax.set_axisbelow(True)
+        ax.grid(axis="y", color="#e2e9f2", linewidth=0.8)
+        ax.tick_params(length=0, pad=6, labelsize=10, colors=muted)
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=10, steps=[1, 2, 2.5, 5, 10], integer=True))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        ax.set_xlim(-0.7, len(games) + 0.7)
+        ax.axhline(0, color="#a8b7c9", linewidth=1, zorder=1)
+        return ax
+
+    lo, hi = (g.started_at.astimezone(TZ) for g in (games[0], games[-1]))
+    rooms = {str(game.mode) for game in games}
+    room = MODE_NAMES.get(next(iter(rooms)), "").removeprefix("三麻") if len(rooms) == 1 else ""
+    mode = "三麻" if options.mode == 3 else "四麻"
+    text(0.065, 0.27, "段位积分走势", 26, strong=True)
+    text(0.066, 0.79, f"{player.nickname[:30]}　{mode}{room}　{len(games):,} 场", 14, muted)
+    period = f"{lo:%Y-%m-%d}" if lo.date() == hi.date() else f"{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}"
+    text(0.937, 0.84, period, 11, muted, align="right")
+    if not units:
+        text(0.50, 2.55, "这段对局没有段位积分变化记录", 18, muted, align="center")
+        return save(figure)
+
+    for i, unit in enumerate(units):
+        top = 1.18 + i * 5.35
+        color = {"PT": "#315fbd", "魂珠": "#157e91", "积分": "#94642f"}[unit]
+        known = [
+            (n, value) for n, (value, u) in enumerate(moves, 1) if u == unit and value is not None
+        ]
+        gains = [(n, value) for n, value in known if value > 0]
+        losses = [(n, value) for n, value in known if value < 0]
+        neutral = [n for n, value in known if value == 0]
+        earned, spent = sum(v for _, v in gains), sum(v for _, v in losses)
+        curve = [0, *pt_series(games, player.account_id, unit)]
+        complete = all(math.isfinite(v) for v in curve)
+        peak, peak_index, drawdown = 0, 0, 0
+        drawdown_span = None
+        if complete:
+            for n, value in enumerate(curve):
+                if value >= peak:
+                    peak, peak_index = value, n
+                elif peak - value > drawdown:
+                    drawdown = peak - value
+                    drawdown_span = (peak_index, n)
+
+        signed = partial(point_number, unit=unit, signed=True)
+
+        tiles = (
+            ("净变化" if complete else "已记录净变化", signed(earned + spent), color),
+            ("总升分", signed(earned), up),
+            ("总掉分", signed(spent), down),
+            ("最大回撤", point_number(drawdown, unit) if complete else "—", ink),
+        )
+        for j, (label, value, accent) in enumerate(tiles):
+            x = 0.063 + j * 0.222
+            figure.add_artist(
+                FancyBboxPatch(
+                    (x, 1 - (top + 0.84) / height),
+                    0.205,
+                    0.84 / height,
+                    boxstyle="round,pad=0.004,rounding_size=0.012",
+                    facecolor="white",
+                    edgecolor="none",
+                    transform=figure.transFigure,
+                )
+            )
+            text(x + 0.015, top + 0.13, label, 11, muted)
+            text(x + 0.015, top + 0.36, value if known else "—", 22, accent, strong=True)
+            text(x + 0.187, top + 0.49, unit, 10, muted, align="right")
+
+        text(0.067, top + 1.02, "累计走势", 15, strong=True)
+        if complete and known:
+            text(
+                0.21, top + 1.06, f"峰值 {signed(max(curve))}　谷值 {signed(min(curve))}", 11, muted
+            )
+        line = axes(top + 1.38, 1.55)
+        line.set_ylabel(unit, color=muted, fontproperties=fp)
+        line.tick_params(labelbottom=False)
+        line_handles = [Line2D([], [], color=color, linewidth=2.2, label=f"累计 {unit}")]
+        if drawdown_span and drawdown > 1e-8:
+            highlight = "#f6e8ee"
+            line.axvspan(*drawdown_span, color=highlight, linewidth=0, zorder=0)
+            line_handles.append(Patch(facecolor=highlight, label="最大回撤区间"))
+        line.plot(range(len(curve)), curve, color=color, linewidth=2.2, zorder=3)
+        line.fill_between(range(len(curve)), 0, curve, color=color, alpha=0.09)
+        if not complete:
+            line.text(
+                0.98,
+                0.08,
+                "累计线止于首个数据缺口",
+                transform=line.transAxes,
+                ha="right",
+                color=muted,
+                fontproperties=fp,
+                fontsize=10,
+            )
+        line.legend(
+            handles=line_handles,
+            ncol=len(line_handles),
+            loc="lower right",
+            bbox_to_anchor=(1, 1.02),
+            frameon=False,
+            prop=fp,
+        )
+
+        text(0.067, top + 3.13, "单场涨跌", 15, strong=True)
+        bars = axes(top + 3.47, 1.02)
+        bars.set_ylabel(unit, color=muted, fontproperties=fp)
+        bars.set_xlabel("对局场次", color=muted, fontproperties=fp, labelpad=3)
+        for entries, accent in ((gains, up), (losses, down)):
+            if entries:
+                xs, ys = zip(*entries, strict=True)
+                bars.bar(xs, ys, width=0.77, color=accent, zorder=2)
+        if neutral:
+            bars.scatter(neutral, [0] * len(neutral), color=flat, s=9, zorder=3)
+        handles = [Patch(color=up, label="升分"), Patch(color=down, label="掉分")]
+        if neutral:
+            handles.append(Line2D([], [], color=flat, marker="o", linestyle="none", label="持平"))
+        bars.legend(
+            handles=handles,
+            ncol=len(handles),
+            loc="lower right",
+            bbox_to_anchor=(1, 1.02),
+            frameon=False,
+            prop=fp,
+        )
+
+        average = f"{(earned + spent) / len(known):+,.2f} {unit}" if known else "—"
+        coverage = f"有效 {len(known)}/{len(games)} 场　" if len(known) < len(games) else ""
+        best = max(gains, key=lambda entry: entry[1], default=None)
+        worst = min(losses, key=lambda entry: entry[1], default=None)
+        best_text = f"{signed(best[1])}（第 {best[0]} 场）" if best else "—"
+        worst_text = f"{signed(worst[1])}（第 {worst[0]} 场）" if worst else "—"
+        text(
+            0.066,
+            top + 4.90,
+            f"升分 {len(gains)} 场　掉分 {len(losses)} 场　持平 {len(neutral)} 场",
+            10.5,
+            muted,
+        )
+        text(
+            0.937,
+            top + 4.90,
+            f"{coverage}场均 {average}",
+            10.5,
+            muted,
+            align="right",
+        )
+        text(0.066, top + 5.16, f"单场最高升分 {best_text}　最大掉分 {worst_text}", 10.5, muted)
+        if drawdown_span and drawdown > 1e-8:
+            first, last = drawdown_span
+            start_label = f"第 {first} 场" if first else "起点"
+            text(
+                0.937,
+                top + 5.16,
+                f"回撤区间 {start_label} 至第 {last} 场",
+                10.5,
+                muted,
+                align="right",
+            )
+    return save(figure)
+
+
 def _render_history(kind, player, games, truncated, options):
     games = sorted(games, key=lambda g: g.started_at)
+    if kind == "mslife":
+        return _render_life(player, games, options)
     fp = font()
     titles = {
-        "mslife": "段位积分变化",
         "msheat": "对局时间热力图",
         "msstat": "对局数量统计",
         "mssession": "连续对局统计",
@@ -82,13 +276,14 @@ def _render_history(kind, player, games, truncated, options):
     figure = Figure(figsize=(12, 8), dpi=140, facecolor="#f4f7fc")
     FigureCanvasAgg(figure)
     figure.text(
-        0.08, 0.93, f"{player.nickname} · {titles[kind]}", fontproperties=font("bold"), fontsize=24
+        0.08, 0.93, f"{player.nickname}　{titles[kind]}", fontproperties=font("bold"), fontsize=24
     )
     lo, hi = [g.started_at.astimezone(TZ) for g in (games[0], games[-1])]
+    mode = "三麻" if options.mode == 3 else "四麻"
     figure.text(
         0.08,
         0.875,
-        f"{options.mode}麻 · 样本 {len(games)} 场 · {lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}（北京时间）",
+        f"{mode}  {len(games)} 场　{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
         fontproperties=fp,
         fontsize=12,
     )
@@ -96,39 +291,7 @@ def _render_history(kind, player, games, truncated, options):
     ax.set_facecolor("white")
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", alpha=0.15)
-    if kind == "mslife":
-        units = list(
-            dict.fromkeys(
-                unit for g in games if (unit := seat_delta(g.seat(player.account_id) or {})[1])
-            )
-        )
-        if len(units) > 2:
-            ax.set_position((0.09, 0.20, 0.72, 0.58))
-        values = []
-        for i, unit in enumerate(units):
-            series = pt_series(games, player.account_id, unit)
-            values.extend(series)
-            target = ax if i == 0 else ax.twinx()
-            if i > 1:
-                target.spines["right"].set_position(("outward", (i - 1) * 55))
-            color = {"PT": "#2563eb", "魂珠": "#1ca6bc", "积分": "#a57837"}[unit]
-            target.plot(range(1, len(games) + 1), series, color=color, linewidth=2, label=unit)
-            target.set_ylabel(unit + " 净变化", fontproperties=fp, color=color)
-            target.spines["top"].set_visible(False)
-            target.legend(prop=fp, loc=("upper left", "upper right", "lower right")[i])
-        ax.axhline(0, color="#94a3b8", linewidth=1)
-        ax.set_xlabel("样本场次（由旧到新）", fontproperties=fp)
-        note = "PT 与魂珠分别累计" if len(units) > 1 else ""
-        if not any(math.isfinite(v) for v in values):
-            ax.text(
-                0.5,
-                0.5,
-                "样本缺少段位积分变化数据",
-                transform=ax.transAxes,
-                ha="center",
-                fontproperties=fp,
-            )
-    elif kind == "msheat":
+    if kind == "msheat":
         grid = [[0] * 24 for _ in range(7)]
         for game in games:
             stamp = game.started_at.astimezone(TZ)

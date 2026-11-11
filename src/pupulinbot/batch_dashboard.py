@@ -195,13 +195,13 @@ def render_dashboard(job):
         if dates
         else ""
     )
-    models = " · ".join(dict.fromkeys(str(key[0]) for key in groups))
+    models = " / ".join(dict.fromkeys(str(key[0]) for key in groups))
     subtitle = [
-        f"Mortal · {len(rows)}场复盘",
+        f"Mortal 复盘 {len(rows)} 场",
         period,
         models if len(groups) < 2 else f"{len(groups)}组模型",
     ]
-    c.text(40, 90, "   ·   ".join(s for s in subtitle if s), 18, MUTED, width=1200)
+    c.text(40, 90, "　".join(s for s in subtitle if s), 18, MUTED, width=1200)
     c.draw.rounded_rectangle(c.box((1190, 32, 1400, 79)), radius=15 * 2, fill="#e6edf9")
     c.text(1295, 56, f"{data['completed']} / {data['total']} 已完成", 20, BLUE, "bold", anchor="mm")
 
@@ -351,7 +351,7 @@ def render_dashboard(job):
         c.text(
             66,
             1059,
-            f"一致率 {delta(recent['agreement'])}pp  ·  ≤5% {delta(recent['bad5_rate'])}pp",
+            f"一致率 {delta(recent['agreement'])}pp　≤5% {delta(recent['bad5_rate'])}pp",
             15,
             MUTED,
             width=388,
@@ -365,7 +365,7 @@ def render_dashboard(job):
         c.text(
             526,
             1059,
-            f"{threshold}+  {sole['rainbow_count']}场  ·  {sole['rainbow_count'] / count:.0%}",
+            f"{threshold}+  {sole['rainbow_count']}场（{sole['rainbow_count'] / count:.0%}）",
             16,
             MUTED,
         )

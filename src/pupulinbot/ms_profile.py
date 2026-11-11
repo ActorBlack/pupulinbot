@@ -182,7 +182,7 @@ def render_profile(player, stats, *, scope=None, games=()):
         image,
         box=cards[0],
         name=content["name"],
-        subtitle=content["scope"] or f"{content['mode_label']} · 已收录 {content['games']} 场",
+        subtitle=content["scope"] or f"{content['mode_label']}　已收录 {content['games']} 场",
         current_rank=content["rank"],
         highest_rank=content["highest_rank"],
         current_points=content["point_text"].removesuffix(" PT"),

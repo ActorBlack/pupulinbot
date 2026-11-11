@@ -138,17 +138,19 @@ def record(i):
 
 
 @pytest.mark.asyncio
-async def test_outage_backfill_more_than_page_and_normal_poll_returns_to_small_page(tmp_path):
+async def test_outage_backfill_includes_game_in_progress_at_activation(tmp_path):
     db = Database(tmp_path / "m.db")
     await db.initialize()
     await db.bind("u", 42, "name")
     await db.subscribe("g", "u")
-    async with db.connect() as c:
-        await c.execute("UPDATE subscriptions SET created_at='2025-01-01'")
-        await c.commit()
     games = [record(i) for i in range(30)]
+    cutoff = games[0].started_at + timedelta(minutes=10)
+    async with db.connect() as c:
+        await c.execute("UPDATE subscriptions SET created_at=?", (cutoff.isoformat(),))
+        await c.commit()
     client = SimpleNamespace(
-        records=AsyncMock(return_value=games[-20:]), history=AsyncMock(return_value=(games, False))
+        records=AsyncMock(return_value=games[-20:]),
+        history=AsyncMock(side_effect=[(games[1:], False), ([games[0]], False)]),
     )
     monitor = GameMonitor(db, client, SimpleNamespace(enabled=False))
     send = AsyncMock()
@@ -157,9 +159,10 @@ async def test_outage_backfill_more_than_page_and_normal_poll_returns_to_small_p
     assert [call.args[1].splitlines()[-1].split("=")[-1] for call in send.call_args_list] == [
         str(i) for i in range(30)
     ]
-    assert send.await_count == 30 and client.history.await_count == 1
+    assert send.await_count == 30 and client.history.await_count == 2
+    client.history.assert_any_await(42, 1, end=cutoff)
     await monitor.poll(rows, send)
-    assert send.await_count == 30 and client.history.await_count == 1
+    assert send.await_count == 30 and client.history.await_count == 2
     saved = await db.monitor_health(rows[0]["subscriber"])
     assert saved["last_success"] and not saved["error"] and not saved["capped"]
 

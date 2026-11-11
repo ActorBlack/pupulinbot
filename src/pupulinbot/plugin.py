@@ -14,7 +14,7 @@ from nonebot.adapters.onebot.v11 import (
     MessageEvent,
     MessageSegment,
 )
-from nonebot.message import run_preprocessor
+from nonebot.message import event_preprocessor, run_preprocessor
 from nonebot.params import CommandArg
 from nonebot.typing import T_State
 
@@ -47,6 +47,7 @@ from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
 from .qq_delivery import send_verified_image
 from .record_names import RecordNames
+from .repeat_stop import RepeatStop
 from .review import MortalClient, ReviewError, ReviewQueue, parse_review_link, render_review
 from .review_cache import ReviewCache
 from .spectator import BrowserSpectatorClient
@@ -60,6 +61,13 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 superusers = frozenset(get_driver().config.superusers)
 MORTAL_PAUSE_ALERT_GROUP = 1131357545
+repeat_stop = RepeatStop()
+
+
+@event_preprocessor
+async def stop_repeated_group_messages(bot: Bot, event: Event):
+    if isinstance(event, GroupMessageEvent):
+        await repeat_stop.handle(bot, event)
 
 
 @run_preprocessor
@@ -708,7 +716,7 @@ async def runtime_status(group_id):
 
     rows = [r for r in await db.subscriptions() if r["group_id"] == str(group_id)]
     lines = [
-        f"雀魂服务状态 · 本群有效监控 {len(rows)} 个账号/模式",
+        f"雀魂服务状态\n本群有效监控 {len(rows)} 个账号/模式",
         f"轮询间隔 {settings.monitor_interval} 秒；单次补查上限 {monitor_service.catchup_limit} 场",
         watch_commands.boundary(),
         "牌谱屋鉴权："
@@ -735,7 +743,7 @@ async def runtime_status(group_id):
         )
     for row in rows[:10]:
         health = await db.monitor_health(row["subscriber"])
-        label = f"{row['nickname']} · {'三麻' if row['mode'] == 3 else '四麻'}"
+        label = f"{row['nickname']}（{'三麻' if row['mode'] == 3 else '四麻'}）"
         if not health:
             lines.append(label + "：尚未完成轮询")
             continue

@@ -15,7 +15,7 @@ def finished_records(games, account):
 def matchup(player, opponent, games, options, truncated):
     finished = finished_records(games, player.account_id)
     common = [g for g in finished if g.seat(opponent.account_id)]
-    title = f"{player.nickname} vs {opponent.nickname} · {'三麻' if options.mode == 3 else '四麻'}"
+    title = f"{player.nickname} vs {opponent.nickname}（{'三麻' if options.mode == 3 else '四麻'}）"
     lines = [
         title,
         f"本人筛选窗口读取 {len(games)} 场，已结算 {len(finished)} 场；找到同桌 {len(common)} 场。",
@@ -27,7 +27,7 @@ def matchup(player, opponent, games, options, truncated):
         (common[-1].seat(opponent.account_id) or {}).get("nickname") or opponent.nickname
     )
     lines[0] = (
-        f"{player.nickname} vs {opponent.nickname} · {'三麻' if options.mode == 3 else '四麻'}"
+        f"{player.nickname} vs {opponent.nickname}（{'三麻' if options.mode == 3 else '四麻'}）"
     )
     ahead = behind = tied = unknown = 0
     margins = []
@@ -69,7 +69,7 @@ def matchup(player, opponent, games, options, truncated):
     for g in reversed(common[-5:]):
         own, other = g.seat(player.account_id), g.seat(opponent.account_id)
         lines.append(
-            f"{g.started_at.astimezone(TZ):%m-%d %H:%M} · "
+            f"{g.started_at.astimezone(TZ):%m-%d %H:%M}　"
             f"本人{own.get('rank') or '?'}位 / 对手{other.get('rank') or '?'}位\n{g.url}"
         )
     return "\n".join(lines)
@@ -93,7 +93,7 @@ def render_comparison(player, games, truncated, options):
         fig.text(
             0.06,
             0.91,
-            f"{player.nickname} · 前后半段战绩对比",
+            f"{player.nickname}　前后半段战绩对比",
             fontproperties=font("bold"),
             fontsize=23,
         )
@@ -101,7 +101,7 @@ def render_comparison(player, games, truncated, options):
         fig.text(
             0.06,
             0.84,
-            f"{options.mode}麻 · {lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
+            f"{'三麻' if options.mode == 3 else '四麻'}　{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
             fontproperties=fp,
             fontsize=12,
             color="#64748b",

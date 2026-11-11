@@ -153,10 +153,10 @@ async def test_self_binding_default_query_profile_and_missing_account(store):
     with pytest.raises(TenhouError, match="thbind"):
         await service.query("th", "", "user", "group")
     assert await service.query("thbind", "applePie", "user", "group") == "绑定成功"
-    assert "applePie(" in await service.query("th", "-l 100", "user", "group")
+    assert "applePie（" in await service.query("th", "-l 100", "user", "group")
     source.phoenix_stats.assert_not_awaited()
     profile = await service.query("th4", "", "user", "group")
-    assert "凤凰桌统计 · 四鳳东/南 · 839战" in profile
+    assert "凤凰桌统计　四鳳东/南（839 战）" in profile
     source.phoenix_stats.assert_awaited_once_with("applePie", 4, None)
     assert "安定段:" in profile
     assert await service.query("thunbind", "", "user", "group") == "已解除绑定"
@@ -188,7 +188,7 @@ async def test_binding_other_member_requires_authority_and_never_overwrites(stor
     )
     source.user_history.assert_not_awaited()
     assert await store.binding("managerfriend") == "applePie"
-    assert "applePie(" in await service.query(
+    assert "applePie（" in await service.query(
         "th2", "", "ordinary", "group", mentioned="managerfriend"
     )
 

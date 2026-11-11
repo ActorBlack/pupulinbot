@@ -70,7 +70,7 @@ def test_profile_render_has_no_account_id_or_removed_prefixes_and_no_clipped_tex
     assert drawn.index("和牌与打点") < drawn.index("防守与流局") < drawn.index("立直与副露")
     assert all(f"{i}位" in drawn for i in range(1, mode + 1))
     if mode == 3:
-        assert "4位" not in drawn and "三麻 · 已收录 2,193 场" in drawn
+        assert "4位" not in drawn and "三麻　已收录 2,193 场" in drawn
         assert not any(label.startswith("#") for label in drawn)
 
 

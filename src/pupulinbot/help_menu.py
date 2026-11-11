@@ -27,7 +27,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
     )
     return [
         (
-            "普普林 Bot · 入门",
+            "普普林 Bot 入门",
             "命令可带 /，也可直接发送；仅英文命令生效，说明和玩家昵称仍可使用中文。\n"
             "/msbind 普普林：绑定雀魂昵称或 account ID\n/msbind friend <好友码>：通过好友码绑定\n"
             "/msunbind：解除自己的绑定\n"
@@ -38,7 +38,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "省略玩家时使用自己的绑定；参数中的 <…> 不需要输入尖括号。",
         ),
         (
-            "查询 · 个人与战绩",
+            "个人资料与战绩",
             "/ms4 [玩家] -i：四麻资料卡；/ms3 [玩家] -i：三麻资料卡\n"
             "/ms4 [玩家] -i -r 玉南 -l 100：所选房间最近100场资料卡\n"
             "省略 -l：所选房间累计统计；不加 -i：统计文字\n"
@@ -50,16 +50,16 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msfri <好友码>：好友码转账号\n/mssfri [玩家]：查询好友码",
         ),
         (
-            "图表 · 看走势",
+            "战绩图表",
             "/mslife [玩家] -l 100：段位积分走势\n"
-            "/msstyle [玩家] -l 100：12指标牌风分析图\n"
+            "/msstyle [玩家] -l 100：六维牌风雷达与指标对照\n"
             "/mscompare [玩家] -l 100：前后半段对比\n"
             "/msvs <对手> -l 200：自己与对手的同桌统计\n"
             "/msheat [玩家]：对局时间热力图\n/msstat [玩家]：对局数量统计\n"
             "/mssession [玩家]：连续对局统计",
         ),
         (
-            "筛选 · 查询参数",
+            "查询筛选",
             "每次只查一个房间；ms 默认最近对局房间，其他图表和高级查询默认玉南。\n"
             "-l 100：最近 100 场\n"
             "ms 最多 500 场；-l 0 表示查询最多 500 场。\n"
@@ -71,7 +71,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "这些筛选用于高级查询，msstats 不支持全部参数。",
         ),
         (
-            "雀魂 · 本群监控",
+            "雀魂群监控",
             "/mswatch on <昵称或account ID>：添加监控（仅负责人）\n"
             "/mswatch off <昵称或account ID>：移除监控（仅负责人）\n"
             "/mswatch off all：清空本群四麻监控（仅负责人）\n"
@@ -80,7 +80,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msstatus：服务状态",
         ),
         (
-            "天凤 · 绑定、查询与监控",
+            "天凤绑定、查询与监控",
             "/thbind <天凤昵称> / thunbind：绑定 / 解绑\n"
             "/th2 @群友 [昵称]：查询 / 管理员代绑；已有绑定不覆盖\n"
             "/th4 [昵称] -i / th3 [昵称] -i：四麻 / 三麻资料卡\n"
@@ -101,7 +101,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。",
         ),
         (
-            "Mortal · 单场与批量",
+            "Mortal 复盘",
             "/mortal <雀魂/天凤链接或一番街ID@座位> [座位0–3]：单场分析\n"
             "天凤默认使用链接tw座位；手动指定优先。支持四麻半庄。\n"
             "/mstable <雀魂/天凤链接或一番街ID@0>：全桌四人分析\n"
@@ -117,7 +117,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "跑谱完成后会在结果消息中 @任务发起者。\n" + mortal,
         ),
         (
-            "使用规则 · 数据说明",
+            "使用规则",
             "① 查询来自牌谱屋，主要覆盖金之间及以上；无数据不代表没打牌。\n"
             "② 结算提醒要等牌谱屋收录，有延迟；同群同账号同场去重，发送失败会重试。\n"
             "③ 监控名单由负责人维护，各群独立。\n"
@@ -135,7 +135,7 @@ def forward_nodes(bot_id, **options):
         {
             "type": "node",
             "data": {
-                "name": "普普林 Bot · 使用指南",
+                "name": "普普林 Bot 使用指南",
                 "uin": str(bot_id),
                 "content": [{"type": "text", "data": {"text": title + "\n\n" + text}}],
             },

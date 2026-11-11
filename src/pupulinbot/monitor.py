@@ -103,6 +103,7 @@ class GameMonitor:
                 and any(g.uuid == previous[0] for g in games)
             )
             capped = False
+            boundary_failed = False
             if (
                 not seen
                 and len(games) >= self.page_size
@@ -111,11 +112,28 @@ class GameMonitor:
             ):
                 if hasattr(client, "history"):
                     games, capped = await client.history(key[1], self.catchup_limit, start=cutoff)
+                    if not capped:
+                        # History filters by start time. Also check the match that
+                        # could have been in progress when monitoring was enabled.
+                        try:
+                            previous_games, _ = await client.history(key[1], 1, end=cutoff)
+                        except Exception:
+                            boundary_failed = True
+                            logger.exception("监控起点补查失败：mode=%s account=%s", *key)
+                        else:
+                            for game in previous_games:
+                                if game.ended_at and game.started_at < cutoff <= game.ended_at:
+                                    if len(games) < self.catchup_limit:
+                                        games = [*games, game]
+                                    else:
+                                        capped = True
                 else:
                     capped = True
-            if games and not capped:
+            if boundary_failed:
+                self.anchors.pop(key, None)
+            elif games and not capped:
                 self.anchors[key] = (max(games, key=lambda g: g.started_at).uuid, cutoff)
-            return games, capped
+            return games, capped, boundary_failed
 
         async def cached(cache, key, load):
             if key not in cache:
@@ -158,7 +176,7 @@ class GameMonitor:
                 client = self.sanma if mode == 3 else self.records
                 if client is None:
                     raise RuntimeError("三麻结算数据源未配置")
-                games, capped = await cached(
+                games, capped, boundary_failed = await cached(
                     records_cache,
                     (mode, sub["account_id"]),
                     lambda client=client, key=(mode, sub["account_id"]): load_records(client, key),
@@ -168,10 +186,12 @@ class GameMonitor:
                 logger.exception("结算查询失败：group=%s qq=%s", sub["group_id"], sub["qq_id"])
                 await self._health(sub, "结算查询失败，请稍后重试或检查数据源连接。")
                 continue
-            delivery_error = None
+            delivery_error = (
+                "监控开启时的对局补查失败，后续轮询将重试。" if boundary_failed else None
+            )
             for game in sorted(games, key=lambda g: g.started_at):
                 # Indexed partial records do not establish a genuine live start.
-                if not game.ended_at or not sub["notify_finish"] or game.started_at < subscribed_at:
+                if not game.ended_at or not sub["notify_finish"] or game.ended_at < subscribed_at:
                     continue
                 message = finish_message(sub["nickname"], game, sub["account_id"])
                 try:

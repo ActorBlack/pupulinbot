@@ -69,7 +69,7 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                 else "等待首次检查"
             )
             health = (row["error"] or "结算源正常") if row["checked_at"] else "待检查"
-            lines.append(f"{row['name']} · {checked} · {health}")
+            lines.append(f"{row['name']}　{checked}（{health}）")
         lines.append(
             "开局源：" + (monitor.live_error or ("正常" if monitor.live_checked else "待检查"))
         )

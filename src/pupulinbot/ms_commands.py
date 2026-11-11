@@ -95,9 +95,11 @@ class MahjongQueries:
                     profiles = await collect_profiles(self.clients[options.mode], game)
                     return await asyncio.to_thread(render_monitor_card, game, "start", profiles)
                 names = " / ".join(p.get("nickname", str(p["account_id"])) for p in game.players)
+                mode = "三麻" if options.mode == 3 else "四麻"
+                stamp = game.started_at.astimezone(TZ)
                 return (
-                    f"{player.nickname} · 正在对局\n"
-                    f"{options.mode}麻 · {game.started_at.astimezone(TZ):%m-%d %H:%M}\n"
+                    f"{player.nickname} 正在对局\n"
+                    f"{mode}　{stamp:%m-%d %H:%M}\n"
                     f"{names}\n{game.url}"
                 )
             except LiveServiceError as exc:
@@ -200,8 +202,9 @@ class MahjongQueries:
             if command == "mslast":
                 if options.image:
                     return await asyncio.to_thread(render_recent, player, games, options.mode)
-                return f"{player.nickname} · {options.mode}麻\n" + format_records(
-                    games, player.account_id
+                return (
+                    f"{player.nickname}（{'三麻' if options.mode == 3 else '四麻'}）\n"
+                    + format_records(games, player.account_id)
                 )
             if command == "msstyle":
                 stats = await self.sample_stats(player, games, options, client)
@@ -269,7 +272,7 @@ class MahjongQueries:
         )
         if options.start or options.end:
             count = f"所选日期 {stats.games:,} 场"
-        scope = f"{'三麻' if options.mode == 3 else '四麻'} · {room} · {count}"
+        scope = f"{'三麻' if options.mode == 3 else '四麻'}{room}　{count}"
         if options.image:
             return await asyncio.to_thread(render_profile, player, stats, scope=scope, games=games)
         return (

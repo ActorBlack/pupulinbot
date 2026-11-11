@@ -1027,7 +1027,7 @@ def render_report(job: dict) -> str:
         # Only trusted author report URLs are clickable; generic service URLs stay as text.
         link = f'<a href="{esc(row["online_url"])}" target="_blank" rel="noopener">在线复盘</a>'
         if report and report.startswith("https://mjai.ekyu.moe/"):
-            link += f' · <a href="{esc(report)}" target="_blank" rel="noopener">报告</a>'
+            link += f'　<a href="{esc(report)}" target="_blank" rel="noopener">报告</a>'
         body.append(f"<tr>{cells}<td>{link}<br>{esc(row.get('error') or '')}</td></tr>")
     aggregates = []
     for metric in [] if job.get("kind") == "table" else summaries(job["rows"]):
@@ -1064,15 +1064,16 @@ def render_report(job: dict) -> str:
     header_cells = "".join("<th>" + value + "</th>" for value in headers)
     return f"""<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{esc(job["nickname"])} · Mortal 批量报告</title>
+<title>{esc(job["nickname"])}　Mortal 批量报告</title>
 <style>body{{font:15px system-ui;margin:32px;color:#172033;background:#f5f7fb}}
 table{{border-collapse:collapse;background:white;white-space:nowrap}}
 td,th{{padding:10px;border:1px solid #ddd}}
-th{{background:#e5edf9}}.scroll{{overflow:auto}}a{{color:#1766ba}}</style>
-<h1>{esc(job["nickname"])} · Mortal 批量报告</h1>
-<p>任务 {esc(job["id"])} · 请求 {job["requested"]} {unit}
-· 找到 {len(job["rows"])} {unit} · 成功 {done} {unit}
-· 状态 {esc(STATUS_LABELS.get(job["status"], job["status"]))}</p>
+th{{background:#e5edf9}}.scroll{{overflow:auto}}a{{color:#1766ba}}
+.meta{{display:flex;flex-wrap:wrap;gap:6px 18px}}</style>
+<h1>{esc(job["nickname"])}　Mortal 批量报告</h1>
+<p class="meta"><span>任务 {esc(job["id"])}</span><span>请求 {job["requested"]} {unit}</span>
+<span>找到 {len(job["rows"])} {unit}</span><span>完成 {done} {unit}</span>
+<span>{esc(STATUS_LABELS.get(job["status"], job["status"]))}</span></p>
 <ul>{"".join(aggregates) or f"<li>{aggregate_note}</li>"}</ul>
 <div class="scroll"><table><thead><tr>{header_cells}</tr></thead>
 <tbody>{"".join(body)}</tbody></table></div></html>"""

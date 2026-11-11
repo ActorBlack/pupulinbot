@@ -65,7 +65,7 @@ def _render_single_card(job: dict) -> bytes:
     draw = ImageDraw.Draw(image)
     ink, muted = "#22324b", "#7f8da3"
     draw.rounded_rectangle((28, 29, 33, 65), 2, fill="#4479d7")
-    draw.text((48, 46), "Mortal · 复盘", font=face(32, "title"), fill=ink, anchor="lm")
+    draw.text((48, 46), "Mortal 复盘", font=face(32, "title"), fill=ink, anchor="lm")
     name = seat_nickname(row)
     if name in {"—", "昵称读取中"}:
         name = job.get("nickname", "")
@@ -393,7 +393,7 @@ def _render_table_chart(job, *, shimmer_phase=None):
         return value, size
 
     draw.rounded_rectangle((64, 42, 71, 92), radius=3, fill="#4479d7")
-    text(92, 69, "Mortal · 同桌复盘", 44, style="title", anchor="lm")
+    text(92, 69, "Mortal 同桌复盘", 44, style="title", anchor="lm")
     sources = {r.get("source", "majsoul") for r in job["rows"]}
     source = (
         {"tenhou": "天凤", "majsoul": "雀魂", "riichi_city": "一番街"}.get(

@@ -136,7 +136,7 @@ def summary_text(view, *, detailed=False):
     scope = f"{scope}最近{view['count']}战" if view["recent"] else f"{scope}{view['count']}战"
     counts = view["counts"]
     lines = [
-        f"{view['name']}({rank_text(view['progress'])}) - {mode}·{scope}",
+        f"{view['name']}（{rank_text(view['progress'])}）\n{mode}　{scope}",
         "R值: "
         + value(view["rate"], decimals=0)
         + " | 最高R: "
@@ -162,7 +162,7 @@ def summary_text(view, *, detailed=False):
         if p:
             lines.extend(
                 [
-                    f"凤凰桌统计 · {view['phoenix_scope']} · {p.get('totalrecord', '—')}战",
+                    f"凤凰桌统计　{view['phoenix_scope']}（{p.get('totalrecord', '—')} 战）",
                     f"和/铳: {value(p.get('agariC'), percent=True)} / "
                     f"{value(p.get('houjuuC'), percent=True)} | "
                     f"副露/立直: {value(p.get('fuuroC'), percent=True)} / "

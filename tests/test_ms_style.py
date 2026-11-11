@@ -109,6 +109,7 @@ async def test_style_query_loads_exact_sample_not_lifetime_and_propagates_filter
     with patch("pupulinbot.ms_commands.render_style", return_value=b"png") as render:
         assert await service.query("msstyle", "x last=100 room=玉南", 1, 2) == b"png"
     assert render.call_args.args[1] is sample
+    assert render.call_args.args[3].modes == [12]
     assert client.range_stats.call_args.kwargs["modes"] == [12]
     client.stats.assert_not_called()
     sample.games = 101
@@ -134,7 +135,7 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
 
     from PIL import Image
 
-    from pupulinbot.ms_style_chart import render_style
+    from pupulinbot.ms_style_chart import SIZE, render_style
 
     for value in (None, SimpleNamespace(raw=ORACLE[-1]["metrics"], games=100)):
         image = Image.open(
@@ -142,7 +143,31 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
                 render_style(Player(42, "超长昵称" * 20), value, games(), parse_options("last=100"))
             )
         )
-        assert image.size == (1200, 815) and image.mode == "RGB"
+        assert image.size == SIZE and image.mode == "RGB"
+
+
+def test_radar_uses_only_the_selected_room_mean_and_leaves_missing_axes_blank():
+    from pupulinbot.ms_options import MODE_NAMES, ROOMS
+    from pupulinbot.ms_style_chart import AXES, axis_score, comparison_reference
+    from pupulinbot.ms_tags import reference_for
+
+    room_means = []
+    for room in (str(mode) for pair in ROOMS[4].values() for mode in pair):
+        label, base, ranks = comparison_reference(room)
+        assert label == f"{MODE_NAMES[room]}均值"
+        assert sum(ranks) == pytest.approx(1)
+        assert [axis_score(group, base, base) for _, group in AXES] == [50] * 6
+        room_means.append(base["和牌率"])
+    assert len(set(room_means)) == 6
+
+    _, base, _ = comparison_reference("12")
+    assert base["和牌率"] == pytest.approx(0.216924, abs=0.000001)
+    cohort = reference_for("12")["levels"]["10502"]["extended"]
+    assert base["和牌率"] != pytest.approx(cohort["和牌率"])
+    defense = AXES[1][1]
+    assert axis_score(defense, {**base, "放铳率": base["放铳率"] - 0.01}, base) > 50
+    assert axis_score(defense, {**base, "平均铳点": None}, base) is None
+    assert comparison_reference("21") == ("三麻金东暂无均值", {}, [])
 
 
 @pytest.mark.asyncio

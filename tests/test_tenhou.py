@@ -298,14 +298,17 @@ async def test_real_feed_clock_lead_and_ron2_tables_are_supported():
     await client.close()
 
 
-def test_private_lobby_without_duration_or_link_remains_queryable():
+@pytest.mark.parametrize("link_fields", [{}, {"url": ""}, {"url": None}])
+def test_private_lobby_without_duration_or_link_remains_queryable(link_fields):
     row = fixture("result")
     row.pop("during")
     row.pop("url")
-    row.update(sctype="a", lobby="6337")
+    row.update(sctype="a", lobby="6337", **link_fields)
     assert history_rows({"name": "applePie", "list": [row]}, "applePie") == [row]
     text = format_result(row)
-    assert "时长: 未提供" in text and "未提供牌谱链接" in text and "结算点" in text
+    assert "时长: 未提供" in text and "结算点" in text
+    assert "未提供牌谱链接" not in text
+    assert text.endswith("てりうむ(-54.5)")
 
 
 def test_six_to_ten_dan_have_distinct_badge_and_history_backgrounds():
