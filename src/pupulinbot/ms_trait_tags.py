@@ -63,6 +63,39 @@ def rate(value):
     return value if value is not None and 0 <= value <= 1 else None
 
 
+def is_pupulin_profile(stats):
+    """User-defined absolute profile: all six metric limits and at least 50 games.
+
+    Use the API's displayed net efficiency when supplied, including its integer
+    rounding. Only compute the published formula when that field is absent.
+    No additional hand/event minimum or cohort confidence test applies here.
+    """
+    games = number(getattr(stats, "games", None))
+    if games is None or not games.is_integer() or games < 50:
+        return False
+    for attribute, lower, upper in (
+        ("call_rate", 0.25, 0.27),
+        ("riichi_rate", 0.185, 0.205),
+        ("deal_in_rate", 0.095, 0.115),
+        ("win_rate", 0.215, 0.24),
+    ):
+        value = rate(getattr(stats, attribute, None))
+        if value is None or not lower <= value <= upper:
+            return False
+    raw = getattr(stats, "raw", None)
+    if not isinstance(raw, dict):
+        return False
+    points = number(raw.get("平均打点"))
+    if points is None or points < 6600:
+        return False
+    if "净打点效率" in raw:
+        efficiency = number(raw["净打点效率"])
+    else:
+        source = {**raw, "和牌率": rate(stats.win_rate), "放铳率": rate(stats.deal_in_rate)}
+        efficiency = efficiency_metrics(source).get("净打点效率")
+    return efficiency is not None and efficiency >= 800
+
+
 def wilson_interval(value, trials):
     """95% binomial approximation, used as a conservative rate sampling guard."""
     value, trials = rate(value), number(trials)

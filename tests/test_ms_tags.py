@@ -6,11 +6,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
+from test_ms_profile import stats as profile_stats
 
 from pupulinbot.models import GameRecord, Player
+from pupulinbot.ms_charts import render_profile
 from pupulinbot.ms_options import parse_options
-from pupulinbot.ms_sample_chart import Figure, render_sample
 from pupulinbot.ms_style import FEATURES, analyze_style
 from pupulinbot.ms_summary import format_summary
 from pupulinbot.ms_tags import (
@@ -199,16 +200,21 @@ def test_ms_text_and_image_keep_main_style_and_append_the_same_tags(monkeypatch)
     text = format_summary(player, rows, False, options, {"sample": sample}, now=NOW)
     assert text.splitlines()[-1] == "牌风: " + expected
     labels = []
-    original = Figure.text
+    original = ImageDraw.ImageDraw.text
 
-    def capture(self, x, y, value, **kwargs):
-        labels.append(value)
-        return original(self, x, y, value, **kwargs)
+    def capture(self, xy, value, *args, **kwargs):
+        labels.append(str(value))
+        return original(self, xy, value, *args, **kwargs)
 
-    monkeypatch.setattr(Figure, "text", capture)
-    picture = render_sample(player, rows, False, options, sample)
-    assert Image.open(io.BytesIO(picture)).size == (1680, 1260)
-    assert "样本牌风 · " + expected in labels
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    value = profile_stats()
+    value.games, value.raw = sample.games, sample.raw
+    for attr in ("win_rate", "deal_in_rate", "call_rate", "riichi_rate"):
+        setattr(value, attr, getattr(sample, attr))
+    picture = render_profile(player, value, scope="四麻 · 玉南 · 最近100场", games=rows)
+    assert Image.open(io.BytesIO(picture)).size == (1600, 1258)
+    assert "#" + analyze_style(sample).label in labels
+    assert "#副露流 #稳健防守 #铳点节流" in labels
     sample.games = 101
     text = format_summary(player, rows, False, options, {"sample": sample}, now=NOW)
     assert "副露流" not in text and "稳健防守" not in text

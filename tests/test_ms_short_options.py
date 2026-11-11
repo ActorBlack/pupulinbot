@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from test_ms_summary import games
@@ -32,19 +32,21 @@ async def test_invalid_short_options_fail_before_network(text):
     client.history.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", ["ms", "ms4", "ms2", "ms3"])
+@pytest.mark.parametrize("command", ["ms", "ms4", "ms3"])
 @pytest.mark.parametrize("count", [50, 200])
 @pytest.mark.asyncio
 async def test_short_count_selects_sample_without_being_overridden(command, count):
     client = SimpleNamespace(resolve=AsyncMock(return_value=Player(42, "玩家")))
     service = MahjongQueries(None, client, client)
     service.summary_query = AsyncMock(return_value="sample")
+    service.profile_query = AsyncMock(return_value="sample")
     assert await service.query(command, f"玩家 -l {count} -r 王座", 1, 2) == "sample"
-    options = service.summary_query.call_args.args[1]
+    handler = service.summary_query if command == "ms" else service.profile_query
+    options = handler.call_args.args[1]
     assert options.last == count and options.modes == ([26] if command == "ms3" else [16])
 
 
-@pytest.mark.parametrize("command,count", [("mslast", 5), ("msdetail", 200)])
+@pytest.mark.parametrize("command,count", [("mslast", 5)])
 @pytest.mark.asyncio
 async def test_short_count_is_used_for_records_and_charts(command, count):
     client = SimpleNamespace(
@@ -53,8 +55,7 @@ async def test_short_count_is_used_for_records_and_charts(command, count):
     )
     service = MahjongQueries(None, client, client)
     service.sample_stats = AsyncMock(return_value=None)
-    with patch("pupulinbot.ms_commands.render_sample", return_value=b"png"):
-        await service.query(command, f"玩家 -l {count} -r 玉", 1, 2)
+    await service.query(command, f"玩家 -l {count} -r 玉", 1, 2)
     client.history.assert_awaited_once_with(42, count, start=None, end=None, modes=[12])
 
 

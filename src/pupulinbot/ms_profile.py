@@ -10,6 +10,7 @@ from .ms_options import level_label
 from .ms_sample import number
 from .ms_style import analyze_style
 from .ms_summary import format_level, rank_progress, ratio, scoring_metrics
+from .ms_tags import supplemental_tags
 from .profile_header import draw_profile_header
 from .rank_assets import rank_badge
 from .typography import profile_face as face
@@ -33,7 +34,7 @@ def metric(value, kind="rate"):
     return f"{value:.2f}"
 
 
-def profile_content(player, stats):
+def profile_content(player, stats, *, scope=None, games=()):
     raw = stats.raw or {}
     mode = 3 if stats.mode == "三麻" else 4
     count = number(stats.games)
@@ -136,6 +137,10 @@ def profile_content(player, stats):
         "highest_rank": highest_rank,
         "highest_points": highest_points,
         "tag": tag,
+        "extra_tags": supplemental_tags(stats, games, player.account_id, mode=mode)
+        if games
+        else [],
+        "scope": scope,
         "ranks": ranks,
         "hero": [
             ("平均顺位", metric(average, "number")),
@@ -147,10 +152,11 @@ def profile_content(player, stats):
     }
 
 
-def render_profile(player, stats):
-    content = profile_content(player, stats)
-    image = Image.new("RGBA", SIZE, "#f2f5fa")
-    shadow = Image.new("RGBA", SIZE)
+def render_profile(player, stats, *, scope=None, games=()):
+    content = profile_content(player, stats, scope=scope, games=games)
+    size = (SIZE[0], SIZE[1] + (110 if content["extra_tags"] else 0))
+    image = Image.new("RGBA", size, "#f2f5fa")
+    shadow = Image.new("RGBA", size)
     sd = ImageDraw.Draw(shadow)
     cards = [(40, 32, 1560, 240), (40, 436, 1560, 626)]
     cards += [(40 + 384 * i, 260, 408 + 384 * i, 416) for i in range(4)]
@@ -176,7 +182,7 @@ def render_profile(player, stats):
         image,
         box=cards[0],
         name=content["name"],
-        subtitle=f"{content['mode_label']} · 已收录 {content['games']} 场",
+        subtitle=content["scope"] or f"{content['mode_label']} · 已收录 {content['games']} 场",
         current_rank=content["rank"],
         highest_rank=content["highest_rank"],
         current_points=content["point_text"].removesuffix(" PT"),
@@ -239,6 +245,18 @@ def render_profile(player, stats):
             if index < len(rows) - 1:
                 draw.line((x + 28, y + 26, x + 468, y + 26), fill="#edf1f6")
     text(64, 1108, "好友码 " + content["friend"], 20, "#8b99ae")
+    if content["extra_tags"]:
+        line, y = "", 1159
+        for tag in content["extra_tags"]:
+            candidate = (line + " #" + tag).strip()
+            if draw.textlength(candidate, font=face(22)) > 1472 and line:
+                text(64, y, line, 22, "#7561a8")
+                y += 38
+                line = "#" + tag
+            else:
+                line = candidate
+        if line:
+            text(64, y, line, 22, "#7561a8")
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()

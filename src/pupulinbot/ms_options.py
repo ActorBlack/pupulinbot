@@ -10,6 +10,14 @@ ROOMS = {
     4: {"金": [8, 9], "玉": [11, 12], "王": [15, 16]},
     3: {"金": [21, 22], "玉": [23, 24], "王": [25, 26]},
 }
+MODE_NAMES = {
+    str(ids[i]): ("三麻" if mode == 3 else "")
+    + ("王座" if room == "王" and mode == 4 else room)
+    + length
+    for mode, rooms in ROOMS.items()
+    for room, ids in rooms.items()
+    for i, length in enumerate(("东", "南"))
+}
 
 
 @dataclass

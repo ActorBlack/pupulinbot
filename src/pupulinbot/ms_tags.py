@@ -11,7 +11,13 @@ from pathlib import Path
 
 from .ms_sample import number
 from .ms_tag_reference import build_reference
-from .ms_trait_tags import select_tags, trait_tags, wilson_interval, yakuman_victim
+from .ms_trait_tags import (
+    is_pupulin_profile,
+    select_tags,
+    trait_tags,
+    wilson_interval,
+    yakuman_victim,
+)
 
 MIN_GAMES = 20
 RANK_MIN_GAMES = 50
@@ -128,9 +134,12 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
         or len({g.mode for g in finished}) != 1
     ):
         return []
+    pupulin = str(finished[0].mode) in {"8", "9", "11", "12", "15", "16"} and is_pupulin_profile(
+        stats
+    )
     reference = reference_for(finished[0].mode)
     if reference is None:
-        return []
+        return ["普普林"] if pupulin else []
     mean, cut = reference["means"], reference["thresholds"]
     raw = getattr(stats, "raw", {}) or {}
     hands = number(raw.get("_hand_count"))
@@ -221,4 +230,6 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
         extra = {"style": [], "luck": [], "achievement": []}
         if yakuman_victim(raw, finished):
             extra["achievement"].append("役满受害者")
+    if pupulin:
+        tags.insert(0, "普普林")
     return select_tags(tags, extra, MAX_TAGS)

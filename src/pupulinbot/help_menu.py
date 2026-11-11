@@ -32,14 +32,15 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msbind 普普林：绑定雀魂昵称或 account ID\n/msbind friend <好友码>：通过好友码绑定\n"
             "/msunbind：解除自己的绑定\n"
             "/ms4 -i：查看自己的四麻面板\n/ms3 -i：三麻面板\n"
-            "/ms2 @群友：查询群友绑定\n"
-            "/ms2 @群友 昵称：代绑账号（管理员）；已有绑定不覆盖\n"
             "/help：重新查看本说明\n"
             "省略玩家时使用自己的绑定；参数中的 <…> 不需要输入尖括号。",
         ),
         (
             "查询 · 个人与战绩",
-            "/ms4 [玩家]：个人资料\n/ms4 [玩家] -o [-i]：查询当前公开观战\n"
+            "/ms4 [玩家] -i：四麻资料卡；/ms3 [玩家] -i：三麻资料卡\n"
+            "/ms4 [玩家] -i -r 玉南 -l 100：所选房间最近100场资料卡\n"
+            "省略 -l：所选房间累计统计；不加 -i：统计文字\n"
+            "/ms4 [玩家] -o [-i]：查询当前公开观战\n"
             "/msstats [玩家] [sanma]：统计文字\n"
             "/mslast [玩家] -l 10 [-i]：最近对局\n"
             "/ms [玩家] -l 100：最近 X 场文字摘要（默认最近对局房间）\n"
@@ -49,7 +50,6 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
         (
             "图表 · 看走势",
             "/mslife [玩家] -l 100：段位积分走势\n"
-            "/msdetail [玩家] -l 100：战绩汇总图（含样本牌风）\n"
             "/msstyle [玩家] -l 100：12指标牌风分析图\n"
             "/mscompare [玩家] -l 100：前后半段对比\n"
             "/msvs <对手> -l 200：自己与对手的同桌统计\n"

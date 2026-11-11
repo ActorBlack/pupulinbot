@@ -3,13 +3,13 @@ import math
 from datetime import UTC, datetime
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
+from test_ms_profile import stats as profile_stats
 from test_ms_tags import records, stats
 from test_ms_trait_tags import classify, sample_raw
 
 from pupulinbot.models import Player
-from pupulinbot.ms_options import parse_options
-from pupulinbot.ms_sample_chart import Figure, render_sample
+from pupulinbot.ms_charts import render_profile
 from pupulinbot.ms_tags import MAX_TAGS, reference_for, supplemental_tags
 from pupulinbot.ms_trait_tags import efficiency_metrics, trait_tags, yakuman_victim
 
@@ -271,7 +271,7 @@ def test_efficiency_minimum_is_four_hundred_hands_and_thirty_relevant_events():
     assert "铳点节流" in trait_tags(raw, reference, 400)["style"]
 
 
-def test_ten_additional_tags_wrap_completely_inside_sample_picture(monkeypatch):
+def test_ten_additional_tags_fit_inside_filtered_profile_card(monkeypatch):
     tags = [
         "役满受害者",
         "流局听牌王",
@@ -284,26 +284,22 @@ def test_ten_additional_tags_wrap_completely_inside_sample_picture(monkeypatch):
         "追立冒险家",
         "铳点节流",
     ]
-    label = "#超重度后手反击型 " + " ".join("#" + tag for tag in tags)
-    monkeypatch.setattr(
-        "pupulinbot.ms_sample_chart.style_lines", lambda *a, **k: ["牌风: " + label]
+    monkeypatch.setattr("pupulinbot.ms_profile.supplemental_tags", lambda *a, **k: tags)
+    drawn = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(self, xy, value, *args, **kwargs):
+        if value.startswith("#") and any(tag in value for tag in tags):
+            drawn.append(value)
+            box = self.textbbox(xy, value, font=kwargs["font"], anchor=kwargs.get("anchor"))
+            assert 0 <= box[0] < box[2] <= 1600 and 0 <= box[1] < box[3] <= 1258
+        return original(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    value = profile_stats()
+    png = render_profile(
+        Player(42, "标签排版示例"), value, scope="四麻 · 玉南 · 最近100场", games=records()
     )
-    artists = []
-    original = Figure.text
-
-    def capture(self, x, y, value, **kwargs):
-        artist = original(self, x, y, value, **kwargs)
-        if value.startswith(("样本牌风 ·", "#")):
-            artists.append(artist)
-        return artist
-
-    monkeypatch.setattr(Figure, "text", capture)
-    png = render_sample(Player(42, "标签排版示例"), records(), False, parse_options("-l 100"))
-    assert Image.open(io.BytesIO(png)).size == (1680, 1260)
-    assert 1 < len(artists) <= 3
-    assert " ".join(artist.get_text() for artist in artists).removeprefix("样本牌风 · ") == label
-    for artist in artists:
-        box = artist.get_window_extent(artist.figure.canvas.get_renderer())
-        assert box.x0 >= 0 and box.x1 <= 1680 * 0.96
-        assert box.y0 >= 0
+    assert Image.open(io.BytesIO(png)).size == (1600, 1258)
+    assert " ".join(drawn) == " ".join("#" + tag for tag in tags)
     assert MAX_TAGS == 10

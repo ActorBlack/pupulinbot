@@ -146,7 +146,7 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
 
 
 @pytest.mark.asyncio
-async def test_detail_and_image_summary_share_matched_sample_stats():
+async def test_profile_filter_does_not_use_summary_image_route():
     sample = stats(100)
     sample.raw.update(ORACLE[-1]["metrics"])
     client = SimpleNamespace(
@@ -157,10 +157,10 @@ async def test_detail_and_image_summary_share_matched_sample_stats():
         stats=AsyncMock(),
     )
     service = MahjongQueries(None, client, client)
-    with patch("pupulinbot.ms_commands.render_sample", return_value=b"png") as render:
-        await service.query("msdetail", "x last=100", 1, 2)
-        assert render.call_args.args[-1] is sample
+    service.profile_query = AsyncMock(return_value=b"profile")
+    assert await service.query("ms4", "x -i -l 100 -r 玉南", 1, 2) == b"profile"
+    assert service.profile_query.call_args.args[1].last == 100
+    with pytest.raises(ValueError, match="文字摘要"):
         await service.query("ms", "x last=100 -i", 1, 2)
-        assert render.call_args.args[-1] is sample
     with pytest.raises(ValueError, match="仅适用于四麻"):
         await service.query("msstyle", "x mode=3", 1, 2)

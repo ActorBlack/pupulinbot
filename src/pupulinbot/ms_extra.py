@@ -1,11 +1,10 @@
 """Comparisons of indexed Mahjong Soul records; no inferred hand statistics."""
 
 from .batch_chart import _RENDER_LOCK, Figure, FigureCanvasAgg
-from .ms_charts import font
+from .ms_charts import font, save
 from .ms_level import delta_totals, seat_delta, totals_text
 from .ms_options import TZ
 from .ms_sample import number, sample_summary
-from .ms_sample_chart import save
 
 
 def finished_records(games, account):

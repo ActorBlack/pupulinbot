@@ -9,8 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .ms_level import delta_text, point_text, point_unit, rank_identity, rank_label, rank_progress
-from .ms_options import TZ
-from .ms_sample_chart import MODE_NAMES
+from .ms_options import MODE_NAMES, TZ
 from .rank_assets import rank_badge
 from .rate_tags import rate_tag
 from .typography import face

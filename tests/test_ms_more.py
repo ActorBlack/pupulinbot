@@ -8,9 +8,8 @@ import pytest
 from pupulinbot.models import GameRecord, Player
 from pupulinbot.ms_commands import MahjongQueries
 from pupulinbot.ms_ids import account_to_friend, friend_to_account
-from pupulinbot.ms_options import parse_options
+from pupulinbot.ms_recent import render_recent
 from pupulinbot.ms_sample import sample_summary
-from pupulinbot.ms_sample_chart import render_recent, render_sample
 from pupulinbot.paipuya import PaipuyaError
 
 
@@ -86,13 +85,10 @@ def test_recent_and_sample_images_and_empty_handling():
     player = Player(42, "测试")
     games = [game(0), game(1, rank=None, score=None, pt=None)]
     assert render_recent(player, games).startswith(b"\x89PNG")
-    assert render_sample(player, games, True, parse_options("last=2")).startswith(b"\x89PNG")
     with pytest.raises(ValueError):
         render_recent(player, [])
     with pytest.raises(ValueError):
         render_recent(player, [game(0)] * 21)
-    with pytest.raises(ValueError):
-        render_sample(player, [game(0, ended=False)], False, parse_options(""))
 
 
 @pytest.mark.asyncio
@@ -118,6 +114,3 @@ async def test_image_recent_bounds_and_sample_filters():
     with pytest.raises(ValueError, match="最多 20"):
         await service.query("mslast", "测试 -i last=21", 1, 2)
     client.history.assert_not_called()
-    assert (await service.query("msdetail", "测试 mode=3 room=玉", 1, 2)).startswith(b"\x89PNG")
-    assert client.history.call_args.args[1] == 100
-    assert client.history.call_args.kwargs["modes"] == [24]

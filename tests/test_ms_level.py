@@ -23,8 +23,8 @@ from pupulinbot.ms_level import (
 )
 from pupulinbot.ms_options import level_label, parse_options
 from pupulinbot.ms_profile import profile_content, render_profile
+from pupulinbot.ms_recent import render_recent
 from pupulinbot.ms_sample import sample_summary
-from pupulinbot.ms_sample_chart import render_recent, render_sample
 from pupulinbot.rank_assets import DIRECTORY, point_run, rank_badge
 
 
@@ -168,7 +168,7 @@ def test_profile_current_and_highest_use_independent_correct_units():
 
 
 def test_recent_sample_and_history_display_soul_units_without_missing_font_glyphs(monkeypatch):
-    from pupulinbot.ms_sample_chart import Figure
+    from pupulinbot.batch_chart import Figure
 
     texts = []
     original = Figure.text
@@ -180,6 +180,5 @@ def test_recent_sample_and_history_display_soul_units_without_missing_font_glyph
     monkeypatch.setattr(Figure, "text", capture)
     player, games, options = Player(42, "魂天示例"), [record()], parse_options("-l 1")
     assert render_recent(player, games).startswith(b"\x89PNG")
-    assert render_sample(player, games, False, options).startswith(b"\x89PNG")
-    assert "魂珠 -0.2" in texts
+    assert delta_text(games[0].seat(42)) == "魂珠 -0.2"
     assert render_history("mslife", player, games, False, options).startswith(b"\x89PNG")

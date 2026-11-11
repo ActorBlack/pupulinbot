@@ -171,12 +171,12 @@ async def test_swapped_commands_preserve_profile_and_default_summary():
         range_stats=AsyncMock(return_value=stats()),
     )
     service = MahjongQueries(None, client, client)
-    result = await service.query("ms4", "喵杰 last=100 room=玉", 1, 2)
-    assert "最近100战" in result and "22.3%" in result
-    assert client.range_stats.call_args.kwargs["modes"] == [12]
+    service.profile_query = AsyncMock(return_value="profile")
+    assert await service.query("ms4", "喵杰 last=100 room=玉", 1, 2) == "profile"
+    assert service.profile_query.call_args.args[1].modes == [12]
     with patch("pupulinbot.ms_commands.format_stats", return_value="cumulative"):
         assert (await service.query("ms4", "喵杰", 1, 2)).startswith("cumulative")
-        for other in ("ms2", "ms3"):
+        for other in ("ms3",):
             assert (await service.query(other, "喵杰", 1, 2)).startswith("cumulative")
     service.summary_query = AsyncMock(return_value="sample")
     assert await service.query("ms", "喵杰", 1, 2) == "sample"
@@ -299,7 +299,7 @@ async def test_summary_defaults_to_latest_room_and_rejects_mixed_rooms_before_lo
     "text,mode,room,lookup_modes",
     [
         ("y024", 4, 9, None),
-        ("y024 -i last=50", 4, 11, None),
+        ("y024 last=50", 4, 11, None),
         ("y024 game=南", 4, 16, [9, 12, 16]),
         ("y024 game=东", 4, 15, [8, 11, 15]),
         ("y024 mode=3", 3, 26, None),

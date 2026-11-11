@@ -16,6 +16,12 @@ def font(style="regular"):
     return mpl_font(style)
 
 
+def save(figure):
+    output = io.BytesIO()
+    figure.savefig(output, format="png", facecolor=figure.get_facecolor())
+    return output.getvalue()
+
+
 def pt_series(games, account_id, unit=None):
     ordered = sorted(games, key=lambda g: g.started_at)
     if unit is None:
@@ -52,9 +58,9 @@ def sessions(games, gap=60):
     return groups
 
 
-def render_profile(player, stats):
+def render_profile(player, stats, *, scope=None, games=()):
     with _RENDER_LOCK:
-        return render_profile_card(player, stats)
+        return render_profile_card(player, stats, scope=scope, games=games)
 
 
 def render_history(kind, player, games, truncated, options):

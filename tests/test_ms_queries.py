@@ -1,4 +1,3 @@
-import asyncio
 import math
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -89,16 +88,14 @@ async def test_pagination_ceiling_filter_and_peek():
 
 
 @pytest.mark.asyncio
-async def test_follows_scope_and_other_binding_permission(tmp_path):
+async def test_removed_follow_options_do_not_modify_bindings(tmp_path):
     db = Database(tmp_path / "db.sqlite")
     await db.initialize()
     client = SimpleNamespace(resolve=AsyncMock(return_value=Player(42, "测试")))
     service = MahjongQueries(db, client, client)
     for text in ("-a 测试", "-d 测试", "-c", "-g -a 测试"):
         with pytest.raises(ValueError, match="个人关注已取消"):
-            await service.query("ms4", text, "alice", "group", role="owner")
-    with pytest.raises(ValueError, match="本人"):
-        await service.query("ms2", "测试", "alice", "group", mentioned="bob")
+            await service.query("ms4", text, "alice", "group")
     assert await db.binding("bob") is None
     assert not await db.subscriptions()
 
@@ -116,72 +113,3 @@ async def test_graph_selection_uses_correct_sanma_client_and_no_extra_stats():
     assert result == b"png"
     assert three.history.call_args.kwargs["modes"] == [24]
     four.history.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_superuser_can_bind_another_member_without_group_admin_role(tmp_path):
-    db = Database(tmp_path / "superuser.db")
-    await db.initialize()
-    client = SimpleNamespace(
-        resolve=AsyncMock(return_value=Player(42, "测试")),
-        stats=AsyncMock(return_value=SimpleNamespace(raw={})),
-    )
-    service = MahjongQueries(db, client, client, admins={"285843647"})
-    assert (
-        await service.query("ms2", "测试", "285843647", "group", role="member", mentioned="bob")
-        == "绑定成功"
-    )
-    assert (await db.binding("bob"))["account_id"] == 42
-    client.stats.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_ms2_existing_binding_returns_only_confirmation_and_preserves_account(tmp_path):
-    db = Database(tmp_path / "existing.db")
-    await db.initialize()
-    await db.bind("bob", 42, "原昵称")
-    client = SimpleNamespace(resolve=AsyncMock(), stats=AsyncMock())
-    service = MahjongQueries(db, client, client)
-    for name in ("原昵称", "另一个账号"):
-        assert (
-            await service.query("ms2", name, "alice", "group", role="admin", mentioned="bob")
-            == "该群友已绑定"
-        )
-    assert (await db.binding("bob"))["account_id"] == 42
-    assert (await db.binding("bob"))["nickname"] == "原昵称"
-    client.resolve.assert_not_awaited()
-    client.stats.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_ms2_without_player_still_queries_bound_member(tmp_path):
-    db = Database(tmp_path / "query.db")
-    await db.initialize()
-    await db.bind("bob", 42, "原昵称")
-    client = SimpleNamespace(stats=AsyncMock(return_value=SimpleNamespace(raw={})))
-    service = MahjongQueries(db, client, client)
-    with (
-        patch("pupulinbot.ms_commands.format_stats", return_value="原昵称的统计"),
-        patch("pupulinbot.ms_commands.style_lines", return_value=[]),
-    ):
-        result = await service.query("ms2", "", "alice", "group", mentioned="bob")
-    assert result.startswith("原昵称的统计")
-    client.stats.assert_awaited_once_with(42)
-
-
-@pytest.mark.asyncio
-async def test_concurrent_ms2_bindings_do_not_overwrite_each_other(tmp_path):
-    db = Database(tmp_path / "concurrent.db")
-    await db.initialize()
-
-    async def resolve(name):
-        return Player(42 if name == "玩家一" else 43, name)
-
-    client = SimpleNamespace(resolve=AsyncMock(side_effect=resolve))
-    service = MahjongQueries(db, client, client)
-    results = await asyncio.gather(
-        service.query("ms2", "玩家一", "alice", "group", role="admin", mentioned="bob"),
-        service.query("ms2", "玩家二", "alice", "group", role="admin", mentioned="bob"),
-    )
-    assert sorted(results) == sorted(["绑定成功", "该群友已绑定"])
-    assert (await db.binding("bob"))["account_id"] in {42, 43}
