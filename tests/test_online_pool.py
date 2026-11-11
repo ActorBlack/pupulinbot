@@ -257,15 +257,19 @@ async def test_cache_requires_exact_game_seat_model_and_automatic_origin(tmp_pat
     )
     batches.save(job)
     atomic_json(tmp_path / job["id"] / "1.json", data)
-    cache = ReviewCache(tmp_path)
+    cache = ReviewCache(tmp_path / "cache", batch_directory=tmp_path)
     query = {"uuid": row["uuid"], "seat": 0}
     assert cache.find(query, "4.1b")[0]["player_id"] == 0
     assert cache.find({**query, "seat": 1}, "4.1b") is None
+    assert cache.find({**query, "source": "tenhou"}, "4.1b") is None
     assert cache.find(query, "other") is None
     assert cache.find({**query, "online_submitted": True}, "4.1b") is None
     row["source_verification"] = "用户指定场次；报告座位已核对"
     batches.save(job)
-    assert ReviewCache(tmp_path).find(query, "4.1b") is None
+    assert (
+        ReviewCache(tmp_path / "separate-cache", batch_directory=tmp_path).find(query, "4.1b")
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -280,7 +284,10 @@ async def test_cache_hit_does_not_launch_browser_or_call_submission_callback(tmp
     )
     batches.save(job)
     atomic_json(archive / job["id"] / "1.json", data)
-    pool = OnlinePool(tmp_path / "browser", cache_directory=archive)
+    pool = OnlinePool(
+        tmp_path / "browser",
+        cache=ReviewCache(tmp_path / "cache", batch_directory=archive),
+    )
     pool.worker.submit = AsyncMock()
     callback = AsyncMock()
     request = {"uuid": row["uuid"], "seat": 0}
@@ -289,6 +296,25 @@ async def test_cache_hit_does_not_launch_browser_or_call_submission_callback(tmp
     pool.worker.submit.assert_not_called()
     callback.assert_not_called()
     await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_new_online_report_survives_restart_without_task_files(tmp_path):
+    cache_dir = tmp_path / "cache"
+    pool = OnlinePool(tmp_path / "browser", cache=ReviewCache(cache_dir))
+    report = native_report()
+    pool.worker.submit = AsyncMock(return_value=(report, REPORT))
+    row = {"uuid": "original-game", "seat": 0}
+    assert await pool.submit("first:0", row, AsyncMock()) == (report, REPORT)
+    await pool.close()
+
+    restarted = OnlinePool(tmp_path / "browser", cache=ReviewCache(cache_dir))
+    restarted.worker.submit = AsyncMock()
+    request = row.copy()
+    assert await restarted.submit("second:0", request, AsyncMock()) == (report, REPORT)
+    assert request["review_cache_hit"]
+    restarted.worker.submit.assert_not_called()
+    await restarted.close()
 
 
 def test_deferred_submission_changes_only_the_regular_submit_script():

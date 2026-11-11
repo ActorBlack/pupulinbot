@@ -285,7 +285,7 @@ async def test_wrong_model_local_report_cannot_be_reused(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_disk_cache_hit_is_promoted_to_memory_without_changing_metrics(tmp_path):
+async def test_migrated_cache_survives_task_removal_and_restart(tmp_path):
     batches = manager(tmp_path, None, count=1)
     job = await batches.create(1, "g", "u", Player(42, "player"))
     row = job["rows"][0]
@@ -298,10 +298,13 @@ async def test_disk_cache_hit_is_promoted_to_memory_without_changing_metrics(tmp
     batches.save(job)
     path = tmp_path / job["id"] / "1.json"
     atomic_json(path, native_report())
-    cache = ReviewCache(tmp_path)
-    result = cache.find(row | {"online_submitted": False}, "4.1b")
+    cache_dir = tmp_path / "cache"
+    cache = ReviewCache(cache_dir, batch_directory=tmp_path)
+    assert cache.migrate_legacy() == {"copied": 1, "existing": 0, "invalid": 0}
+    assert cache.migrate_legacy() == {"copied": 0, "existing": 1, "invalid": 0}
     path.unlink()
-    assert cache.find(row | {"online_submitted": False}, "4.1b") == result
+    (path.parent / "job.json").unlink()
+    result = ReviewCache(cache_dir).find(row | {"online_submitted": False}, "4.1b")
     assert result[0] == native_report()
 
 

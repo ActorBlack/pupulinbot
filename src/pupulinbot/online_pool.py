@@ -2,10 +2,13 @@
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 from .online_review import OnlinePaused, OnlineReviews
 from .review_cache import ReviewCache
+
+logger = logging.getLogger(__name__)
 
 
 class SubmissionGate:
@@ -39,10 +42,10 @@ class OnlinePool:
         timeout=600,
         *,
         options=None,
-        cache_directory=None,
+        cache: ReviewCache | None = None,
     ):
         self.profile = profile
-        self.cache = ReviewCache(cache_directory) if cache_directory else None
+        self.cache = cache
         self.cache_lock = asyncio.Lock()
         self.gate = SubmissionGate(cooldown)
         self.worker = OnlineReviews(
@@ -126,7 +129,11 @@ class OnlinePool:
             else:
                 result = await self.worker.submit(key, row, on_submitted)
             if self.cache:
-                self.cache.remember(row, self.worker.model, result)
+                try:
+                    async with self.cache_lock:
+                        await asyncio.to_thread(self.cache.remember, row, self.worker.model, result)
+                except OSError:
+                    logger.warning("Mortal 报告无法写入独立缓存", exc_info=True)
             return result
         except Exception:
             self.halt()

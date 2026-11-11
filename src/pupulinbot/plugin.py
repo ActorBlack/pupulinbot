@@ -41,6 +41,7 @@ from .promotion import promotion_line
 from .qq_delivery import send_verified_image
 from .record_names import RecordNames
 from .review import MortalClient, ReviewError, ReviewQueue, parse_review_link, render_review
+from .review_cache import ReviewCache
 from .spectator import BrowserSpectatorClient
 from .tenhou import TenhouClient
 from .tenhou_commands import install_tenhou_commands
@@ -94,7 +95,10 @@ online = (
         settings.mortal_online_model,
         settings.mortal_online_cooldown,
         settings.mortal_online_timeout,
-        cache_directory=settings.batch_directory,
+        cache=ReviewCache(
+            settings.batch_directory.with_name("mortal-cache"),
+            batch_directory=settings.batch_directory,
+        ),
         options={
             "retries": settings.mortal_online_retries,
             "headless": settings.mortal_online_headless,
