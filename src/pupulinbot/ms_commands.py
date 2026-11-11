@@ -130,7 +130,7 @@ class MahjongQueries:
                 text,
                 mode=options.mode,
                 single_room=True,
-                default_room=None if command == "ms" else "玉",
+                default_room=None if command in {"ms", "msstyle"} else "玉",
                 max_last=last_limit,
             )
         async with self.gate:
@@ -157,18 +157,18 @@ class MahjongQueries:
                 )
                 return matchup(own, opponent, games, options, truncated)
             player = await self.player(options, target)
+            if command in {"ms", "msstyle"} and (not options.modes or len(options.modes) > 1):
+                load = getattr(client, "query_history", client.history)
+                latest, _ = await load(player.account_id, 1, modes=options.modes)
+                finished = [g for g in latest if g.ended_at and g.seat(player.account_id)]
+                if not finished:
+                    return f"{player.nickname}: 暂无已结算收录对局"
+                mode = str(max(finished, key=lambda g: g.started_at).mode)
+                allowed = options.modes or client.modes
+                if mode not in {str(m) for m in allowed}:
+                    raise PaipuyaError("最近对局的房间信息异常，请稍后重试")
+                options.modes = [int(mode)]
             if command == "ms":
-                if command == "ms" and (not options.modes or len(options.modes) > 1):
-                    load = getattr(client, "query_history", client.history)
-                    latest, _ = await load(player.account_id, 1, modes=options.modes)
-                    finished = [g for g in latest if g.ended_at and g.seat(player.account_id)]
-                    if not finished:
-                        return f"{player.nickname}: 暂无已结算收录对局"
-                    mode = max(finished, key=lambda g: g.started_at).mode
-                    allowed = options.modes or client.modes
-                    if mode not in {str(m) for m in allowed}:
-                        raise PaipuyaError("最近对局的房间信息异常，请稍后重试")
-                    options.modes = [int(mode)]
                 if not options.last_explicit:
                     options.last = 100
                 return await self.summary_query(player, options, client)

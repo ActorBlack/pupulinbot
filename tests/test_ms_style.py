@@ -1,8 +1,9 @@
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from test_ms_summary import NOW, format_summary, games, stats
@@ -128,6 +129,27 @@ async def test_style_query_loads_exact_sample_not_lifetime_and_propagates_filter
         is None
     )
     client.range_stats.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_style_without_room_uses_latest_four_player_room_and_its_mean():
+    records = [replace(game, mode="16") for game in games()]
+    sample = stats(len(records))
+    client = SimpleNamespace(
+        modes=[8, 9, 11, 12, 15, 16],
+        resolve=AsyncMock(return_value=Player(42, "x")),
+        history=AsyncMock(side_effect=[([records[0]], False), (records, False)]),
+        range_stats=AsyncMock(return_value=sample),
+    )
+    service = MahjongQueries(None, client, None)
+    with patch("pupulinbot.ms_commands.render_style", return_value=b"png") as render:
+        assert await service.query("msstyle", "x", 1, 2) == b"png"
+    assert client.history.await_args_list == [
+        call(42, 1, modes=None),
+        call(42, 100, start=None, end=None, modes=[16]),
+    ]
+    assert render.call_args.args[3].modes == [16]
+    assert client.range_stats.call_args.kwargs["modes"] == [16]
 
 
 def test_style_report_renders_complete_and_missing_inputs_without_faking_coordinates():

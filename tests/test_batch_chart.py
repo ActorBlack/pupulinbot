@@ -1,7 +1,7 @@
 import io
 import math
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from pupulinbot.batch_chart import chart_series, render_batch_chart
 
@@ -69,6 +69,38 @@ def test_fifty_game_report_preserves_all_points():
     assert len(rows) == 50 and len(series[("4.1b", 0.1)]) == 50
     image = Image.open(io.BytesIO(render_batch_chart(job)))
     assert image.size == (1440, 1140)
+
+
+def test_dashboard_labels_alternate_games_in_a_dense_mixed_model_chart(monkeypatch):
+    labels = []
+    draw_text = ImageDraw.ImageDraw.text
+
+    def capture(self, xy, value, *args, **kwargs):
+        if kwargs.get("stroke_width"):
+            labels.append(value)
+        return draw_text(self, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    rows = [
+        {
+            "status": "done",
+            "metrics": {
+                "model": "4.1b" if i % 2 else "other",
+                "rating": 94.52,
+                "agreement": 94.52,
+                "bad5_rate": 0,
+                "bad10_rate": 0,
+            },
+        }
+        for i in range(100)
+    ]
+    rows[34]["status"] = "pending"
+    del rows[46]["metrics"]["bad5_rate"]
+    image = Image.open(io.BytesIO(render_batch_chart({"rows": rows})))
+    assert image.format == "PNG"
+    assert labels.count("94.5") == 98
+    assert labels.count("0.0") == 97
+    assert len(labels) == 195
 
 
 def test_table_shows_names_first_and_final_rank_instead_of_model_and_seat():

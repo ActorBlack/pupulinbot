@@ -62,8 +62,11 @@ def test_weighted_rates_order_and_recent_window_changes():
     for i, item in enumerate(rows):
         rows[i] = {**item, "started_at": f"2026-11-{i + 1:02d}"}
     group = next(iter(batch_insights(list(reversed(rows)))["groups"].values()))
-    assert group["summary"]["agreement"] == pytest.approx(89)
-    assert group["summary"]["bad5_rate"] == pytest.approx(4)
+    summary = group["summary"]
+    assert summary["agreement"] == pytest.approx(89)
+    assert (summary["matches"], summary["decisions"]) == (890, 1000)
+    assert summary["bad5_rate"] == pytest.approx(4)
+    assert (summary["bad5"], summary["bad10"], summary["badmove_decisions"]) == (40, 60, 1000)
     assert group["deviation"] == 5
     assert group["best"][0] == 11 and group["worst"][0] == 1
     recent = group["recent"]

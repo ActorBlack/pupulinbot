@@ -131,6 +131,8 @@ def summaries(rows: list[dict]) -> list[dict]:
         decisions = sum(m.get("decisions", 0) for m in metrics)
         matches = sum(m.get("matches", 0) for m in metrics)
         bad_denominator = sum(m.get("badmove_decisions", 0) for m in metrics)
+        bad5 = sum(m.get("bad5") or 0 for m in metrics)
+        bad10 = sum(m.get("bad10") or 0 for m in metrics)
         result.append(
             {
                 "model": model,
@@ -144,12 +146,12 @@ def summaries(rows: list[dict]) -> list[dict]:
                 "max_rating": max(ratings) if ratings else None,
                 "agreement": matches / decisions * 100 if decisions else None,
                 "decisions": decisions,
-                "bad5_rate": sum(m.get("bad5") or 0 for m in metrics) / bad_denominator * 100
-                if bad_denominator
-                else None,
-                "bad10_rate": sum(m.get("bad10") or 0 for m in metrics) / bad_denominator * 100
-                if bad_denominator
-                else None,
+                "matches": matches,
+                "badmove_decisions": bad_denominator,
+                "bad5": bad5,
+                "bad10": bad10,
+                "bad5_rate": bad5 / bad_denominator * 100 if bad_denominator else None,
+                "bad10_rate": bad10 / bad_denominator * 100 if bad_denominator else None,
             }
         )
     return result

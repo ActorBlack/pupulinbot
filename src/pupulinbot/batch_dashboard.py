@@ -2,34 +2,45 @@
 
 import io
 import math
+from datetime import datetime
+from statistics import quantiles
 
 from PIL import Image, ImageDraw
 
 from .batch_insights import batch_insights, metric_group, metric_value
+from .ms_options import MODE_NAMES, TZ
 from .typography import face
 
-INK = "#22324b"
-MUTED = "#8190a5"
-BLUE = "#4c83d4"
-TEAL = "#138b83"
-AMBER = "#dfa037"
-CORAL = "#d97978"
+INK = "#192b43"
+MUTED = "#566983"
+BLUE = "#3473c4"
+CORAL = "#c65839"
+TEAL = "#128568"
+AMBER = "#b4740c"
 PURPLE = "#a477d5"
-PALETTE = (BLUE, PURPLE, TEAL, CORAL)
+GRID = "#e4ebf4"
+PALETTE = (BLUE, PURPLE, TEAL, CORAL, "#986132", "#467b8d", "#9f4c71", "#637b34")
+METRICS = (
+    ("rating", "Rating", BLUE),
+    ("agreement", "AI 一致率", CORAL),
+    ("bad5_rate", "5% 恶手率", TEAL),
+    ("bad10_rate", "10% 恶手率", AMBER),
+)
 
 
 class Canvas:
     scale = 2
 
-    def __init__(self):
-        self.image = Image.new("RGBA", (2880, 2280), "#f2f5fa")
+    def __init__(self, height):
+        self.height = height
+        self.image = Image.new("RGBA", (2880, height * self.scale), "#eff3f8")
         self.draw = ImageDraw.Draw(self.image)
 
     def box(self, box):
         return tuple(round(v * self.scale) for v in box)
 
-    def panel(self, box):
-        self.draw.rounded_rectangle(self.box(box), radius=22 * self.scale, fill="white")
+    def panel(self, box, fill="white", *, radius=18):
+        self.draw.rounded_rectangle(self.box(box), radius=radius * self.scale, fill=fill)
 
     def rect(self, box, color):
         self.draw.rectangle(self.box(box), fill=color)
@@ -61,18 +72,15 @@ class Canvas:
         )
 
     def text(self, x, y, value, size=18, color=INK, style="regular", anchor="lm", width=None):
-        value = str(value)
-        while width and self.draw.textlength(value, font=face(size * 2, style)) > width * 2:
-            value = value[:-2] + "…"
-        self.draw.text(
-            (round(x * 2), round(y * 2)),
-            value,
-            font=face(size * 2, style),
-            fill=color,
-            anchor=anchor,
-        )
+        font = face(size * self.scale, style)
+        value = str(value).replace("\n", " ")
+        if width and self.draw.textlength(value, font=font) > width * self.scale:
+            while value and self.draw.textlength(value + "…", font=font) > width * self.scale:
+                value = value[:-1]
+            value += "…"
+        self.draw.text(self.box((x, y)), value, font=font, fill=color, anchor=anchor)
 
-    def dot(self, x, y, color, radius=3.4, *, rainbow=False):
+    def dot(self, x, y, color, radius=3.4, *, rainbow=False, hollow=False):
         box = self.box((x - radius, y - radius, x + radius, y + radius))
         if rainbow:
             for start, stop, fill in (
@@ -83,7 +91,7 @@ class Canvas:
             ):
                 self.draw.pieslice(box, start, stop, fill=fill)
         else:
-            self.draw.ellipse(box, fill=color)
+            self.draw.ellipse(box, fill="white" if hollow else color, outline=color, width=2)
         if radius > 4:
             self.draw.ellipse(self.box((x - 1.6, y - 1.6, x + 1.6, y + 1.6)), fill="white")
 
@@ -113,7 +121,7 @@ class Canvas:
 
     def png(self):
         output = io.BytesIO()
-        self.image.convert("RGB").resize((1440, 1140), Image.Resampling.LANCZOS).save(
+        self.image.convert("RGB").resize((1440, self.height), Image.Resampling.LANCZOS).save(
             output, format="PNG", optimize=True
         )
         return output.getvalue()
@@ -127,252 +135,449 @@ def delta(value):
     return "—" if value is None else "0.00" if abs(value) < 0.005 else f"{value:+.2f}"
 
 
-def coordinates(box, count, low, high):
-    left, top, right, bottom = box
-    return (
-        lambda index: left + (index - 1) * (right - left) / max(1, count - 1),
-        lambda value: bottom - (value - low) * (bottom - top) / max(1, high - low),
+def game_date(row):
+    try:
+        stamp = datetime.fromisoformat(row.get("started_at") or "")
+    except (ValueError, TypeError):
+        return None
+    return (stamp.astimezone(TZ) if stamp.tzinfo else stamp).date()
+
+
+def room_label(rows):
+    labels = {}
+    for row in rows:
+        source = row.get("source", "majsoul")
+        if source == "majsoul":
+            label = MODE_NAMES.get(str(row.get("mode")))
+        else:
+            label = {"tenhou": "天凤", "riichi_city": "一番街"}.get(source)
+        if label:
+            labels[label] = None
+    return " / ".join(labels)
+
+
+def model_label(key):
+    model, temperature, _ = key
+    return str(model) if temperature is None else f"{model}  T={temperature}"
+
+
+def draw_overview(c, groups):
+    group = next(iter(groups.values()), {})
+    summary = group.get("summary", {})
+    cards = (
+        ("平均 Rating", summary.get("mean_rating"), f"中位 {number(summary.get('median_rating'))}"),
+        (
+            "AI 一致率",
+            summary.get("agreement"),
+            ratio(summary.get("matches"), summary.get("decisions"), "一致决策"),
+        ),
+        (
+            "5% 恶手率",
+            summary.get("bad5_rate"),
+            ratio(summary.get("bad5"), summary.get("badmove_decisions"), "恶手"),
+        ),
+        (
+            "10% 恶手率",
+            summary.get("bad10_rate"),
+            ratio(summary.get("bad10"), summary.get("badmove_decisions"), "恶手"),
+        ),
     )
+    for i, ((label, value, detail), (_, _, color)) in enumerate(zip(cards, METRICS, strict=True)):
+        left = 34 + i * 347
+        c.panel((left, 116, left + 331, 254))
+        c.panel((left + 19, 133, left + 48, 137), color, radius=2)
+        c.text(left + 19, 156, label, 19, MUTED)
+        if i == 0:
+            c.rating(left + 20, 199, value, group.get("count", 0), right=left + 310)
+        else:
+            c.text(left + 20, 198, number(value, "%"), 43, INK, "number")
+        c.text(left + 20, 234, detail, 16, MUTED)
 
 
-def axes(c, box, count, low, high, ticks):
+def ratio(numerator, denominator, label):
+    return f"{numerator:,} / {denominator:,} {label}" if denominator else f"{label} —"
+
+
+def draw_group_overview(c, groups):
+    c.panel((34, 116, 1406, 169 + 34 * len(groups)))
+    columns = (480, 605, 769, 956, 1158, 1372)
+    headers = ("温度", "已评分", "平均 Rating", "一致率", "5% 恶手率", "10% 恶手率")
+    c.text(70, 142, "模型 / 指标口径", 17, MUTED, "bold")
+    for x, label in zip(columns, headers, strict=True):
+        c.text(x, 142, label, 17, MUTED, "bold", "rm")
+    for i, (key, group) in enumerate(groups.items()):
+        y = 173 + 34 * i
+        model, temperature, schema = key
+        summary = group["summary"]
+        if i % 2 == 0:
+            c.panel((48, y - 15, 1392, y + 15), "#f3f6fa", radius=6)
+        c.dot(67, y, PALETTE[i % len(PALETTE)], 4)
+        c.text(82, y, f"{model} / {schema}", 16, width=340)
+        values = (
+            "—" if temperature is None else str(temperature),
+            str(group["count"]),
+            number(summary["mean_rating"]),
+            number(summary["agreement"], "%"),
+            number(summary["bad5_rate"], "%"),
+            number(summary["bad10_rate"], "%"),
+        )
+        for x, label in zip(columns, values, strict=True):
+            c.text(x, y, label, 17, INK, "number", "rm")
+
+
+def axis_bounds(values, *, rates=False):
+    if rates:
+        peak = max(values, default=0)
+        step = 2 if peak < 8 else 5 if peak < 25 else 10 if peak < 50 else 20
+        return 0, min(100, max(10, step * math.ceil((peak + step / 3) / step))), step
+    if not values:
+        return 70, 100, 5
+    low, high = min(values), max(values)
+    span = high - low
+    step = 5 if span <= 30 else 10 if span <= 60 else 20
+    top = min(100, max(2 * step, step * math.ceil((high + 1) / step)))
+    bottom = max(0, min(top - 2 * step, step * math.floor((low - 1) / step)))
+    return bottom, top, step
+
+
+def draw_axes(c, box, px, py, ticks, limits, *, percent=False):
     left, top, right, bottom = box
-    px, py = coordinates(box, count, low, high)
-    for value in ticks:
-        if low <= value <= high:
-            y = py(value)
-            c.line(((left, y), (right, y)), "#e9eef5", 0.8)
-            c.text(left - 16, y, str(value), 15, MUTED, "number", anchor="rm")
-    spacing = 20 if count > 60 else 10 if count > 20 else 5 if count > 10 else 1
-    xticks = sorted({1, count, *range(spacing, count + 1, spacing)})
-    for i in xticks:
-        if count > 1 and i != count and abs(px(i) - px(count)) < 28:
-            continue
-        c.text(px(i), bottom + 22, str(i), 15, MUTED, "number", anchor="mm")
-    return px, py
+    low, high, step = limits
+    for index in ticks:
+        c.line(((px(index), top), (px(index), bottom)), GRID, dashed=True)
+    for value in range(low, high + 1, step):
+        y = py(value)
+        c.line(((left, y), (right, y)), GRID)
+        c.text(left - 12, y, f"{value}%" if percent else value, 15, MUTED, "number", "rm")
 
 
-def draw_series(c, rows, key, field, box, low, high, color, *, width=2.2, dashed=False):
-    px, py = coordinates(box, len(rows), low, high)
+def draw_trace(c, values, px, py, color, *, dashed=False):
     segment = []
-    for i, row in enumerate(rows, 1):
-        value = metric_value(row, field) if metric_group(row) == key else None
+    for index, value in enumerate(values, 1):
         if value is None:
             if len(segment) > 1:
-                c.line(segment, color, width, dashed=dashed)
+                c.line(segment, color, 1.8, dashed=dashed)
             segment = []
-            continue
-        point = (px(i), py(value))
-        segment.append(point)
-        c.dot(*point, color, 2.5)
+        else:
+            segment.append((px(index), py(value)))
     if len(segment) > 1:
-        c.line(segment, color, width, dashed=dashed)
+        c.line(segment, color, 1.8, dashed=dashed)
 
 
-def annotation(c, x, y, value, label, *, above):
-    bx = min(1280, max(160, x))
-    by = min(610, max(416, y - 38 if above else y + 38))
-    c.line(((x, y), (bx, by)), "#b8c6d8")
-    c.draw.rounded_rectangle(
-        c.box((bx - 78, by - 18, bx + 78, by + 18)), radius=10 * 2, fill="#f3f6fb"
+def rolling_rating(values):
+    result = [None] * len(values)
+    for i in range(4, len(values)):
+        window = values[i - 4 : i + 1]
+        if None not in window:
+            result[i] = sum(window) / 5
+    return result
+
+
+def overlaps(a, b):
+    return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
+
+
+def crosses_trace(bounds, traces):
+    left, top, right, bottom = bounds
+    for (x1, y1), (x2, y2) in traces:
+        if x1 >= right or x2 <= left:
+            continue
+        ys = [y1 + (y2 - y1) * (x - x1) / (x2 - x1) for x in (max(x1, left), min(x2, right))]
+        if min(ys) < bottom and max(ys) > top:
+            return True
+    return False
+
+
+def place_labels(points, traces, point_boxes, box):
+    left, top, right, bottom = box
+    taken, placed = [], []
+    for _, x, y, _, _, below, half_width in points:
+        nearby = [b for b in taken + point_boxes if b[0] < x + 38 and b[2] > x - 38]
+        segments = [pair for pair in traces if pair[0][0] < x + 38 and pair[1][0] > x - 38]
+        candidates = []
+        for horizontal in (0, -3, 3, -7, 7, -11, 11):
+            xx = max(left - 9 + half_width, min(right + 9 - half_width, x + horizontal))
+            for distance in (11, 15, 19, 23, 28, 34, 42, 52):
+                for direction in (1, -1):
+                    offset = distance * direction
+                    yy = y + offset
+                    if not top + 6 <= yy <= bottom - 6:
+                        continue
+                    bounds = (xx - half_width, yy - 6.8, xx + half_width, yy + 6.8)
+                    if any(overlaps(bounds, b) for b in nearby):
+                        continue
+                    cost = distance + 0.9 * abs(x - xx) + 5 * ((direction == 1) != below)
+                    cost += 8 * crosses_trace(bounds, segments)
+                    candidates.append((cost, xx, yy, bounds))
+        if not candidates:
+            return None
+        _, xx, yy, bounds = min(candidates)
+        taken.append(bounds)
+        placed.append((xx, yy))
+    return placed
+
+
+def stagger_labels(points, px, box):
+    """Reserve distinct rows for nearby labels when the local placements are full."""
+    left, top, right, bottom = box
+    widest = 2 * max(point[-1] for point in points)
+    spacing = px(2) - px(1)
+    stride = max(1, math.ceil((widest + 12) / spacing))
+    step = 14
+    middle = sorted(point[2] for point in points)[len(points) // 2]
+    span = (2 * stride - 1) * step
+    start = max(top + 8, min(bottom - 8 - span, middle - span / 2))
+    return [
+        (
+            max(left - 9 + width, min(right + 9 - width, x)),
+            start + ((index - 1) % stride + stride * below) * step,
+        )
+        for index, x, _, _, _, below, width in points
+    ]
+
+
+def draw_labels(c, series, px, py, box):
+    font = face(23, "number")
+    points, traces, point_boxes = [], [], []
+    for values, color, below in series:
+        step = 2 if len(values) > 50 else 1
+        previous = None
+        for index, value in enumerate(values, 1):
+            if value is None:
+                previous = None
+                continue
+            x, y = px(index), py(value)
+            if previous is not None:
+                traces.append((previous, (x, y)))
+            previous = (x, y)
+            point_boxes.append((x - 4, y - 4, x + 4, y + 4))
+            if (index - 1) % step:
+                continue
+            label = f"{value:.1f}"
+            width = c.draw.textlength(label, font=font) / (2 * c.scale) + 1.35
+            points.append((index, x, y, label, color, below, width))
+    if not points:
+        return
+    points.sort(key=lambda point: point[0])
+    placed = place_labels(points, traces, point_boxes, box)
+    if placed is None:
+        placed = stagger_labels(points, px, box)
+
+    for (_, x, y, *_), (xx, yy) in zip(points, placed, strict=True):
+        if abs(y - yy) >= 23 or abs(x - xx) >= 8:
+            c.line(((x, y), (xx, yy)), "#aebed0", 0.75)
+    for (_, _, _, label, color, *_), (xx, yy) in zip(points, placed, strict=True):
+        c.draw.text(
+            c.box((xx, yy)),
+            label,
+            fill=color,
+            font=font,
+            anchor="mm",
+            stroke_width=c.scale,
+            stroke_fill="white",
+        )
+
+
+def draw_plot(c, groups, rows, dates, ticks, top, quartiles):
+    from .batch_chart import GOLD_RATING, RAINBOW_RATING, rating_color
+
+    left, right = 98, 1354
+
+    def px(index):
+        return left + (index - 1) * (right - left) / max(1, len(rows) - 1)
+
+    sole = next(iter(groups.values())) if len(groups) == 1 else None
+    c.panel((34, top, 1406, top + 666))
+    c.text(57, top + 35, "Rating 与一致率", 22, INK, "bold")
+    c.text(57, top + 361, "恶手率", 22, INK, "bold")
+
+    for i, (field, label, color) in enumerate(METRICS):
+        y = top + (35 if i < 2 else 361)
+        x = 329 + (i % 2) * 205
+        dashed = not sole and i % 2 == 1
+        c.line(((x, y), (x + 20, y)), color if sole else MUTED, 2, dashed=dashed)
+        if dashed:
+            c.dot(x + 11, y, MUTED, 3.5, hollow=True)
+        mean = sole["summary"].get("mean_rating" if field == "rating" else field) if sole else None
+        suffix = "" if field == "rating" else "%"
+        c.text(
+            x + 30, y, label + (f"  {number(mean, suffix)}" if mean is not None else ""), 17, MUTED
+        )
+    if sole:
+        c.dot(1050, top + 35, "#dfa037", 4.8)
+        c.text(1063, top + 35, "90+", 16, MUTED)
+        c.dot(1131, top + 35, PURPLE, 4.8, rainbow=True)
+        c.text(1145, top + 35, f"{sole['threshold']}+", 16, MUTED)
+        c.line(((1230, top + 35), (1252, top + 35)), MUTED, dashed=True)
+        c.text(1261, top + 35, "全样本均值", 16, MUTED)
+    elif groups:
+        c.text(1375, top + 35, "颜色对应上方模型分组", 17, MUTED, anchor="rm")
+    if quartiles:
+        c.panel((1000, top + 324, 1026, top + 340), "#e9f0fd", radius=4)
+        c.text(
+            1037, top + 332, f"Rating 中间 50%   {quartiles[0]:.2f}–{quartiles[1]:.2f}", 16, MUTED
+        )
+
+    last_date = None
+    for index in ticks:
+        date = dates[index - 1]
+        if date and date != last_date:
+            c.text(px(index), top + 78, date.strftime("%m/%d"), 15, MUTED, "number", "mm")
+            last_date = date
+        c.text(px(index), top + 623, index, 15, MUTED, "number", "mm")
+    c.text(right, top + 646, "对局序号", 15, MUTED, anchor="rm")
+
+    panels = ((METRICS[:2], top + 100, top + 321), (METRICS[2:], top + 395, top + 597))
+    for fields, start, end in panels:
+        box = (left, start, right, end)
+        rates = fields[0][0] == "bad5_rate"
+        values = [
+            value
+            for row in rows
+            for field, _, _ in fields
+            if (value := metric_value(row, field)) is not None
+        ]
+        limits = axis_bounds(values, rates=rates)
+        low, high, _ = limits
+
+        def py(value, bottom=end, height=end - start, floor=low, span=high - low):
+            return bottom - (value - floor) * height / span
+
+        if not rates and sole:
+            for threshold, tint in ((90, "#fffcf4"), (sole["threshold"], "#faf6ff")):
+                if high > threshold:
+                    c.rect((left, start, right, py(max(low, threshold))), tint)
+            if quartiles:
+                c.rect((left, py(quartiles[1]), right, py(quartiles[0])), "#e9f0fd")
+        draw_axes(c, box, px, py, ticks, limits, percent=rates)
+        labels, dots, rating_dots = [], [], []
+        for i, (key, group) in enumerate(groups.items()):
+            for j, (field, _, field_color) in enumerate(fields):
+                color = field_color if sole else PALETTE[i % len(PALETTE)]
+                sequence = [
+                    metric_value(row, field) if metric_group(row) == key else None for row in rows
+                ]
+                if sole:
+                    mean = group["summary"].get("mean_rating" if field == "rating" else field)
+                    if mean is not None and low <= mean <= high:
+                        c.line(((left, py(mean)), (right, py(mean))), color, 1.1, dashed=True)
+                labels.append((sequence, color, field in {"agreement", "bad5_rate"}))
+                if field == "rating":
+                    moving = rolling_rating(sequence)
+                    if any(
+                        a is not None and b is not None
+                        for a, b in zip(moving, moving[1:], strict=False)
+                    ):
+                        draw_trace(c, moving, px, py, "#7c8da4" if sole else color)
+                        if sole:
+                            c.line(((99, top + 332), (119, top + 332)), "#7c8da4", 1.8)
+                            c.text(128, top + 332, "5 场均线", 15, MUTED)
+                draw_trace(c, sequence, px, py, color, dashed=not sole and j == 1)
+                for index, value in enumerate(sequence, 1):
+                    if value is None:
+                        continue
+                    special = (
+                        rating_color(value, games=group["count"]) if field == "rating" else None
+                    )
+                    target = rating_dots if field == "rating" else dots
+                    target.append((px(index), py(value), color, special, not sole and j == 1))
+        for x, y, color, special, hollow in dots + rating_dots:
+            c.dot(
+                x,
+                y,
+                "#dfa037" if special == GOLD_RATING else color,
+                4.8 if special in {GOLD_RATING, RAINBOW_RATING} else 2.7,
+                rainbow=special == RAINBOW_RATING,
+                hollow=hollow,
+            )
+        draw_labels(c, labels, px, py, box)
+        if not values:
+            c.text(720, (start + end) / 2, "暂无分析数据", 20, MUTED, anchor="mm")
+
+
+def draw_footer(c, group, top):
+    c.panel((34, top, 1406, top + 141))
+    for x in (489, 950):
+        c.line(((x, top + 23), (x, top + 119)), GRID)
+    count = group.get("count", 0)
+    if count:
+        best, worst = group["best"], group["worst"]
+        extrema = f"最高 {best[1]:.2f}    最低 {worst[1]:.2f}"
+        spread = f"第 {best[0]} / {worst[0]} 场    标准差 {number(group['deviation'])}"
+        high_scores = (
+            f"90+   {group['gold_count']} / {count} 场（{group['gold_count'] / count:.0%}）"
+        )
+        threshold = group["threshold"]
+        rainbow = group["rainbow_count"]
+        rainbow_scores = f"{threshold}+   {rainbow} / {count} 场（{rainbow / count:.0%}）"
+    else:
+        extrema = spread = high_scores = rainbow_scores = "—"
+
+    recent = group.get("recent")
+    window = recent["window"] if recent else None
+    trend = f"Rating {delta(recent['mean_rating'])}" if recent else "—"
+    rate_changes = (
+        f"一致 {delta(recent['agreement'])}　5% {delta(recent['bad5_rate'])}　"
+        f"10% {delta(recent['bad10_rate'])} pp"
+        if recent
+        else "样本不足"
     )
-    c.text(bx, by, f"{label} {value:.2f}", 17, INK, "bold", anchor="mm")
+    for x, title, value, detail in (
+        (57, "评分分布", extrema, spread),
+        (514, f"近 {window} 场较前 {window} 场" if window else "近期变化", trend, rate_changes),
+        (975, "高分占比", high_scores, rainbow_scores),
+    ):
+        c.text(x, top + 30, title, 17, MUTED, "bold")
+        c.text(x, top + 70, value, 24, INK, "number" if value.isascii() else "bold")
+        c.text(x, top + 108, detail, 16, MUTED, width=419)
 
 
 def render_dashboard(job):
-    from .batch_chart import GOLD_RATING, RAINBOW_RATING, rating_color
-
     data = batch_insights(job["rows"])
     rows, groups = data["rows"], data["groups"]
-    sole = next(iter(groups.values())) if len(groups) == 1 else None
-    summary = sole["summary"] if sole else {}
-    c = Canvas()
-    c.text(40, 49, job.get("nickname", "Mortal"), 34, INK, "bold", width=1000)
-    dates = [r.get("started_at", "")[:10] for r in rows if r.get("started_at")]
-    date_start = 0 if dates and min(dates)[:4] != max(dates)[:4] else 5
+    mixed = len(groups) > 1
+    plot_top = 273 if not mixed else 187 + 34 * len(groups)
+    plot_end = plot_top + 666
+    c = Canvas(plot_end + (47 if mixed else 201))
+    name = job.get("nickname") or "Mortal"
+    room = room_label(rows)
+    title = "  /  ".join(filter(None, (name, room, "Mortal 复盘")))
+    c.text(34, 45, title, 35, INK, "title", width=1090)
+    c.panel((1177, 25, 1406, 65), "#e5edf9", radius=12)
+    c.text(1291, 45, f"{data['completed']} / {data['total']} 场完成", 18, BLUE, "bold", "mm")
+
+    dates = [game_date(row) for row in rows]
+    dated = [date for date in dates if date is not None]
     period = (
-        f"{min(dates)[date_start:].replace('-', '.')}—{max(dates)[date_start:].replace('-', '.')}"
-        if dates
+        " 至 ".join(f"{date:%Y.%m.%d}" for date in sorted({min(dated), max(dated)}))
+        if dated
         else ""
     )
-    models = " / ".join(dict.fromkeys(str(key[0]) for key in groups))
-    subtitle = [
-        f"Mortal 复盘 {len(rows)} 场",
-        period,
-        models if len(groups) < 2 else f"{len(groups)}组模型",
-    ]
-    c.text(40, 90, "　".join(s for s in subtitle if s), 18, MUTED, width=1200)
-    c.draw.rounded_rectangle(c.box((1190, 32, 1400, 79)), radius=15 * 2, fill="#e6edf9")
-    c.text(1295, 56, f"{data['completed']} / {data['total']} 已完成", 20, BLUE, "bold", anchor="mm")
-
-    c.panel((40, 122, 1400, 302))
-    c.text(66, 153, "平均 Rating" if len(groups) < 2 else "分组评分", 19, MUTED)
-    c.rating(66, 222, summary.get("mean_rating"), sole["count"] if sole else 0, right=330)
-    c.text(66, 276, "中位 " + number(summary.get("median_rating")), 16, MUTED)
-    c.line(((330, 149), (330, 276)), "#e9eef5")
-    decisions = summary.get("decisions")
-    # The fraction is the same matches/total field used by the single-game card.
-    matched = sum((r.get("metrics") or {}).get("matches", 0) for r in sole["rows"]) if sole else 0
-    fraction = f"{matched} / {decisions}" if decisions else "—"
-    for x, label, value, color in (
-        (362, "AI 一致率", number(summary.get("agreement"), "%"), TEAL),
-        (614, "≤5% 恶手率", number(summary.get("bad5_rate"), "%"), AMBER),
-        (866, "≤10% 恶手率", number(summary.get("bad10_rate"), "%"), CORAL),
-        (1118, "切牌次数", fraction, INK),
-    ):
-        c.text(x, 164, label, 18, MUTED)
-        size = 26 if len(value) > 12 else 32
-        c.text(x, 221, value, size, color, "number", width=246)
-    c.text(1368, 276, f"失败 {data['failed']} 场" if data["failed"] else "", 16, CORAL, anchor="rm")
-
-    c.panel((40, 324, 1400, 700))
-    c.text(66, 355, "评分走势", 23, INK, "bold")
-    c.line(((1024, 355), (1054, 355)), "#334e75", 3)
-    c.text(1065, 355, "5场均线", 16, MUTED)
-    c.dot(1193, 355, AMBER, 4)
-    c.text(1205, 355, "90+", 16, MUTED)
-    threshold = sole["threshold"] if sole else 94
-    c.dot(1285, 355, PURPLE, 5, rainbow=True)
-    c.text(1297, 355, f"{threshold}+", 16, MUTED)
-    points = [p for group in groups.values() for p in group["points"]]
-    values = [p[1] for p in points]
-    low = max(0, math.floor(min(values) - 2)) if values else 70
-    high = min(100, max(low + 6, math.ceil(max(values) + 2))) if values else 100
-    plot = (84, 401, 1356, 644)
-    px, py = coordinates(plot, len(rows), low, high)
-    if sole:
-        if high > 90:
-            c.rect((plot[0], plot[1], plot[2], py(max(low, 90))), "#fffcf4")
-        if high > threshold:
-            c.rect((plot[0], plot[1], plot[2], py(max(low, threshold))), "#faf6ff")
-    axes(c, plot, len(rows), low, high, range(0, 101, 5))
-    for index, (key, group) in enumerate(groups.items()):
-        color = PALETTE[index % len(PALETTE)]
-        draw_series(c, rows, key, "rating", plot, low, high, color)
-        moving = []
-        for i in range(4, len(rows)):
-            window = rows[i - 4 : i + 1]
-            sample = [metric_value(r, "rating") if metric_group(r) == key else None for r in window]
-            if all(value is not None for value in sample):
-                moving.append((px(i + 1), py(sum(sample) / 5)))
-            else:
-                if len(moving) > 1:
-                    c.line(moving, "#334e75" if sole else color, 3.5)
-                moving = []
-        if len(moving) > 1:
-            c.line(moving, "#334e75" if sole else color, 3.5)
-        for i, value, _ in group["points"]:
-            special = rating_color(value, games=group["count"])
-            c.dot(
-                px(i),
-                py(value),
-                AMBER if special == GOLD_RATING else color,
-                4.8 if special in {GOLD_RATING, RAINBOW_RATING} else 3.1,
-                rainbow=special == RAINBOW_RATING,
-            )
-    if sole and sole["best"]:
-        best, worst = sole["best"], sole["worst"]
-        annotation(c, px(best[0]), py(best[1]), best[1], "最高", above=True)
-        if worst[0] != best[0]:
-            annotation(c, px(worst[0]), py(worst[1]), worst[1], "最低", above=False)
-    elif not points:
-        c.text(720, 515, "等待分析", 24, MUTED, anchor="mm")
-    if len(groups) > 1:
-        for i, key in enumerate(list(groups)[:4]):
-            c.dot(86 + i * 312, 682, PALETTE[i % len(PALETTE)])
-            c.text(98 + i * 312, 682, f"{key[0]} / T={key[1]}", 15, MUTED, width=285)
-
-    c.panel((40, 720, 700, 930))
-    c.panel((720, 720, 1400, 930))
-    c.text(66, 750, "AI 一致率", 21, INK, "bold")
-    c.text(746, 750, "恶手率", 21, INK, "bold")
-    c.line(((1120, 750), (1144, 750)), AMBER if sole else INK, 2.5)
-    c.text(1154, 750, "≤5%", 15, MUTED)
-    c.line(((1254, 750), (1278, 750)), CORAL if sole else INK, 2.5, dashed=True)
-    c.text(1288, 750, "≤10%", 15, MUTED)
-    agree_box, bad_box = (84, 789, 660, 882), (766, 789, 1360, 882)
-    agree_values = [v for r in rows if (v := metric_value(r, "agreement")) is not None]
-    agree_low = max(0, math.floor((min(agree_values) - 5) / 10) * 10) if agree_values else 0
-    agree_high = (
-        min(100, max(agree_low + 10, math.ceil((max(agree_values) + 5) / 10) * 10))
-        if agree_values
-        else 100
+    model = (
+        f"{len(groups)} 组模型 / 口径"
+        if mixed
+        else model_label(next(iter(groups)))
+        if groups
+        else ""
     )
-    bad_values = [
-        v
-        for r in rows
-        for field in ("bad5_rate", "bad10_rate")
-        if (v := metric_value(r, field)) is not None
-    ]
-    bad_high = min(100, max(5, math.ceil(max(bad_values) / 5) * 5)) if bad_values else 20
-    axes(c, agree_box, len(rows), agree_low, agree_high, range(0, 101, 10))
-    axes(c, bad_box, len(rows), 0, bad_high, range(0, 101, 5))
-    for i, key in enumerate(groups):
-        draw_series(
-            c,
-            rows,
-            key,
-            "agreement",
-            agree_box,
-            agree_low,
-            agree_high,
-            TEAL if sole else PALETTE[i % 4],
-        )
-        draw_series(
-            c, rows, key, "bad5_rate", bad_box, 0, bad_high, AMBER if sole else PALETTE[i % 4]
-        )
-        draw_series(
-            c,
-            rows,
-            key,
-            "bad10_rate",
-            bad_box,
-            0,
-            bad_high,
-            CORAL if sole else PALETTE[i % 4],
-            dashed=True,
-        )
+    c.text(36, 85, "    ".join(filter(None, (period, model))), 18, MUTED, width=1060)
+    if data["failed"]:
+        c.text(1406, 85, f"{data['failed']} 场失败", 17, CORAL, anchor="rm")
 
-    for box in ((40, 950, 480, 1086), (500, 950, 940, 1086), (960, 950, 1400, 1086)):
-        c.panel(box)
-    c.text(66, 976, "近期变化", 18, MUTED)
-    recent = sole["recent"] if sole else None
-    if recent:
-        shift = recent["mean_rating"]
-        c.text(
-            66,
-            1016,
-            f"近{recent['window']}场  {delta(shift)}",
-            27,
-            MUTED if abs(shift) < 0.005 else TEAL if shift > 0 else CORAL,
-            "bold",
-        )
-        c.text(454, 976, f"较前{recent['window']}场", 15, MUTED, anchor="rm")
-        c.text(
-            66,
-            1059,
-            f"一致率 {delta(recent['agreement'])}pp　≤5% {delta(recent['bad5_rate'])}pp",
-            15,
-            MUTED,
-            width=388,
-        )
+    quartiles = None
+    if mixed:
+        draw_group_overview(c, groups)
     else:
-        c.text(66, 1016, "—" if len(groups) < 2 else "分组统计", 27, INK, "bold")
-    c.text(526, 976, "高分占比", 18, MUTED)
-    count = sole["count"] if sole else 0
-    if count:
-        c.text(526, 1016, f"90+  {sole['gold_count']} / {count}", 27, AMBER, "number")
-        c.text(
-            526,
-            1059,
-            f"{threshold}+  {sole['rainbow_count']}场（{sole['rainbow_count'] / count:.0%}）",
-            16,
-            MUTED,
-        )
-    else:
-        c.text(526, 1016, "—", 27)
-    c.text(986, 976, "评分波动", 18, MUTED)
-    c.text(986, 1016, "标准差  " + number(sole["deviation"] if sole else None), 27, INK, "bold")
-    c.text(986, 1059, "中位 " + number(summary.get("median_rating")), 16, MUTED)
-    c.text(42, 1118, job.get("id", ""), 15, MUTED)
+        draw_overview(c, groups)
+        group = next(iter(groups.values()), {})
+        if group.get("count", 0) >= 4:
+            quartiles = quantiles([p[1] for p in group["points"]], n=4, method="inclusive")[::2]
+
+    count = len(rows)
+    tick_count = min(count, 10)
+    ticks = [1 + round(i * (count - 1) / max(1, tick_count - 1)) for i in range(tick_count)]
+    draw_plot(c, groups, rows, dates, ticks, plot_top, quartiles)
+    if not mixed:
+        draw_footer(c, group, plot_end + 18)
+    c.text(1406, c.height - 21, job.get("id", ""), 14, MUTED, "number", "rm")
     return c.png()
