@@ -478,7 +478,7 @@ async def test_retry_exhaustion_manual_pause_and_limits_do_not_loop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_status_reports_waiting_for_verification_before_any_submission(tmp_path):
+async def test_verification_timeout_reports_progress_and_reopens_chrome(tmp_path, monkeypatch):
     pool = OnlinePool(tmp_path)
     worker = pool.worker
     reading_failure, release_failure = asyncio.Event(), asyncio.Event()
@@ -495,7 +495,10 @@ async def test_status_reports_waiting_for_verification_before_any_submission(tmp
 
     stdin = SimpleNamespace(write=Mock(), drain=AsyncMock())
     worker.process = SimpleNamespace(
-        returncode=None, stdin=stdin, stdout=SimpleNamespace(readline=readline)
+        returncode=None,
+        stdin=stdin,
+        stdout=SimpleNamespace(readline=readline),
+        wait=AsyncMock(return_value=0),
     )
     on_submitted = AsyncMock()
     pending = asyncio.create_task(
@@ -510,7 +513,25 @@ async def test_status_reports_waiting_for_verification_before_any_submission(tmp
         with pytest.raises(OnlinePaused) as stopped:
             await pending
     assert stopped.value.status == "verification_timeout" and pool.job_progress("job") == []
-    stdin.write.assert_called_once()
+    assert worker.process is None
+    first_request, close = [call.args[0] for call in stdin.write.call_args_list]
+    assert json.loads(close) == {"action": "close"}
+    on_submitted.assert_not_awaited()
+
+    fresh = SimpleNamespace(
+        returncode=0,
+        stdin=SimpleNamespace(write=Mock(), drain=AsyncMock()),
+        stdout=SimpleNamespace(
+            readline=AsyncMock(return_value=b'PUPULIN_ONLINE {"status":"paused"}\n')
+        ),
+    )
+    launch = AsyncMock(return_value=fresh)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(OnlinePaused) as stopped:
+        await worker.submit("job:3", {"seat": 3, "online_url": "test"}, on_submitted)
+    assert stopped.value.status == "paused"
+    launch.assert_awaited_once()
+    assert fresh.stdin.write.call_args.args[0] == first_request
     on_submitted.assert_not_awaited()
 
 

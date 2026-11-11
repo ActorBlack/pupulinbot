@@ -161,6 +161,13 @@ class OnlineReviews:
                         continue
                     if status in {"captcha_rejected", "server_timeout"}:
                         self.active_submitted_key = None
+                    if (
+                        status == "verification_timeout"
+                        and not request["submitted"]
+                        and self.active_submitted_key is None
+                    ):
+                        # Reloading the form can leave the same Chrome session stuck.
+                        await self._close_process()
                     if status != "done":
                         raise OnlinePaused(status, event.get("message", "在线批跑已暂停"))
                     from .batch_review import report_url
@@ -275,6 +282,9 @@ class OnlineReviews:
         if self.pending:
             self.pending.cancel()
             await asyncio.gather(self.pending, return_exceptions=True)
+        await self._close_process()
+
+    async def _close_process(self):
         if self.process and self.process.returncode is None:
             try:
                 self.process.stdin.write(b'{"action":"close"}\n')
@@ -282,3 +292,4 @@ class OnlineReviews:
                 await asyncio.wait_for(self.process.wait(), 5)
             except (TimeoutError, BrokenPipeError, ConnectionResetError):
                 await self._terminate()
+        self.process = None
