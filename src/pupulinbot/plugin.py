@@ -52,6 +52,7 @@ from .review_cache import ReviewCache
 from .spectator import BrowserSpectatorClient
 from .tenhou import TenhouClient
 from .tenhou_commands import install_tenhou_commands
+from .tenhou_live import TenhouLiveWatch
 from .tenhou_monitor import TenhouMonitor, TenhouStartNotice, TenhouStore
 
 require("nonebot_plugin_apscheduler")
@@ -87,7 +88,33 @@ db = Database(settings.database, legacy_follow_group=settings.legacy_follow_grou
 tenhou_client = TenhouClient(history_directory=settings.database.parent / "tenhou-history")
 tenhou_store = TenhouStore(db)
 tenhou_monitor = TenhouMonitor(tenhou_store, tenhou_client)
-install_tenhou_commands(tenhou_store, tenhou_client, tenhou_monitor, manager=settings.monitor_owner)
+
+
+async def send_tenhou_message(group, message):
+    bot = next(iter(get_driver().bots.values()), None)
+    if not isinstance(bot, Bot):
+        raise ConnectionError("OneBot is disconnected")
+    if isinstance(message, TenhouStartNotice):
+        picture = MessageSegment.image(
+            "base64://" + base64.b64encode(message.picture).decode("ascii")
+        )
+        payload = Message([MessageSegment.text(message.text + "\n"), picture])
+        await send_verified_image(bot, group, payload)
+    else:
+        # Public nicknames are text and can contain strings resembling CQ codes.
+        payload = Message(MessageSegment.text(message))
+        await bot.send_group_msg(group_id=int(group), message=payload, _timeout=90)
+
+
+tenhou_rounds = TenhouLiveWatch(tenhou_store, tenhou_client, tenhou_monitor, send_tenhou_message)
+install_tenhou_commands(
+    tenhou_store,
+    tenhou_client,
+    tenhou_monitor,
+    tenhou_rounds,
+    manager=settings.monitor_owner,
+    superusers=superusers,
+)
 paipuya_access = PaipuyaAccess(
     settings.paipuya_api_token,
     auto_cap=settings.paipuya_auto_cap,
@@ -296,6 +323,7 @@ async def shutdown() -> None:
     await reviews.close()
     await paipuya.close()
     await sanma.close()
+    await tenhou_rounds.close()
     await tenhou_client.close()
     if isinstance(live, BrowserSpectatorClient):
         await live.close()
@@ -751,17 +779,4 @@ async def poll_tenhou() -> None:
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         return
-
-    async def send(group, message):
-        if isinstance(message, TenhouStartNotice):
-            picture = MessageSegment.image(
-                "base64://" + base64.b64encode(message.picture).decode("ascii")
-            )
-            payload = Message([MessageSegment.text(message.text + "\n"), picture])
-            await send_verified_image(bot, group, payload)
-        else:
-            # Treat public nicknames as text, never as CQ codes.
-            payload = Message(MessageSegment.text(message))
-            await bot.send_group_msg(group_id=int(group), message=payload, _timeout=90)
-
-    await tenhou_monitor.poll(send)
+    await tenhou_monitor.poll(send_tenhou_message)

@@ -511,6 +511,8 @@ Matplotlib需要的TTC独立字重缓存于私有 `data/font-cache`，不修改�
 - `thwatch on <天凤昵称>`：负责人为当前群添加监控，不使用天凤私密登录 ID。
 - `thwatch off <昵称>`：负责人移除本群监控；`thwatch off all` 清空本群。
 - `thwatch list` / `thwatch status` / `thstatus`：所有成员可查看本群名单与数据源状态。
+- `thlive <观战编号或链接>`：开启本群一桌逐局播报，开局消息附链接和编号。
+- `thlive status` 查看当前桌，`thlive off` 由开启者或管理员停止。
 - `thlast [昵称]`：最近一场结果；本群仅监控一人时可省略昵称。
 
 天凤与雀魂统一由 `PUPULIN_MONITOR_OWNER` 指定的 QQ 管理名单；群主、管理员和其他成员均不能增删。旧名单保留，负责人可管理此前任何人添加的本群条目，各群独立。
@@ -524,6 +526,9 @@ Matplotlib需要的TTC独立字重缓存于私有 `data/font-cache`，不修改�
 独立 HTTP 客户端不携带牌谱屋 API key；串行请求间隔至少 1.1 秒，缓存并复用同一玩家查询。
 本机使用 IPv4；连接或读取超时仅重试一次，第二次使用站点的 www 域名。
 公开观战通常约 5 分钟延迟，只覆盖来源列出的可观战桌；不需要登录天凤账号。
+逐局播报使用天凤官方公开观战流，显示自摸、荣和或流局，以及每位玩家的小局后点数和净变化。
+和牌时列出役种、各自番数和总番；复合役满显示倍数，双响分别展示两位和牌者。
+同一桌在多个群开启时共享观战连接，各群单独收发。对局结束自动关闭，Bot 重启后可重新开启。
 观战快照 Last-Modified 超过 10 分钟时暂停开局播报并显示异常，空响应同样视为错误。
 结算必须等历史实际收录，不会以观战列表消失推断结算。
 
@@ -611,7 +616,7 @@ Mortal表格优先显示原始牌谱的座位昵称：天凤读取官方XML的UN
 `PUPULIN_MONITOR_ONLY_GROUPS` 指定受限群。群内普通成员可以绑定、解绑、查询雀魂和天凤，
 以及使用 `help`。二级会员还可以使用 `mortal`、`msmortal`、`mstable`、`mortalstatus`
 和相关别名，按现有规则管理自己在原群创建的任务。
-监控命令 `mswatch`、`thwatch`、`msstatus`、`thstatus` 在受限群只向负责人和超级管理员开放。
+监控命令 `mswatch`、`thwatch`、`msstatus`、`thstatus`、`thlive` 在受限群只向负责人和超级管理员开放。
 各群已配置的监控正常播报，增删监控对象仍由 `PUPULIN_MONITOR_OWNER` 负责。
 
 二级会员白名单按 QQ 账号全局生效，存入 SQLite。只有 `SUPERUSERS` 指定的 Bot 超级管理员可以操作：

@@ -35,6 +35,12 @@ class TenhouError(Exception):
     pass
 
 
+def watch_url(watch_id):
+    if not WATCH_ID.fullmatch(watch_id):
+        raise TenhouError("天凤观战编号格式错误。")
+    return f"https://tenhou.net/4/?wg={watch_id.upper()}"
+
+
 def validate_name(name):
     name = name.strip()
     if not name or len(name) > 40 or any(ord(c) < 32 for c in name):

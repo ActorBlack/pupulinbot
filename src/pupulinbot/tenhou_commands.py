@@ -50,9 +50,10 @@ async def manage_watch(store, client, text, user_id, group_id, *, manager=None):
     return f"已添加本群天凤监控：{name}"
 
 
-def install_tenhou_commands(store, client, monitor, *, manager=None):
+def install_tenhou_commands(store, client, monitor, live, *, manager=None, superusers=()):
     watch = on_command("thwatch", priority=10, block=True)
     status = on_command("thstatus", priority=10, block=True)
+    rounds = on_command("thlive", priority=10, block=True, force_whitespace=True)
     queries = TenhouQueries(store, client, manager=manager)
 
     async def status_text(event):
@@ -97,6 +98,29 @@ def install_tenhou_commands(store, client, monitor, *, manager=None):
     @status.handle()
     async def handle_status(event: GroupMessageEvent):
         await status.finish(MessageSegment.text(await status_text(event)))
+
+    @rounds.handle()
+    async def handle_rounds(event: GroupMessageEvent, args=CommandArg()):
+        group, user = str(event.group_id), str(event.user_id)
+        value = args.extract_plain_text().strip()
+        try:
+            if value in {"", "status"}:
+                result = live.status(group)
+            elif value == "off":
+                result = await live.stop(
+                    group,
+                    user,
+                    manager=(
+                        user == manager
+                        or user in superusers
+                        or event.sender.role in {"owner", "admin"}
+                    ),
+                )
+            else:
+                result = await live.follow(group, user, value)
+        except TenhouError as exc:
+            result = str(exc)
+        await rounds.finish(MessageSegment.text(result))
 
     def register(name):
         matcher = on_command(name, priority=10, block=True, force_whitespace=True)

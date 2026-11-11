@@ -96,7 +96,8 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
             "/thwatch off <昵称>：移除监控（仅负责人）；off all 清空\n"
             "/thwatch list / thstatus：本群监控与数据源状态\n"
-            "开局使用公开观战列表，约5分钟延迟；仅覆盖公开观战的桌。\n"
+            "/thlive <观战编号>：开启一桌逐局播报；status 查看，off 停止\n"
+            "开局附公开观战链接，逐局播报沿用官方约5分钟延迟。\n"
             "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。",
         ),
         (

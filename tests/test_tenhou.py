@@ -188,7 +188,9 @@ async def test_start_is_persisted_retried_after_disappearing_and_group_scoped(se
         "test",
         TenhouStartNotice(
             b"png",
-            "四鳳南喰赤 · 对局开始\n" + " / ".join(p["name"] for p in game["players"]),
+            "四鳳南喰赤 对局开始\n"
+            + " / ".join(p["name"] for p in game["players"])
+            + "\n观战：https://tenhou.net/4/?wg=F2821E7D\n逐局播报：thlive F2821E7D",
         ),
     )
     assert await store.pending() == []

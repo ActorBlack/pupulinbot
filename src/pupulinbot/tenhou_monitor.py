@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 
 from .promotion import promotion_line
-from .tenhou import TenhouError, format_result, record_id, rule_name, validate_name
+from .tenhou import TenhouError, format_result, record_id, rule_name, validate_name, watch_url
 from .tenhou_card import render_start
 
 log = logging.getLogger(__name__)
@@ -252,11 +252,13 @@ class TenhouMonitor:
                         continue
                     # Include start timestamp in the key: short watch IDs can be reused.
                     key = f"wg:{game['info']['id']}:{game['info']['starttime']}"
+                    watch_id = game["info"]["id"].upper()
                     notice = TenhouStartNotice(
                         picture,
                         rule_name(game["info"])
-                        + " · 对局开始\n"
-                        + " / ".join(p["name"] for p in game["players"]),
+                        + " 对局开始\n"
+                        + " / ".join(p["name"] for p in game["players"])
+                        + f"\n观战：{watch_url(watch_id)}\n逐局播报：thlive {watch_id}",
                     )
                     if not await self.deliver(pending["group_id"], key, "start", notice, send):
                         continue

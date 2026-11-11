@@ -18,7 +18,8 @@ from types import SimpleNamespace
 for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats', 'ms4',
                 'msstyle', 'msrank', 'msstatus', 'mswatch',
                 'mslife', 'msreview', 'mstable', 'thwatch', 'thstatus', 'thlast',
-                'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank'):
+                'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank',
+                'thlive'):
     event = SimpleNamespace(get_type=lambda: 'message',
                             get_message=lambda: Message('/' + command))
     assert TrieRule.get_value(None, event, {})['command'] is not None, command
@@ -82,7 +83,7 @@ async def verify_group_policy():
         for caller in (285843647, 123456, 234567):
             commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
                         'msbind', 'ms2', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
-                        'mswatch', 'thwatch', 'msstatus', 'thstatus')
+                        'mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
             for command in commands:
                 event = GroupMessageEvent.model_construct(
                     post_type='message', group_id=group, user_id=caller,
@@ -93,7 +94,7 @@ async def verify_group_policy():
                 allowed = await _apply_run_preprocessors(
                     bot=None, event=event, state=state, matcher=help_cmd(),
                 )
-                monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus')
+                monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
                 mortal = command in ('mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus')
                 expected = caller == 285843647 or (
                     command != 'vip2'

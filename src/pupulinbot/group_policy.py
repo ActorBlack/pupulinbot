@@ -7,7 +7,7 @@ from nonebot.exception import IgnoredException
 from .ms_commands import QUERY_ALIASES, QUERY_COMMANDS
 from .tenhou_commands import QUERY_COMMANDS as TENHOU_QUERIES
 
-MONITOR_COMMANDS = frozenset({"mswatch", "thwatch", "msstatus", "thstatus"})
+MONITOR_COMMANDS = frozenset({"mswatch", "thwatch", "msstatus", "thstatus", "thlive"})
 MORTAL_COMMANDS = frozenset({"mortal", "msreview", "msmortal", "mstable", "mortalstatus"})
 PUBLIC_COMMANDS = frozenset(
     {
