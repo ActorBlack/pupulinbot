@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import re
+from datetime import datetime
 
 import httpx
 from nonebot import get_driver, on_command, require
@@ -57,6 +58,7 @@ require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 superusers = frozenset(get_driver().config.superusers)
+MORTAL_PAUSE_ALERT_GROUP = 1131357545
 
 
 @run_preprocessor
@@ -125,7 +127,6 @@ online = (
         options={
             "retries": settings.mortal_online_retries,
             "headless": settings.mortal_online_headless,
-            "turnstile_timeout": settings.mortal_turnstile_timeout,
             "proxy": settings.mortal_online_proxy,
             "save_html": settings.mortal_save_html,
             "save_screenshot": settings.mortal_save_screenshot,
@@ -152,12 +153,24 @@ def mention_requester(owner, result):
 
 
 async def notify_batch(job):
-    if not await mortal_allowed(job["group_id"], job.get("owner")):
+    status = job.get("status")
+    if status == "retry_wait":
+        if job.get("retry_phase") == "verification":
+            scheduler.add_job(
+                retry_mortal_jobs,
+                "date",
+                run_date=datetime.fromisoformat(job["next_retry_at"]),
+                id=f"pupulin_mortal_retry_{job['id']}",
+                replace_existing=True,
+            )
+        return
+    verification_paused = status == "verification_paused"
+    if not verification_paused and not await mortal_allowed(job["group_id"], job.get("owner")):
         return
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         return
-    if job["status"] == "done":
+    if status == "done":
         try:
             picture = await asyncio.to_thread(render_batch_chart, job)
             await bot.send_group_msg(
@@ -182,12 +195,13 @@ async def notify_batch(job):
         return
     done = sum(row["status"] == "done" for row in job["rows"])
     text = (
-        f"Mortal 任务 {job['id']}：{STATUS_LABELS.get(job['status'], job['status'])}，"
+        f"Mortal 任务 {job['id']}：{STATUS_LABELS.get(status, status)}，"
         f"完成 {done}/{len(job['rows'])} 场。"
     )
     if job.get("message"):
         text += "\n" + job["message"]
-    await bot.send_group_msg(group_id=int(job["group_id"]), message=text)
+    group_id = MORTAL_PAUSE_ALERT_GROUP if verification_paused else int(job["group_id"])
+    await bot.send_group_msg(group_id=group_id, message=text)
 
 
 batches = BatchReviews(

@@ -15,6 +15,7 @@ from pupulinbot.batch_export import write_export
 from pupulinbot.batch_review import BatchReviews, render_report, report_metrics
 from pupulinbot.batchmortal_worker import (
     BrowserWorker,
+    VerificationRejected,
     VerificationTimeout,
     atomic_json,
     browser_options,
@@ -136,20 +137,31 @@ def test_postsubmit_failure_and_restart_cannot_duplicate_post(tmp_path):
         assert emit.call_args.kwargs["status"] == "uncertain"
 
 
-def test_verification_timeout_returns_to_batch_scheduler_without_submitting(tmp_path):
+@pytest.mark.parametrize(
+    ("failure", "status"),
+    [
+        (VerificationTimeout, "verification_timeout"),
+        (VerificationRejected, "verification_rejected"),
+    ],
+)
+def test_verification_failure_returns_to_batch_scheduler_without_submitting(
+    tmp_path, failure, status
+):
     worker = fake_worker(tmp_path)
+    worker.options["turnstile_timeout"] = 120
     with (
         patch.object(
             worker.automator,
             "analyze_single",
             create=True,
-            side_effect=VerificationTimeout("test"),
+            side_effect=failure("test"),
         ) as analyze,
         patch("pupulinbot.batchmortal_worker.emit") as emit,
     ):
         worker.run(request())
     analyze.assert_called_once()
-    assert [call.kwargs["status"] for call in emit.call_args_list] == ["verification_timeout"]
+    assert analyze.call_args.args[1]["turnstile_timeout"] == 12
+    assert [call.kwargs["status"] for call in emit.call_args_list] == [status]
     assert not worker.submitted and not worker.journal_path.exists()
 
 

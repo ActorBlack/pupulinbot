@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .online_worker import emit, progress_report_url, trusted_result
+from .online_worker import TURNSTILE_TIMEOUT, emit, progress_report_url, trusted_result
 from .review_metadata import report_game_result
 
 
@@ -120,6 +120,10 @@ class VerificationTimeout(RuntimeError):
     pass
 
 
+class VerificationRejected(RuntimeError):
+    pass
+
+
 def wait_for_submission_departure(read_state, log_prefix, timeout):
     """An accepted progress page is distinct from a still-unsubmitted form."""
     deadline = time.monotonic() + timeout
@@ -210,8 +214,11 @@ class BrowserWorker:
                     owner._remember_remote_url(state.get("url", ""))
                 return state
 
-            def _poke_captcha(self, sb):
+            def _prepare_review_form(self, sb):
                 emit(status="verification_wait")
+                return super()._prepare_review_form(sb)
+
+            def _poke_captcha(self, sb):
                 lock_path = owner.options.get("gui_lock_path")
                 if not lock_path:
                     return super()._poke_captcha(sb)
@@ -224,16 +231,21 @@ class BrowserWorker:
                 try:
                     super()._wait_for_turnstile_token(sb, log_prefix, timeout)
                 except RuntimeError as exc:
-                    # The pinned backend reports elapsed verification time as a
-                    # RuntimeError. Keep explicit challenge failures distinct.
                     if str(exc) == f"{log_prefix} Timed out waiting for Turnstile token":
                         raise VerificationTimeout(str(exc)) from exc
+                    if str(exc).startswith(
+                        (
+                            f"{log_prefix} Turnstile token was rejected",
+                            f"{log_prefix} Turnstile challenge failed",
+                        )
+                    ):
+                        raise VerificationRejected(str(exc)) from exc
                     raise
 
             def _submit_review(self, sb, log_prefix):
                 state = self._read_review_state(sb)
                 if not state.get("token_length"):
-                    raise RuntimeError("Turnstile token missing before submission")
+                    raise VerificationRejected("Turnstile token missing before submission")
                 if owner.options.get("controlled_gate"):
                     emit(status="ready_to_submit")
                     permit = json.loads(sys.stdin.readline())
@@ -241,7 +253,9 @@ class BrowserWorker:
                         raise SubmissionStopped("批跑暂停，未取得提交许可")
                     # A queued permit never substitutes for an actual current token.
                     if not self._read_review_state(sb).get("token_length"):
-                        raise RuntimeError("Token expired while waiting for submission slot")
+                        raise VerificationRejected(
+                            "Token expired while waiting for submission slot"
+                        )
                 owner._record_submission()
                 execute = sb.execute_script
 
@@ -408,7 +422,7 @@ class BrowserWorker:
             "save_screenshot": self.options.get("save_screenshot", False),
             "save_local_paipu": self.options.get("save_html", True),
             "analyze_bad_move_rate": True,
-            "turnstile_timeout": self.options.get("turnstile_timeout", 90),
+            "turnstile_timeout": TURNSTILE_TIMEOUT,
             "log_prefix": key,
         }
         retries = self.options.get("retries", 2)
@@ -476,6 +490,12 @@ class BrowserWorker:
                     emit(
                         status="verification_timeout",
                         message="Mortal 网页验证超时，本场尚未提交。",
+                    )
+                    return
+                if isinstance(exc, VerificationRejected):
+                    emit(
+                        status="verification_rejected",
+                        message="Mortal 网页验证失败，本场尚未提交。",
                     )
                     return
                 text = str(exc).lower()

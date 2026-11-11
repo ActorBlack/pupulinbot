@@ -136,9 +136,19 @@ async def verify_group_policy():
         fake.send_group_msg.reset_mock()
         with patch('pupulinbot.plugin.render_batch_chart') as render:
             await notify_batch({**job, 'status':'retry_wait', 'message':'30秒后重试'})
-            fake.send_group_msg.assert_awaited_once()
-            assert '30秒后重试' in fake.send_group_msg.call_args.kwargs['message']
+            fake.send_group_msg.assert_not_awaited()
             render.assert_not_called()
+        with patch('pupulinbot.plugin.scheduler.add_job') as schedule:
+            await notify_batch({**job, 'status':'retry_wait', 'retry_phase':'verification',
+                                'next_retry_at':'2026-11-12T00:00:00+00:00'})
+            fake.send_group_msg.assert_not_awaited()
+            assert schedule.call_args.args[1] == 'date'
+            assert schedule.call_args.kwargs['run_date'].isoformat() == '2026-11-12T00:00:00+00:00'
+        await notify_batch({**job, 'status':'verification_paused', 'owner':'123456',
+                            'message':'mortal resume abc'})
+        fake.send_group_msg.assert_awaited_once()
+        assert fake.send_group_msg.call_args.kwargs['group_id'] == 1131357545
+        assert 'mortal resume abc' in fake.send_group_msg.call_args.kwargs['message']
         fake.send_group_msg.reset_mock()
         with patch('pupulinbot.plugin.render_batch_chart', side_effect=RuntimeError('render')):
             await notify_batch(done)

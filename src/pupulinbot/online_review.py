@@ -2,14 +2,17 @@
 
 import asyncio
 import json
+import logging
 import os
 import signal
 import sys
 from pathlib import Path
 
-from .batch_review import fetch_report, report_metrics
-from .online_worker import progress_report_url
+from .batch_review import VERIFICATION_RETRY_STATUSES, fetch_report, report_metrics
+from .online_worker import TURNSTILE_TIMEOUT, progress_report_url
 from .review import ReviewError
+
+logger = logging.getLogger(__name__)
 
 
 class OnlinePaused(ReviewError):
@@ -125,17 +128,28 @@ class OnlineReviews:
         self.process.stdin.write((json.dumps(request) + "\n").encode())
         await self.process.stdin.drain()
         try:
-            async with asyncio.timeout(
-                self.timeout
-                + (self.options.get("retries", 2) + 1)
-                * (self.options.get("turnstile_timeout", 90) + 60)
-                + 120
+            async with (
+                asyncio.timeout(
+                    self.timeout
+                    + (self.options.get("retries", 2) + 1) * (TURNSTILE_TIMEOUT + 60)
+                    + 120
+                ),
+                asyncio.timeout(None) as verification,
             ):
                 while line := await self.process.stdout.readline():
                     if not line.startswith(b"PUPULIN_ONLINE "):
                         continue
                     event = json.loads(line[len(b"PUPULIN_ONLINE ") :])
                     status = event.get("status")
+                    if status == "verification_wait":
+                        self.progress = "等待 Mortal 网页验证，尚未提交"
+                        # A controlled worker cannot submit until this process grants permission.
+                        if self.options.get("controlled_gate") and not request["submitted"]:
+                            verification.reschedule(
+                                asyncio.get_running_loop().time() + TURNSTILE_TIMEOUT
+                            )
+                        continue
+                    verification.reschedule(None)
                     if status == "ready_to_submit":
                         self.progress = "验证已通过，等待提交"
                         allowed = await self.gate.acquire() if self.gate else True
@@ -146,9 +160,6 @@ class OnlineReviews:
                             ).encode()
                         )
                         await self.process.stdin.drain()
-                        continue
-                    if status == "verification_wait":
-                        self.progress = "等待 Mortal 网页验证，尚未提交"
                         continue
                     if status == "preparing_retry":
                         self.progress = event.get("message") or "正在重试打开复盘页"
@@ -161,7 +172,7 @@ class OnlineReviews:
                         continue
                     if status in {"captcha_rejected", "server_timeout"}:
                         self.active_submitted_key = None
-                    if status == "verification_timeout":
+                    if status in VERIFICATION_RETRY_STATUSES:
                         if request["submitted"] or self.active_submitted_key is not None:
                             raise OnlinePaused(
                                 "uncertain", "本场已有提交记录，稍后只找回报告，不重复提交"
@@ -182,6 +193,12 @@ class OnlineReviews:
                     return data, event["url"]
         except TimeoutError as exc:
             await self._terminate()
+            if verification.expired():
+                logger.info("Mortal 网页验证超过 %s 秒，关闭 Chrome：%s", TURNSTILE_TIMEOUT, key)
+                raise OnlinePaused(
+                    "verification_timeout",
+                    f"Mortal 网页验证超过 {TURNSTILE_TIMEOUT} 秒，尚未提交。",
+                ) from exc
             raise OnlinePaused("uncertain", "浏览器响应超时，任务已暂停；不会自动重复提交") from exc
         raise ReviewError("浏览器进程已退出，请重启后继续")
 

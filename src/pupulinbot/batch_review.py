@@ -25,7 +25,8 @@ from .review import ReviewError, parse_review_link
 from .review_metadata import apply_report_result
 
 logger = logging.getLogger(__name__)
-VERIFICATION_RESTART_LIMIT = 3
+VERIFICATION_RETRY_STATUSES = frozenset({"verification_timeout", "verification_rejected"})
+VERIFICATION_RESTART_LIMIT = 10
 VERIFICATION_PAUSE_LIMIT = 2
 VERIFICATION_PAUSE_SECONDS = 60
 
@@ -59,6 +60,7 @@ STATUS_LABELS = {
     "error": "浏览器错误已暂停",
     "verification_failed": "自动验证/准备失败，已保存任务",
     "verification_timeout": "网页验证超时，已保存任务",
+    "verification_paused": "网页验证反复失败，已暂停",
     "pending": "待复盘",
     "waiting_service": "等待分析服务",
     "ready": "待开始",
@@ -422,6 +424,9 @@ class BatchReviews:
         if not automatic:
             job["retry_attempts"] = 0
             job.pop("verification_retries", None)
+            job.pop("verification_pauses", None)
+        if job.get("retry_phase") == "verification":
+            job.pop("retry_phase")
         job.pop("next_retry_at", None)
         self.save(job)
         task = asyncio.create_task(self._run(job_id, group_id, owner))
@@ -431,28 +436,32 @@ class BatchReviews:
     @staticmethod
     def verification_retries(job, row):
         key = f"{row.get('source', 'majsoul')}:{row['uuid']}"
-        return job.setdefault("verification_retries", {}).setdefault(
-            key, {"restarts": 0, "pauses": 0}
-        )
+        return job.setdefault("verification_retries", {}).setdefault(key, {"restarts": 0})
 
-    def schedule_verification_retry(self, job, row):
-        retries = self.verification_retries(job, row)
-        if retries["pauses"] >= VERIFICATION_PAUSE_LIMIT:
+    def schedule_verification_retry(self, job):
+        pauses = job.get("verification_pauses", 0)
+        job.pop("verification_retries", None)
+        if pauses >= VERIFICATION_PAUSE_LIMIT:
             job.pop("next_retry_at", None)
-            job["message"] = (
-                f"同一份牌谱验证超时，两次挂起后的续跑均失败。"
-                f"已保存进度，发送 mortal resume {job['id']} 可继续。"
+            job.update(
+                status="verification_paused",
+                message=(
+                    f"任务已用完两次自动挂起机会，本轮同一份牌谱重开 Chrome "
+                    f"{VERIFICATION_RESTART_LIMIT} 次后仍未通过验证。进度已保存，"
+                    f"发送 mortal resume {job['id']} 可继续。"
+                ),
             )
             return
-        retries["pauses"] += 1
         job.update(
             status="retry_wait",
+            retry_phase="verification",
+            verification_pauses=pauses + 1,
             next_retry_at=(
                 datetime.now(UTC) + timedelta(seconds=VERIFICATION_PAUSE_SECONDS)
             ).isoformat(),
             message=(
                 f"同一份牌谱已用完 {VERIFICATION_RESTART_LIMIT} 次浏览器重开机会，"
-                f"挂起 1 分钟后续跑（{retries['pauses']}/{VERIFICATION_PAUSE_LIMIT}）。"
+                f"挂起 1 分钟后续跑（{pauses + 1}/{VERIFICATION_PAUSE_LIMIT}）。"
             ),
         )
 
@@ -768,7 +777,7 @@ class BatchReviews:
                     except ReviewError as exc:
                         if (
                             not online_mode
-                            or getattr(exc, "status", None) != "verification_timeout"
+                            or getattr(exc, "status", None) not in VERIFICATION_RETRY_STATUSES
                             or stopped.is_set()
                         ):
                             raise
@@ -795,7 +804,7 @@ class BatchReviews:
                 async with self.lock:
                     current = self.load(job_id, group_id, owner)
                     saved = current["rows"][index]
-                    if state == "verification_timeout" and saved.get("online_submitted"):
+                    if state in VERIFICATION_RETRY_STATUSES and saved.get("online_submitted"):
                         state = "uncertain"
                         message = "本场已有提交记录，稍后只找回报告，不重复提交"
                     saved.update(
@@ -806,8 +815,8 @@ class BatchReviews:
                         current["rows"][index]["online_submitted"] = False
                     if first:
                         current.update(status=state, message=message)
-                        if state == "verification_timeout":
-                            self.schedule_verification_retry(current, saved)
+                        if state in VERIFICATION_RETRY_STATUSES:
+                            self.schedule_verification_retry(current)
                     self.save(current, write_report=False)
 
         try:
@@ -856,6 +865,7 @@ class BatchReviews:
             job["status"] = "done"
             job.pop("message", None)
             job.pop("verification_retries", None)
+            job.pop("verification_pauses", None)
             if missing_record_names(job):
                 job.update(status="names_missing", retry_phase="names", retry_attempts=0)
                 self.schedule_retry(job)
