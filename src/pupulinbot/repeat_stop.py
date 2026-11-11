@@ -36,14 +36,13 @@ class RepeatStop:
         self.previous: Message | None = None
         self.count = 0
 
-    async def handle(self, bot: Bot, event: GroupMessageEvent) -> bool:
-        """Count the event and report whether it is a new message in the target group."""
+    async def handle(self, bot: Bot, event: GroupMessageEvent) -> None:
         if (
             event.group_id != GROUP_ID
             or event.user_id == event.self_id
             or event.message_id in self.recent_ids
         ):
-            return False
+            return
         self.recent_ids.append(event.message_id)
         message = comparable_message(event.original_message)
         if message == self.previous:
@@ -57,4 +56,3 @@ class RepeatStop:
                 await send_verified_image(bot, GROUP_ID, Message(MessageSegment.image(picture)))
             except Exception:
                 logger.exception("发送四连复读停止图失败")
-        return True

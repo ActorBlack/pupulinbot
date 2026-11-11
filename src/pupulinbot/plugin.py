@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import re
+from collections import deque
 from datetime import datetime
 
 import httpx
@@ -47,6 +48,7 @@ from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
 from .qq_delivery import send_verified_image
 from .record_names import RecordNames
+from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
 from .repeat_stop import RepeatStop
 from .review import MortalClient, ReviewError, ReviewQueue, parse_review_link, render_review
 from .review_cache import ReviewCache
@@ -61,13 +63,23 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 superusers = frozenset(get_driver().config.superusers)
 MORTAL_PAUSE_ALERT_GROUP = 1131357545
+PHRASE_REWRITE_GROUPS = frozenset({REPEAT_STOP_GROUP, 996147537})
 logger = logging.getLogger(__name__)
 repeat_stop = RepeatStop()
+rewritten_message_ids: deque[tuple[int, int]] = deque(maxlen=64)
 
 
 @event_preprocessor
 async def handle_group_reactions(bot: Bot, event: Event):
-    if not isinstance(event, GroupMessageEvent) or not await repeat_stop.handle(bot, event):
+    if not isinstance(event, GroupMessageEvent):
+        return
+    await repeat_stop.handle(bot, event)
+    key = (event.group_id, event.message_id)
+    if (
+        event.group_id not in PHRASE_REWRITE_GROUPS
+        or event.user_id == event.self_id
+        or key in rewritten_message_ids
+    ):
         return
     message = event.original_message.copy()
     message.reduce()
@@ -77,6 +89,7 @@ async def handle_group_reactions(bot: Bot, event: Event):
             segment.data["text"] = segment.data["text"].replace("好厉害", "井棋风")
             changed = True
     if changed:
+        rewritten_message_ids.append(key)
         try:
             await bot.send_group_msg(group_id=event.group_id, message=message)
         except Exception:

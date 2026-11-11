@@ -291,7 +291,7 @@ async def verify_tenhou_picture_delivery():
 asyncio.run(verify_tenhou_picture_delivery())
 
 async def verify_group_phrase_replacement():
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock, call, patch
     from nonebot.adapters.onebot.v11 import Bot
     from nonebot.message import _apply_event_preprocessors
 
@@ -315,18 +315,27 @@ async def verify_group_phrase_replacement():
             event(1, 1131357545, 42, original),
             event(2, 546573626, 100, original),
             event(3, 546573626, 42, Message('好强')),
+            event(3, 996147537, 100, original),
         ):
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
         send.assert_not_awaited()
         matching = event(4, 546573626, 42, original)
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+        for message_id in range(4, 8):
+            matching = event(message_id, 996147537, 42, original)
+            assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+        assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
 
-    send.assert_awaited_once_with(group_id=546573626, message=Message([
+    rewritten = Message([
         MessageSegment.text('真井棋风！'),
         MessageSegment.face(3),
         MessageSegment.text('井棋风 [CQ:at,qq=all]'),
-    ]))
+    ])
+    assert send.await_args_list == [
+        call(group_id=546573626, message=rewritten),
+        *[call(group_id=996147537, message=rewritten)] * 4,
+    ]
     assert original.extract_plain_text() == '真好厉害！好厉害 [CQ:at,qq=all]'
 asyncio.run(verify_group_phrase_replacement())
 
