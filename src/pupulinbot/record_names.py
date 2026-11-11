@@ -51,7 +51,7 @@ class RecordNames:
             self.pending[key] = asyncio.create_task(self._load(log))
         task = self.pending[key]
         try:
-            names = await task
+            names = await asyncio.shield(task)
             if len(names) == 4 and all(isinstance(n, str) and n.strip() for n in names):
                 if len(self.cache) >= 256:
                     self.cache.pop(next(iter(self.cache)))

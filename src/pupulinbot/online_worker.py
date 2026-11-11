@@ -1,10 +1,11 @@
 """Dedicated visible Chrome worker, with a pinned local batchmortal backend."""
 
 import json
+import re
 import sys
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 PREFIX = "PUPULIN_ONLINE "
 
@@ -22,6 +23,17 @@ def trusted_result(url):
     except (ReviewError, ValueError):
         return False
     return True
+
+
+def progress_report_url(url):
+    """Only a real author progress URL establishes an already accepted task."""
+    target = urlsplit(url)
+    if (target.scheme, target.netloc, target.path) != ("https", "mjai.ekyu.moe", "/progress"):
+        return None
+    tasks = parse_qs(target.query).get("task", [])
+    if len(tasks) != 1 or not re.fullmatch(r"[0-9a-f]{16}", tasks[0]):
+        return None
+    return f"https://mjai.ekyu.moe/killerducky/?data=/report/{tasks[0]}.json"
 
 
 class BrowserWorker:

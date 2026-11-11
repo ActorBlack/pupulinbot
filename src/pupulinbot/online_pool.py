@@ -73,6 +73,27 @@ class OnlinePool:
     def pending_key(self):
         return next((w.pending_key for w in self.workers if w.pending_key), None)
 
+    @property
+    def recovery_slots(self):
+        """Keep durable results pinned even if the parent died before saving its row."""
+        slots = {}
+        for path in [
+            self.profile / "submission-journal.json",
+            *sorted(self.profile.glob("worker-*/submission-journal.json")),
+        ]:
+            if not path.exists():
+                continue
+            state = json.loads(path.read_text())
+            if not isinstance(state, dict):
+                raise ValueError("浏览器恢复记录格式无效")
+            if state.get("state") not in {"submitted", "done"} or not state.get("key"):
+                continue
+            slot = (
+                0 if path.parent == self.profile else int(path.parent.name.removeprefix("worker-"))
+            )
+            slots[state["key"]] = slot
+        return slots
+
     def begin(self):
         self.gate.blocked = False
 
@@ -85,7 +106,7 @@ class OnlinePool:
             raise ReviewError("原任务的浏览器槽位超出当前并发设置，请恢复原并发配置")
         own_journal = self.workers[slot].profile / "submission-journal.json"
         own_state = json.loads(own_journal.read_text()) if own_journal.exists() else {}
-        recovering = own_state.get("key") == key and own_state.get("state") == "submitted"
+        recovering = own_state.get("key") == key and own_state.get("state") in {"submitted", "done"}
         # Keep one global unresolved-submission barrier even across restarts/config changes.
         for path in [
             self.profile / "submission-journal.json",

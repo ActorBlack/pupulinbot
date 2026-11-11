@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .online_worker import emit, trusted_result
+from .online_worker import emit, progress_report_url, trusted_result
 from .review_metadata import report_game_result
 
 
@@ -116,6 +116,29 @@ class SubmissionStopped(RuntimeError):
     pass
 
 
+def wait_for_submission_departure(read_state, log_prefix, timeout):
+    """An accepted progress page is distinct from a still-unsubmitted form."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = read_state()
+        url = state.get("url", "")
+        text = state.get("page_text", "")
+        if any(
+            marker in text
+            for marker in (
+                "invalid captcha response",
+                "timeout-or-duplicate",
+                "too many requests",
+                "rate limit",
+            )
+        ) or re.fullmatch(r"task timeout, been running for [0-9.]+s", text.strip()):
+            raise RuntimeError(f"{log_prefix} 作者服务返回错误：{text[:160]}")
+        if trusted_result(url) or progress_report_url(url):
+            return
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+    raise RuntimeError(f"{log_prefix} 尚未确认提交已受理")
+
+
 class BrowserWorker:
     def __init__(self, profile, model, timeout, options=None):
         from seleniumbase import SB
@@ -216,6 +239,11 @@ class BrowserWorker:
                 finally:
                     sb.execute_script = execute
 
+            def _wait_for_submission_departure_or_error(self, sb, log_prefix, timeout):
+                wait_for_submission_departure(
+                    lambda: self._read_review_state(sb), log_prefix, timeout
+                )
+
             def _wait_for_result_or_error(self, sb, log_prefix, timeout):
                 from .native_report import read_native_report
 
@@ -274,9 +302,7 @@ class BrowserWorker:
         field = None
         if trusted_result(url):
             field = "remote_report_url"
-        elif parsed.path == "/progress" and re.fullmatch(
-            r"[0-9a-f]{16}", parse_qs(parsed.query).get("task", [""])[0]
-        ):
+        elif progress_report_url(url):
             field = "remote_progress_url"
         if field and self.journal.get(field) != url:
             self.journal[field] = url
@@ -289,17 +315,24 @@ class BrowserWorker:
         emit(status="submitted")
 
     def _done(self, url, artifacts=None):
+        from .batch_review import report_metrics
+
         if not trusted_result(url):
             raise RuntimeError("结果不是有效的作者报告链接")
         native = self.automator._extract_killerducky_data(self.sb, include_entries=True)
         if not isinstance(native, dict) or native.get("player_id") != self.seat:
             raise RuntimeError("报告原生数据缺失或座位不符")
+        if report_metrics(native)["model"] != self.model:
+            raise RuntimeError("报告模型与请求不符")
         # The viewer may omit MJAI after loading. Read its existing report once;
         # this never submits another review, and shares any reader already running.
         reader = getattr(self, "report_reader", None)
-        if not native.get("game_result") and reader is not None:
+        if (
+            not native.get("game_result")
+            and reader is not None
+            and getattr(self, "need_game_result", True)
+        ):
             try:
-                from .batch_review import report_metrics
                 from .native_report import read_native_report
 
                 if self.report_future is None:
@@ -329,6 +362,7 @@ class BrowserWorker:
             self.journal = json.loads(self.journal_path.read_text())
         key = request["key"]
         self.seat = request["seat"]
+        self.need_game_result = request.get("need_game_result", True)
         if self.journal.get("state") == "submitted" and self.journal.get("key") != key:
             emit(status="uncertain", message="前一场已提交但未核对，请先继续原任务或导入报告")
             return

@@ -9,6 +9,7 @@ import math
 import os
 import re
 import statistics
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -221,7 +222,7 @@ class BatchReviews:
             job["status"] = "paused"
         return job
 
-    def save(self, job: dict) -> None:
+    def save(self, job: dict, *, write_report=True) -> None:
         path = self._path(job["id"])
         path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         path.parent.chmod(0o700)
@@ -229,7 +230,8 @@ class BatchReviews:
         temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2) + "\n")
         temporary.chmod(0o600)
         os.replace(temporary, path)
-        (path.parent / "report.html").write_text(render_report(job))
+        if write_report:
+            (path.parent / "report.html").write_text(render_report(job))
 
     async def create(self, count: int, group_id: str, owner: str, player, *, games=None) -> dict:
         if type(count) is not int or not 1 <= count <= MAX_BATCH_COUNT:
@@ -289,7 +291,9 @@ class BatchReviews:
             self.save(job)
         return job
 
-    async def create_links(self, links, group_id, owner, *, seat=None, table=False):
+    async def create_links(
+        self, links, group_id, owner, *, seat=None, table=False, resolve_names=True
+    ):
         if seat is not None and (type(seat) is not int or seat not in range(4)):
             raise ReviewError("座位必须是0–3")
         if not 1 <= len(links) <= MAX_BATCH_COUNT or (table and len(links) != 1):
@@ -334,7 +338,8 @@ class BatchReviews:
             "rows": rows,
             "status": "ready" if self.available else "waiting_service",
         }
-        await self._fill_names(rows)
+        if resolve_names:
+            await self._fill_names(rows)
         async with self.lock:
             self.save(job)
         return job
@@ -462,7 +467,8 @@ class BatchReviews:
             except (OSError, ValueError, KeyError, TypeError):
                 logger.warning("无法读取自动恢复任务：%s", path.parent.name)
 
-    async def _analyze_row(self, job_id, group_id, owner, index, row):
+    async def _analyze_row(self, job_id, group_id, owner, index, row, *, enrich=True):
+        started = time.monotonic()
         if self.online and not self.reviews.client.url:
 
             async def on_submitted(url=None, index=index):
@@ -471,7 +477,7 @@ class BatchReviews:
                     current["rows"][index]["online_submitted"] = True
                     if url:
                         current["rows"][index]["online_report_url"] = url
-                    self.save(current)
+                    self.save(current, write_report=False)
 
             data, details_url = await self.online.submit(f"{job_id}:{index}", row, on_submitted)
             metric = report_metrics(data)
@@ -482,8 +488,9 @@ class BatchReviews:
                     if row.get("player_name_source") != "original" and not anonymous_names(names):
                         row["player_name"] = str(names[row["seat"]])
             raw = self._path(job_id).parent / f"{index + 1}.json"
-            raw.write_text(json.dumps(data, ensure_ascii=False))
-            raw.chmod(0o600)
+            from .batchmortal_worker import atomic_json
+
+            await asyncio.to_thread(atomic_json, raw, data)
         else:
             result = await self.reviews.submit(row["url"], row["seat"])
             data = result.raw
@@ -495,8 +502,17 @@ class BatchReviews:
                     "rating": result.rating,
                     "model": result.raw.get("model_tag", "未标注模型"),
                 }
-        await self._fill_names([row])
+        timings = {
+            "analysis_seconds": round(time.monotonic() - started, 3),
+            "metadata_seconds": 0.0,
+        }
+        # The completed native report already supplies rank; avoid another
+        # original-log request solely to rediscover the same result.
         apply_report_result(row, data)
+        if enrich:
+            metadata_started = time.monotonic()
+            await self._fill_names([row])
+            timings["metadata_seconds"] = round(time.monotonic() - metadata_started, 3)
         async with self.lock:
             job = self.load(job_id, group_id, owner)
             job["rows"][index].update(
@@ -511,8 +527,31 @@ class BatchReviews:
                 rank_source=row.get("rank_source"),
                 completed_at=datetime.now(UTC).isoformat(),
                 review_cache_hit=bool(row.get("review_cache_hit")),
+                timings=timings,
             )
-            self.save(job)
+            self.save(job, write_report=enrich)
+
+        return not (
+            row.get("player_name_source") == "original"
+            and row.get("player_name")
+            and row.get("rank") is not None
+        )
+
+    async def _enrich_row(self, job_id, group_id, owner, index):
+        """A separate bounded stage: completed reviews never occupy browser slots."""
+        row = self.load(job_id, group_id, owner)["rows"][index]
+        started = time.monotonic()
+        await self._fill_names([row])
+        async with self.lock:
+            current = self.load(job_id, group_id, owner)
+            saved = current["rows"][index]
+            for field in ("player_name", "player_name_source", "rank", "rank_source"):
+                if row.get(field) is not None:
+                    saved[field] = row[field]
+            saved.setdefault("timings", {})["metadata_seconds"] = round(
+                time.monotonic() - started, 3
+            )
+            self.save(current, write_report=False)
 
     async def _fill_names(self, rows):
         if not self.name_resolver:
@@ -599,11 +638,53 @@ class BatchReviews:
         job = self.load(job_id, group_id, owner)
         job["status"] = "running"
         job.pop("message", None)
-        self.save(job)
+        job.pop("phase", None)
+        self.save(job, write_report=False)
         if self.online and hasattr(self.online, "begin"):
             self.online.begin()
         stopped = asyncio.Event()
         consumers = []
+        metadata_tasks = []
+        metadata_limit = asyncio.Semaphore(2)
+        online_mode = bool(self.online and not self.reviews.client.url)
+        count = (
+            getattr(self.online, "concurrency", 1)
+            if online_mode
+            else getattr(self.reviews, "workers", 1)
+        )
+        try:
+            recovery_slots = getattr(self.online, "recovery_slots", {}) if online_mode else {}
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("Mortal 恢复记录读取失败：%s", type(exc).__name__)
+            if hasattr(self.online, "halt"):
+                self.online.halt()
+            job.update(status="uncertain", message="无法读取浏览器恢复记录，暂不提交新场次。")
+            self.schedule_retry(job)
+            self.save(job)
+            await self._notify(job)
+            return
+        pending_keys = set(getattr(self.online, "pending_keys", set()))
+        pending_key = getattr(self.online, "pending_key", None)
+        if pending_key:
+            pending_keys.add(pending_key)
+        recovery = [
+            (i, r)
+            for i, r in enumerate(job["rows"])
+            if r["status"] != "done"
+            and (
+                r.get("online_submitted")
+                or f"{job_id}:{i}" in pending_keys
+                or f"{job_id}:{i}" in recovery_slots
+            )
+        ]
+        recovering_indices = {i for i, _ in recovery}
+
+        async def enrich(index):
+            async with metadata_limit:
+                try:
+                    await self._enrich_row(job_id, group_id, owner, index)
+                except Exception:
+                    logger.exception("复盘已保存，昵称阶段稍后重试：job=%s index=%s", job_id, index)
 
         def halt():
             stopped.set()
@@ -612,22 +693,31 @@ class BatchReviews:
 
         async def analyze(index, row, preferred_slot=None):
             try:
-                if self.online and hasattr(self.online, "concurrency"):
+                if online_mode and hasattr(self.online, "concurrency"):
                     async with self.lock:
                         current = self.load(job_id, group_id, owner)
-                        slot = row.get(
-                            "online_slot",
-                            index % self.online.concurrency
-                            if preferred_slot is None
-                            else preferred_slot,
+                        # Only durable work has affinity. Unsubmitted retries may
+                        # use whichever consumer is free instead of queuing on slot 0.
+                        slot = (
+                            recovery_slots.get(
+                                f"{job_id}:{index}", row.get("online_slot", index % count)
+                            )
+                            if index in recovering_indices
+                            else preferred_slot
                         )
+                        if slot is None:
+                            slot = index % count
                         current["rows"][index]["online_slot"] = row["online_slot"] = slot
-                        self.save(current)
-                await self._analyze_row(job_id, group_id, owner, index, row)
+                        self.save(current, write_report=False)
+                needs_metadata = await self._analyze_row(
+                    job_id, group_id, owner, index, row, enrich=False
+                )
+                if needs_metadata and self.name_resolver is not None:
+                    metadata_tasks.append(asyncio.create_task(enrich(index)))
             except Exception as exc:
                 first = not stopped.is_set()
                 halt()
-                state = getattr(exc, "status", "error" if self.online else "paused")
+                state = getattr(exc, "status", "error" if online_mode else "paused")
                 message = str(exc).replace("<任务编号>", job_id)
                 if not isinstance(exc, ReviewError):
                     logger.exception("批量复盘异常，已暂停：job=%s index=%s", job_id, index)
@@ -642,21 +732,19 @@ class BatchReviews:
                         current["rows"][index]["online_submitted"] = False
                     if first:
                         current.update(status=state, message=message)
-                    self.save(current)
+                    self.save(current, write_report=False)
 
         try:
             # Recover outstanding submissions before allowing any fresh task to start.
-            pending_keys = getattr(self.online, "pending_keys", set())
-            pending_key = getattr(self.online, "pending_key", None)
-            if pending_key:
-                pending_keys = set(pending_keys) | {pending_key}
-            for index, row in enumerate(job["rows"]):
-                if row["status"] != "done" and (
-                    row.get("online_submitted") or f"{job_id}:{index}" in pending_keys
-                ):
+            recovery_limit = asyncio.Semaphore(count)
+
+            async def recover(index, row):
+                async with recovery_limit:
                     await analyze(index, row)
-                    # A failed recovery must not hide another already submitted result.
-                    # Fresh dispatch below remains stopped after any recovery failure.
+
+            # Recover independent results concurrently; failures still prevent
+            # fresh POSTs while other outstanding results are collected.
+            await asyncio.gather(*(recover(i, r) for i, r in recovery))
             current = self.load(job_id, group_id, owner)
             pending = iter((i, r) for i, r in enumerate(current["rows"]) if r["status"] != "done")
 
@@ -667,23 +755,27 @@ class BatchReviews:
                         return
                     await analyze(*item, preferred_slot=slot)
 
-            count = (
-                getattr(self.online, "concurrency", 1)
-                if self.online and not self.reviews.client.url
-                else 1
-            )
             consumers = [asyncio.create_task(consume(slot)) for slot in range(count)]
             await asyncio.gather(*consumers)
+            if metadata_tasks:
+                if not stopped.is_set() and any(not task.done() for task in metadata_tasks):
+                    async with self.lock:
+                        current = self.load(job_id, group_id, owner)
+                        current.update(phase="metadata", message="分析已完成，正在核对昵称。")
+                        self.save(current, write_report=False)
+                await asyncio.gather(*metadata_tasks)
         except asyncio.CancelledError:
             halt()
-            for task in consumers:
+            for task in [*consumers, *metadata_tasks]:
                 task.cancel()
-            await asyncio.gather(*consumers, return_exceptions=True)
+            await asyncio.gather(*consumers, *metadata_tasks, return_exceptions=True)
             current = self.load(job_id, group_id, owner)
             current["status"] = "paused"
+            current.pop("phase", None)
             self.save(current)
             raise
         job = self.load(job_id, group_id, owner)
+        job.pop("phase", None)
         if not stopped.is_set():
             job["status"] = "done"
             job.pop("message", None)

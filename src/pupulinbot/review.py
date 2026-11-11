@@ -34,6 +34,20 @@ class MortalClient:
 
     def __init__(self, url: str | None, token: str | None, timeout: float = 180):
         self.url, self.token, self.timeout = url, token, timeout
+        self._http = None
+
+    def _connection(self):
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout, connect=min(15, self.timeout)),
+                follow_redirects=False,
+            )
+        return self._http
+
+    async def close(self):
+        if self._http is not None:
+            await self._http.aclose()
+            self._http = None
 
     async def review(self, paipu_url: str, seat: int | None = None) -> ReviewResult:
         if not self.url:
@@ -41,10 +55,8 @@ class MortalClient:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         payload = {"url": paipu_url, "seat": seat}
         try:
-            async with (
-                asyncio.timeout(self.timeout),
-                httpx.AsyncClient(timeout=self.timeout) as client,
-            ):
+            async with asyncio.timeout(self.timeout):
+                client = self._connection()
                 response = await client.post(
                     f"{self.url.rstrip('/')}/review", json=payload, headers=headers
                 )
@@ -136,6 +148,9 @@ class ReviewQueue:
             if not future.done():
                 future.set_exception(ReviewError("Mortal 分析队列已关闭"))
             self.queue.task_done()
+        close = getattr(self.client, "close", None)
+        if close is not None:
+            await close()
 
     async def submit(self, url: str, seat: int | None = None) -> ReviewResult:
         if not self.tasks:

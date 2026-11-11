@@ -50,14 +50,32 @@ class ReviewCache:
                 if len(content) > 10 * 1024 * 1024:
                     continue
                 data = json.loads(content)
-                if data.get("player_id") != row["seat"] or report_metrics(data)["model"] != model:
+                if (
+                    not isinstance(data, dict)
+                    or data.get("player_id") != row["seat"]
+                    or report_metrics(data)["model"] != model
+                ):
                     continue
+                self.remember(row, model, (data, url))
                 return data, url
             except (OSError, ValueError, KeyError, TypeError, ReviewError):
                 continue
         return None
 
     def remember(self, row, model, result):
+        if row.get("source_verification", "").startswith("用户指定场次"):
+            return
+        try:
+            data, url = result
+            report_url(url)
+            if (
+                not isinstance(data, dict)
+                or data.get("player_id") != row["seat"]
+                or report_metrics(data)["model"] != model
+            ):
+                return
+        except (ReviewError, ValueError, KeyError, TypeError):
+            return
         self.memory[self.key(row, model)] = result
         if len(self.memory) > 200:
             self.memory.pop(next(iter(self.memory)))

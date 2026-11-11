@@ -3,13 +3,12 @@
 import asyncio
 import json
 import os
-import re
 import signal
 import sys
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 
-from .batch_review import fetch_report
+from .batch_review import fetch_report, report_metrics
+from .online_worker import progress_report_url
 from .review import ReviewError
 
 
@@ -65,16 +64,8 @@ class OnlineReviews:
             return data, journal["url"]
         recovery_url = journal.get("remote_report_url")
         if not recovery_url and journal.get("remote_progress_url"):
-            progress = urlsplit(journal["remote_progress_url"])
-            task = parse_qs(progress.query).get("task", [""])[0]
-            if (
-                progress.scheme == "https"
-                and progress.netloc == "mjai.ekyu.moe"
-                and progress.path == "/progress"
-                and re.fullmatch(r"[0-9a-f]{16}", task)
-            ):
-                # A known task ID permits a read-only lookup, never another submission.
-                recovery_url = f"https://mjai.ekyu.moe/killerducky/?data=/report/{task}.json"
+            # A known task ID permits a read-only lookup, never another submission.
+            recovery_url = progress_report_url(journal["remote_progress_url"])
         if journal.get("key") == key and journal.get("state") == "submitted" and recovery_url:
             from .native_report import read_native_report
 
@@ -114,6 +105,7 @@ class OnlineReviews:
             "online_url": row["online_url"],
             "seat": row["seat"],
             "submitted": bool(row.get("online_submitted")),
+            "need_game_result": not (type(row.get("rank")) is int and 1 <= row["rank"] <= 4),
             "profile": str(self.profile.resolve()),
             "model": self.model,
             "timeout": self.timeout,
@@ -188,8 +180,6 @@ class OnlineReviews:
         await asyncio.to_thread(record)
 
     async def _read_native(self, filename, row):
-        from .batch_review import report_metrics
-
         def read():
             path = Path(filename).resolve()
             root = (self.profile / "artifacts").resolve()
@@ -204,7 +194,8 @@ class OnlineReviews:
         data = await asyncio.to_thread(read)
         if not isinstance(data, dict) or data.get("player_id") != row["seat"]:
             raise ReviewError("在线报告座位不匹配，任务已暂停")
-        report_metrics(data)
+        if report_metrics(data)["model"] != self.model:
+            raise ReviewError("在线报告模型不匹配，任务已暂停")
         return data
 
     async def _fetch(self, url, row):
@@ -216,6 +207,8 @@ class OnlineReviews:
             raise ReviewError("报告已生成，但下载失败；稍后继续会重试下载，不重复提交") from exc
         if not isinstance(data, dict) or data.get("player_id") != row["seat"]:
             raise ReviewError("在线报告座位不匹配，任务已暂停")
+        if report_metrics(data)["model"] != self.model:
+            raise ReviewError("在线报告模型不匹配，任务已暂停")
         return data
 
     async def acknowledge_import(self, key, url, data):

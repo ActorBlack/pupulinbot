@@ -341,7 +341,7 @@ async def mortal(event: GroupMessageEvent, args=CommandArg()):
         if online or not reviews.client.url:
             seat = int(parts[1]) if len(parts) > 1 else None
             job = await batches.create_links(
-                [parts[0]], str(event.group_id), str(event.user_id), seat=seat
+                [parts[0]], str(event.group_id), str(event.user_id), seat=seat, resolve_names=False
             )
             if batches.available:
                 batches.start(job["id"], str(event.group_id), str(event.user_id))
@@ -369,7 +369,9 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
             raise ReviewError(
                 "用法：mortal table <雀魂/天凤链接或一番街ID>；mortal links <牌谱1> <牌谱2>…"
             )
-        job = await batches.create_links(parts[1:], group_id, owner, table=action == "table")
+        job = await batches.create_links(
+            parts[1:], group_id, owner, table=action == "table", resolve_names=False
+        )
         if batches.available:
             batches.start(job["id"], group_id, owner)
         await review_cmd.finish(task_start_reply(job["id"], started=batches.available))
