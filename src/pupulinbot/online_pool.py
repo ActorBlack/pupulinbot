@@ -135,8 +135,9 @@ class OnlinePool:
                 except OSError:
                     logger.warning("Mortal 报告无法写入独立缓存", exc_info=True)
             return result
-        except Exception:
-            self.halt()
+        except Exception as exc:
+            if not isinstance(exc, OnlinePaused) or exc.status != "verification_timeout":
+                self.halt()
             raise
 
     async def acknowledge_import(self, key, url, data):

@@ -25,6 +25,9 @@ from .review import ReviewError, parse_review_link
 from .review_metadata import apply_report_result
 
 logger = logging.getLogger(__name__)
+VERIFICATION_RESTART_LIMIT = 3
+VERIFICATION_PAUSE_LIMIT = 2
+VERIFICATION_PAUSE_SECONDS = 60
 
 
 async def upload_report(bot, group_id: int, path: Path):
@@ -418,30 +421,43 @@ class BatchReviews:
                 raise ReviewError("上一个任务仍有场次等待浏览器结果，请先继续该任务")
         if not automatic:
             job["retry_attempts"] = 0
+            job.pop("verification_retries", None)
         job.pop("next_retry_at", None)
         self.save(job)
         task = asyncio.create_task(self._run(job_id, group_id, owner))
         self.tasks[job_id] = task
         task.add_done_callback(lambda _: self.tasks.pop(job_id, None))
 
-    def schedule_retry(self, job):
-        """Persist bounded backoff; ambiguous submissions are only read/recovered."""
-        if job["status"] == "verification_timeout":
-            attempts = job.get("retry_attempts", 0)
-            if attempts >= 2:
-                job.pop("next_retry_at", None)
-                job["message"] = (
-                    f"Mortal 网页验证连续超时，已保存进度。发送 mortal resume {job['id']} 可继续。"
-                )
-                return
-            delay = 60 * 2**attempts
-            job.update(
-                status="retry_wait",
-                retry_attempts=attempts + 1,
-                next_retry_at=(datetime.now(UTC) + timedelta(seconds=delay)).isoformat(),
-                message=f"Mortal 网页验证超时。{delay} 秒后继续未完成项（{attempts + 1}/2）。",
+    @staticmethod
+    def verification_retries(job, row):
+        key = f"{row.get('source', 'majsoul')}:{row['uuid']}"
+        return job.setdefault("verification_retries", {}).setdefault(
+            key, {"restarts": 0, "pauses": 0}
+        )
+
+    def schedule_verification_retry(self, job, row):
+        retries = self.verification_retries(job, row)
+        if retries["pauses"] >= VERIFICATION_PAUSE_LIMIT:
+            job.pop("next_retry_at", None)
+            job["message"] = (
+                f"同一份牌谱验证超时，两次挂起后的续跑均失败。"
+                f"已保存进度，发送 mortal resume {job['id']} 可继续。"
             )
             return
+        retries["pauses"] += 1
+        job.update(
+            status="retry_wait",
+            next_retry_at=(
+                datetime.now(UTC) + timedelta(seconds=VERIFICATION_PAUSE_SECONDS)
+            ).isoformat(),
+            message=(
+                f"同一份牌谱已用完 {VERIFICATION_RESTART_LIMIT} 次浏览器重开机会，"
+                f"挂起 1 分钟后续跑（{retries['pauses']}/{VERIFICATION_PAUSE_LIMIT}）。"
+            ),
+        )
+
+    def schedule_retry(self, job):
+        """Persist bounded backoff; ambiguous submissions are only read/recovered."""
         if job["status"] not in {"uncertain", "server_timeout", "error", "names_missing"}:
             return
         attempts = job.get("retry_attempts", 0)
@@ -743,9 +759,29 @@ class BatchReviews:
                             slot = index % count
                         current["rows"][index]["online_slot"] = row["online_slot"] = slot
                         self.save(current, write_report=False)
-                needs_metadata = await self._analyze_row(
-                    job_id, group_id, owner, index, row, enrich=False
-                )
+                while True:
+                    try:
+                        needs_metadata = await self._analyze_row(
+                            job_id, group_id, owner, index, row, enrich=False
+                        )
+                        break
+                    except ReviewError as exc:
+                        if (
+                            not online_mode
+                            or getattr(exc, "status", None) != "verification_timeout"
+                            or stopped.is_set()
+                        ):
+                            raise
+                        async with self.lock:
+                            current = self.load(job_id, group_id, owner)
+                            saved = current["rows"][index]
+                            if saved.get("online_submitted"):
+                                raise
+                            retries = self.verification_retries(current, saved)
+                            if retries["restarts"] >= VERIFICATION_RESTART_LIMIT:
+                                raise
+                            retries["restarts"] += 1
+                            self.save(current, write_report=False)
                 if needs_metadata and self.name_resolver is not None:
                     metadata_tasks.append(asyncio.create_task(enrich(index)))
             except Exception as exc:
@@ -758,7 +794,11 @@ class BatchReviews:
                     message = "任务执行异常，请检查本机日志；已完成结果保留"
                 async with self.lock:
                     current = self.load(job_id, group_id, owner)
-                    current["rows"][index].update(
+                    saved = current["rows"][index]
+                    if state == "verification_timeout" and saved.get("online_submitted"):
+                        state = "uncertain"
+                        message = "本场已有提交记录，稍后只找回报告，不重复提交"
+                    saved.update(
                         status="waiting_human" if state == "waiting_human" else "failed",
                         error=message,
                     )
@@ -766,6 +806,8 @@ class BatchReviews:
                         current["rows"][index]["online_submitted"] = False
                     if first:
                         current.update(status=state, message=message)
+                        if state == "verification_timeout":
+                            self.schedule_verification_retry(current, saved)
                     self.save(current, write_report=False)
 
         try:
@@ -813,6 +855,7 @@ class BatchReviews:
         if not stopped.is_set():
             job["status"] = "done"
             job.pop("message", None)
+            job.pop("verification_retries", None)
             if missing_record_names(job):
                 job.update(status="names_missing", retry_phase="names", retry_attempts=0)
                 self.schedule_retry(job)

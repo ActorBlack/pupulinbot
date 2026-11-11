@@ -567,32 +567,80 @@ async def test_verification_timeout_reports_progress_and_reopens_chrome(tmp_path
 
 @pytest.mark.asyncio
 async def test_verification_timeout_retry_skips_completed_rows_and_stops(tmp_path):
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
-    submit = AsyncMock(side_effect=OnlinePaused("verification_timeout", "未取得验证令牌"))
-    online = SimpleNamespace(concurrency=2, submit=submit)
-    batches = manager(tmp_path, online)
-    job = await batches.create(4, "g", "u", Player(42, "player"))
-    for index in (1, 2):
-        job["rows"][index].update(status="done", metrics={"rating": 87})
+    online = OnlinePool(tmp_path / "chrome")
+    online.worker.submit = AsyncMock(
+        side_effect=OnlinePaused("verification_timeout", "未取得验证令牌")
+    )
+    batches = manager(tmp_path / "jobs", online, count=2)
+    notified = []
 
-    # Allow both browsers to start before either times out.
-    async def time_out(*args):
-        await asyncio.sleep(0)
-        raise OnlinePaused("verification_timeout", "未取得验证令牌")
+    async def notify(job):
+        notified.append((job["status"], online.worker.submit.await_count))
 
-    submit.side_effect = time_out
+    batches.notify = notify
+    job = await batches.create(2, "g", "u", Player(42, "player"))
+    job["rows"][0].update(status="done", metrics={"rating": 87})
     batches.save(job)
     job_id = job["id"]
-    await batches._run(job_id, "g", "u")
-    for attempt, delay in enumerate((60, 120), 1):
+    batches.start(job_id, "g", "u")
+    await batches.tasks[job_id]
+    for attempt in (1, 2):
         queued = batches.load(job_id, "g", "u")
-        assert queued["status"] == "retry_wait" and queued["retry_attempts"] == attempt
-        assert f"{delay} 秒后" in queued["message"]
-        await batches.retry_due(datetime.fromisoformat(queued["next_retry_at"]))
+        assert queued["status"] == "retry_wait"
+        assert f"挂起 1 分钟后续跑（{attempt}/2）" in queued["message"]
+        assert notified[-1] == ("retry_wait", attempt + 3)
+        due = datetime.fromisoformat(queued["next_retry_at"])
+        await batches.retry_due(due - timedelta(microseconds=1))
+        assert not batches.tasks
+        await batches.retry_due(due)
         await batches.tasks[job_id]
     final = batches.load(job_id, "g", "u")
     assert final["status"] == "verification_timeout" and "next_retry_at" not in final
-    assert [final["rows"][i]["metrics"] for i in (1, 2)] == [{"rating": 87}] * 2
-    assert all(not final["rows"][i].get("online_submitted") for i in (0, 3))
-    assert [c.args[0] for c in submit.await_args_list] == [f"{job_id}:0", f"{job_id}:3"] * 3
+    assert final["rows"][0]["metrics"] == {"rating": 87}
+    assert not final["rows"][1].get("online_submitted")
+    assert [c.args[0] for c in online.worker.submit.await_args_list] == [f"{job_id}:1"] * 6
+    assert notified == [("retry_wait", 4), ("retry_wait", 5), ("verification_timeout", 6)]
+    await online.close()
+
+
+@pytest.mark.asyncio
+async def test_verification_restarts_are_shared_by_seats_of_the_same_replay(tmp_path):
+    from collections import Counter
+    from datetime import datetime
+
+    online = OnlinePool(tmp_path / "chrome")
+    batches = manager(tmp_path / "jobs", online, count=3)
+    job = await batches.create(3, "g", "u", Player(42, "player"))
+    first, second, _ = job["rows"]
+    second.update(uuid=first["uuid"], url=first["url"], seat=(first["seat"] + 1) % 4)
+    batches.save(job)
+    attempts = Counter()
+
+    async def submit(key, row, callback):
+        assert not online.gate.blocked
+        index = int(key.rsplit(":", 1)[1])
+        attempts[index] += 1
+        if attempts[index] <= (2, 2, 1)[index]:
+            raise OnlinePaused("verification_timeout", "未取得验证令牌")
+        await callback(REPORT)
+        report = native_report()
+        report["player_id"] = row["seat"]
+        return report, REPORT
+
+    online.worker.submit = submit
+    batches.notify = AsyncMock()
+    job_id = job["id"]
+    batches.start(job_id, "g", "u")
+    await batches.tasks[job_id]
+    queued = batches.load(job_id, "g", "u")
+    assert queued["status"] == "retry_wait"
+    assert attempts == {0: 3, 1: 2}
+    batches.notify.assert_awaited_once()
+    await batches.retry_due(datetime.fromisoformat(queued["next_retry_at"]))
+    await batches.tasks[job_id]
+    assert attempts == {0: 3, 1: 3, 2: 2}
+    assert batches.load(job_id, "g", "u")["status"] == "done"
+    assert [c.args[0]["status"] for c in batches.notify.await_args_list] == ["retry_wait", "done"]
+    await online.close()

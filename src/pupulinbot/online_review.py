@@ -161,11 +161,11 @@ class OnlineReviews:
                         continue
                     if status in {"captcha_rejected", "server_timeout"}:
                         self.active_submitted_key = None
-                    if (
-                        status == "verification_timeout"
-                        and not request["submitted"]
-                        and self.active_submitted_key is None
-                    ):
+                    if status == "verification_timeout":
+                        if request["submitted"] or self.active_submitted_key is not None:
+                            raise OnlinePaused(
+                                "uncertain", "本场已有提交记录，稍后只找回报告，不重复提交"
+                            )
                         # Reloading the form can leave the same Chrome session stuck.
                         await self._close_process()
                     if status != "done":
