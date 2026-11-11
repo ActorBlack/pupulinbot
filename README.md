@@ -417,6 +417,7 @@ Mortal 子命令增加 `batch/table/links/status/report/chart/pause/resume/expor
 | --- | --- |
 | `msbind <UID或昵称>` | 绑定当前 QQ；多个同名候选时要求改用 account ID |
 | `msunbind` | 解除本人绑定 |
+| `ms2 @群友 [雀魂昵称或 account ID]` | 查询群友已绑定账号；加昵称或 ID 可代绑，限本人、群管理员或 Bot 管理员，已有绑定不覆盖 |
 | `mslast [玩家] last=10 [-i]` | 最近对局，支持图片和筛选 |
 | `msstats [UID或昵称] [sanma]` | 展示四麻或三麻详细统计 |
 | `msrank [sanma]` | 当前群监控玩家按段位、同段位 PT 从高到低排行；每行显示 `昵称 圣2 3785 / 6000`，不加单位 |

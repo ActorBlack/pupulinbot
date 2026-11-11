@@ -237,7 +237,9 @@ watch_commands = WatchCommands(
 )
 auto_review_tasks: set[asyncio.Task] = set()
 logger = logging.getLogger(__name__)
-install_commands(MahjongQueries(db, paipuya, sanma, live=live))
+install_commands(
+    MahjongQueries(db, paipuya, sanma, live=live, admins=settings.admin_users | superusers)
+)
 
 bind_cmd = on_command("msbind", priority=10, block=True)
 unbind_cmd = on_command("msunbind", priority=10, block=True)

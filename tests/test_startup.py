@@ -13,9 +13,9 @@ nonebot.init(driver='~fastapi')
 nonebot.get_driver().register_adapter(Adapter)
 assert nonebot.load_plugin('pupulinbot.plugin') is not None
 from nonebot.rule import TrieRule
-from nonebot.adapters.onebot.v11 import Message
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from types import SimpleNamespace
-for command in ('help', 'mshelp', 'msbind', 'msunbind', 'mslast', 'msstats', 'ms4',
+for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats', 'ms4',
                 'msstyle', 'msrank', 'msstatus', 'mswatch',
                 'mslife', 'msreview', 'mstable', 'thwatch', 'thstatus', 'thlast',
                 'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank'):
@@ -30,6 +30,14 @@ event = SimpleNamespace(get_type=lambda: 'message',
 parsed = TrieRule.get_value(None, event, {})
 assert parsed['command'] == ('mslife',)
 assert str(parsed['command_arg']) == '普普林 last=100'
+event = SimpleNamespace(
+    get_type=lambda: 'message',
+    get_message=lambda: Message('ms2 ') + MessageSegment.at(234567) + ' 。不记仇的钟会',
+)
+parsed = TrieRule.get_value(None, event, {})
+assert parsed['command'] == ('ms2',)
+assert parsed['command_arg'][0].data['qq'] == '234567'
+assert parsed['command_arg'].extract_plain_text().strip() == '。不记仇的钟会'
 import asyncio
 from nonebot.message import _apply_run_preprocessors
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
@@ -63,7 +71,7 @@ async def verify_group_policy():
     for group in (706530575, 546573626):
         for caller in (285843647, 123456, 234567):
             commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
-                        'msbind', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
+                        'msbind', 'ms2', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
                         'mswatch', 'thwatch', 'msstatus', 'thstatus')
             for command in commands:
                 event = GroupMessageEvent.model_construct(

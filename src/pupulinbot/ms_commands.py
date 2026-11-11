@@ -26,6 +26,7 @@ from .paipuya import PaipuyaError
 
 QUERY_COMMANDS = (
     "ms",
+    "ms2",
     "ms3",
     "ms4",
     "mslife",
@@ -43,10 +44,11 @@ QUERY_ALIASES = {"mslast": ("msrecent",), "msvs": ("mswith",)}
 
 
 class MahjongQueries:
-    def __init__(self, db, four, three, *, live=None):
+    def __init__(self, db, four, three, *, live=None, admins=()):
         self.db, self.clients = db, {4: four, 3: three}
         self.gate = asyncio.Semaphore(2)
         self.live = live
+        self.admins = frozenset(str(user) for user in admins)
 
     async def player(self, options, user_id):
         if options.player:
@@ -62,11 +64,39 @@ class MahjongQueries:
             raise ValueError("请先发送：msbind <account ID/昵称>，或在命令后指定玩家")
         return Player(row["account_id"], row["nickname"])
 
-    async def query(self, command, text, user_id, group_id):
+    async def query(self, command, text, user_id, group_id, *, role="member", mentioned=None):
         if command not in QUERY_COMMANDS:
             raise ValueError("不支持的雀魂查询命令")
         last_limit = 500 if command == "ms" else 2000
         options = parse_options(text, mode=3 if command == "ms3" else 4, max_last=last_limit)
+        if command == "ms2":
+            if not mentioned:
+                raise ValueError("用法：ms2 @一位群友 [雀魂昵称或 account ID]")
+            if options.player:
+                if str(mentioned) != str(user_id) and (
+                    role not in {"admin", "owner"} and str(user_id) not in self.admins
+                ):
+                    raise ValueError("只有本人、群管理员或 Bot 管理员可以代绑雀魂账号。")
+                if (
+                    options.subscription
+                    or options.group
+                    or options.observe
+                    or options.image
+                    or options.start
+                    or options.end
+                    or options.modes
+                    or options.last_explicit
+                    or options.gap != 60
+                ):
+                    raise ValueError("代绑用法：ms2 @群友 <雀魂昵称或 account ID>")
+                target = str(mentioned)
+                if await self.db.binding(target):
+                    return "该群友已绑定雀魂账号，请由本人修改。"
+                player = await self.clients[options.mode].resolve(options.player)
+                if not await self.db.bind_if_absent(target, player.account_id, player.nickname):
+                    return "该群友已绑定雀魂账号，请由本人修改。"
+                return f"绑定成功：{player.nickname}（{player.account_id}）"
+            command, user_id = f"ms{options.mode}", mentioned
         if command == "msstyle" and options.mode != 4:
             raise ValueError("msstyle 的参考模型仅适用于四麻；请使用 mode=4")
         if command == "ms3" and options.mode != 3:
@@ -398,15 +428,18 @@ def install_commands(service):
             aliases=set(aliases),
             priority=10,
             block=True,
-            force_whitespace=True if name == "ms" else None,
+            force_whitespace=True if name in {"ms", "ms2"} else None,
         )
 
         @matcher.handle()
         async def handler(event: GroupMessageEvent, args=CommandArg()):
-            mentioned = [
-                s.data.get("qq") for s in args if s.type == "at" and s.data.get("qq") != "all"
-            ]
-            if mentioned:
+            mentioned = [str(s.data.get("qq", "")) for s in args if s.type == "at"]
+            member = {}
+            if name == "ms2":
+                if len(mentioned) != 1 or not mentioned[0].isdecimal():
+                    await matcher.finish("用法：ms2 @一位群友 [雀魂昵称或 account ID]")
+                member = {"role": event.sender.role or "member", "mentioned": mentioned[0]}
+            elif any(qq != "all" for qq in mentioned):
                 await matcher.finish("请直接指定玩家昵称或 account ID")
             try:
                 result = await service.query(
@@ -414,6 +447,7 @@ def install_commands(service):
                     args.extract_plain_text().strip(),
                     event.user_id,
                     event.group_id,
+                    **member,
                 )
             except (ValueError, PaipuyaError) as exc:
                 await matcher.finish(str(exc))

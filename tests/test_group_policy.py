@@ -31,6 +31,7 @@ def test_group_command_access(group, user, vip2, mortal, monitor, manage):
                 "mshelp",
                 "msbind",
                 "msunbind",
+                "ms2",
                 "ms4",
                 "msrecent",
                 "mswith",

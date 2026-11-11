@@ -189,9 +189,9 @@ def test_filtered_profile_scope_and_three_four_player_metrics_render_cleanly(mon
     assert len(profile_content(Player(ACCOUNT, "示例玩家"), value)["ranks"]) == mode
 
 
-@pytest.mark.parametrize("command", ["ms2", "msdetail"])
 @pytest.mark.asyncio
-async def test_removed_commands_have_no_handler_or_lookup_side_effect(command):
+async def test_removed_msdetail_has_no_handler_or_lookup_side_effect():
+    command = "msdetail"
     db = SimpleNamespace(binding=AsyncMock(), bind=AsyncMock())
     client = client_for()
     assert command not in QUERY_COMMANDS
@@ -200,6 +200,38 @@ async def test_removed_commands_have_no_handler_or_lookup_side_effect(command):
     db.binding.assert_not_awaited()
     db.bind.assert_not_awaited()
     client.resolve.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ms2_allows_query_and_authorized_binding_without_overwriting(tmp_path):
+    from pupulinbot.db import Database
+
+    db = Database(tmp_path / "bindings.db")
+    await db.initialize()
+    client = client_for()
+    nickname = "。不记仇的钟会"
+    client.resolve.return_value = Player(ACCOUNT, nickname)
+    service = MahjongQueries(db, client, client, admins={"345678"})
+    target = "234567"
+
+    with pytest.raises(ValueError, match="群管理员"):
+        await service.query("ms2", nickname, "123456", "706530575", mentioned=target)
+    assert await db.binding(target) is None
+    client.resolve.assert_not_awaited()
+
+    assert "绑定成功" in await service.query(
+        "ms2", nickname, "123456", "706530575", role="admin", mentioned=target
+    )
+    client.resolve.assert_awaited_once_with(nickname)
+    assert "已绑定" in await service.query(
+        "ms2", "不同昵称", "345678", "706530575", mentioned=target
+    )
+    assert (await db.binding(target))["nickname"] == nickname
+    client.resolve.assert_awaited_once()
+
+    result = await service.query("ms2", "", "123456", "706530575", mentioned=target)
+    assert nickname in result
+    client.stats.assert_awaited_once_with(ACCOUNT)
 
 
 def test_registration_and_help_only_advertise_retained_commands(monkeypatch):
@@ -217,6 +249,6 @@ def test_registration_and_help_only_advertise_retained_commands(monkeypatch):
     install_commands(None)
     text = "\n".join(body for _, body in help_sections())
     assert set(registered) == set(QUERY_COMMANDS)
-    assert not {"ms2", "msdetail"} & set(registered)
-    assert "/ms2" not in text and "/msdetail" not in text
+    assert "ms2" in registered and "msdetail" not in registered
+    assert "/ms2 @群友" in text and "/msdetail" not in text
     assert "-i -r 玉南 -l 100" in text
