@@ -19,13 +19,29 @@ BATCH_ACTIONS = frozenset(
 )
 
 
-def help_sections(*, live_enabled=False, mortal_enabled=False):
+def help_sections(
+    *,
+    live_enabled=False,
+    mortal_enabled=False,
+    show_monitor=True,
+    show_mortal=True,
+    manage_vip2=False,
+):
     mortal = (
         "已配置分析引擎，实际状态请查看 /mortalstatus。"
         if mortal_enabled
         else ("分析引擎未配置，任务可以保存，但不会自动跑完。")
     )
-    return [
+    monitor_commands = (
+        "\n/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
+        "/thwatch off <昵称>：移除监控（仅负责人）；off all 清空\n"
+        "/thwatch list / thstatus：本群监控与数据源状态\n"
+        "开局使用公开观战列表，约5分钟延迟；仅覆盖公开观战的桌。\n"
+        "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。"
+        if show_monitor
+        else ""
+    )
+    sections = [
         (
             "普普林 Bot · 入门",
             "命令可带 /，也可直接发送；仅英文命令生效，说明和玩家昵称仍可使用中文。\n"
@@ -90,12 +106,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "绑定后省略昵称查本人；三麻可用 mode=3；-l 最多500场。\n"
             "房间 -r 般/上/特/凤（默认南），加东查东风；支持 start/end、-m/-y。\n"
             "详细和/铳统计单列凤凰桌数据，不等同于最近 N 场。\n"
-            "/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
-            "/thwatch off <昵称>：移除监控（仅负责人）；off all 清空\n"
-            "/thwatch list / thstatus：本群监控与数据源状态\n"
-            "开局使用公开观战列表，约5分钟延迟；仅覆盖公开观战的桌。\n"
-            "结算来自 nodocchi，等待收录；新开启不会补发旧战绩。\n"
-            "使用昵称，不要提供天凤私密登录 ID；绑定不自动开启监控。",
+            "使用昵称，不要提供天凤私密登录 ID。" + monitor_commands,
         ),
         (
             "Mortal · 单场与批量",
@@ -116,12 +127,31 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "使用规则 · 数据说明",
             "① 查询来自牌谱屋，主要覆盖金之间及以上；无数据不代表没打牌。\n"
             "② 结算提醒要等牌谱屋收录，有延迟；同群同账号同场去重，发送失败会重试。\n"
-            "③ 雀魂监控由负责人维护，各群独立；监控不自动跑 Mortal。\n"
-            "④ 普通成员仅管理本人在原群的 Mortal 任务；超级管理员可管理全部任务。\n"
-            "⑤ 批跑使用外部分析服务，耗时受排队、验证和限流影响；暂停后已提交的场次可能继续。\n"
-            "⑥ 请勿连续刷命令；遇异常先发 /msstatus 或 /mortalstatus。\n",
+            "③ 监控名单由负责人维护，各群独立。\n"
+            "④ 请勿连续刷命令。"
+            + (
+                "\n⑤ 成员仅管理本人在原群的 Mortal 任务；超级管理员可管理全部任务。"
+                "\n⑥ 暂停后已提交的场次可能继续。"
+                if show_mortal
+                else ""
+            ),
         ),
     ]
+    hidden = set()
+    if not show_monitor:
+        hidden.add("雀魂 · 本群监控")
+    if not show_mortal:
+        hidden.add("Mortal · 单场与批量")
+    if manage_vip2:
+        sections.append(
+            (
+                "二级会员 · 超级管理员",
+                "/vip2 add <QQ号或@群友>：添加\n"
+                "/vip2 del <QQ号或@群友>：移除\n"
+                "/vip2 list：查看名单",
+            )
+        )
+    return [section for section in sections if section[0] not in hidden]
 
 
 def forward_nodes(bot_id, **options):

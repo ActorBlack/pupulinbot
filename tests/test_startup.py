@@ -34,16 +34,37 @@ import asyncio
 from nonebot.message import _apply_run_preprocessors
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from pupulinbot.plugin import (
-    settings, help_cmd, notify_batch, send_auto_review, superusers, batches
+    settings, help_cmd, notify_batch, send_auto_review, superusers, batches, db,
+    manage_vip2, vip2_cmd,
 )
 assert "285843647" in superusers and "285843647" in batches.superusers
 settings.monitor_only_groups = {'706530575'}
 async def verify_group_policy():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import MessageSegment
+    from nonebot.exception import FinishedException
+    await db.initialize()
+    admin = GroupMessageEvent.model_construct(group_id=706530575, user_id=285843647)
+    ordinary = GroupMessageEvent.model_construct(group_id=706530575, user_id=123456)
+    async def call_vip2(event, args):
+        finish = AsyncMock(side_effect=FinishedException)
+        with patch.object(vip2_cmd, 'finish', new=finish):
+            try:
+                await manage_vip2(event, args)
+            except FinishedException:
+                return finish.call_args.args[0]
+        raise AssertionError('Missing command completion')
+    assert '超级管理员' in await call_vip2(ordinary, Message('add 234567'))
+    assert not await db.is_vip2('234567')
+    assert '已加入' in await call_vip2(admin, Message('add ') + MessageSegment.at(234567))
+    assert '已在名单' in await call_vip2(admin, Message('add 234567'))
+    assert '234567' in await call_vip2(admin, Message('list'))
+    assert await db.is_vip2('234567')
     for group in (706530575, 546573626):
-        for caller in (285843647, 123456):
-            commands = ('help', 'mortal', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
-                        'mswatch', 'thwatch',
-                        'msstatus', 'thstatus')
+        for caller in (285843647, 123456, 234567):
+            commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
+                        'msbind', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
+                        'mswatch', 'thwatch', 'msstatus', 'thstatus')
             for command in commands:
                 event = GroupMessageEvent.model_construct(
                     post_type='message', group_id=group, user_id=caller,
@@ -55,12 +76,16 @@ async def verify_group_policy():
                     bot=None, event=event, state=state, matcher=help_cmd(),
                 )
                 monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus')
-                expected = caller == 285843647 or group != 706530575 or monitoring
+                mortal = command in ('mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus')
+                expected = caller == 285843647 or (
+                    command != 'vip2'
+                    and (not monitoring or (group != 706530575 and caller != 234567))
+                    and (not mortal or group != 706530575 or caller == 234567)
+                )
                 assert allowed == expected, (group, caller, command)
     # A monitoring-only group never receives unrelated background Mortal messages.
     await notify_batch({'group_id': '706530575'})
     await send_auto_review(None, 706530575, 'name', None, 42)
-    from unittest.mock import AsyncMock, patch
     from pupulinbot.plugin import build_monitor_notification
     class FakeBot:
         send_group_msg = AsyncMock()
@@ -73,6 +98,12 @@ async def verify_group_policy():
         fake.send_group_msg.assert_awaited_once()
         await notify_batch({**job, 'owner':'123456'})
         fake.send_group_msg.assert_awaited_once()
+        await notify_batch({**job, 'owner':'234567'})
+        assert fake.send_group_msg.await_count == 2
+        assert '已从' in await call_vip2(admin, Message('del 234567'))
+        assert not await db.is_vip2('234567')
+        await notify_batch({**job, 'owner':'234567'})
+        assert fake.send_group_msg.await_count == 2
         for group in ('706530575', '546573626'):
             fake.send_group_msg.reset_mock()
             done = {**job, 'group_id':group, 'status':'done',

@@ -466,6 +466,10 @@ async def test_transient_submission_failure_persists_retry_and_recovers_after_re
     submit.side_effect = None
     submit.return_value = (native_report(), REPORT)
     restarted = manager(tmp_path, online, count=1)
+    denied = AsyncMock(return_value=False)
+    await restarted.retry_due(due, allowed=denied)
+    denied.assert_awaited_once_with("g", "u")
+    assert not restarted.tasks and submit.await_count == 1
     await restarted.retry_due(due)
     await restarted.tasks[job["id"]]
     final = restarted.load(job["id"], "g", "u")

@@ -466,7 +466,7 @@ class BatchReviews:
             ),
         )
 
-    async def retry_due(self, now=None):
+    async def retry_due(self, now=None, *, allowed=None):
         if self.tasks:
             return
         now = now or datetime.now(UTC)
@@ -476,6 +476,8 @@ class BatchReviews:
                 if job["status"] != "retry_wait" or not job.get("next_retry_at"):
                     continue
                 if datetime.fromisoformat(job["next_retry_at"]) > now:
+                    continue
+                if allowed and not await allowed(job["group_id"], job["owner"]):
                     continue
                 self.start(job["id"], job["group_id"], job["owner"], automatic=True)
                 return

@@ -189,7 +189,7 @@ Linux 后台运行按原项目转为 Xvfb 虚拟显示；macOS 保持真正无�
 
 
 其他配置：`PUPULIN_MORTAL_ONLINE_RETRIES=2`（仅提交前准备失败重试），
-`PUPULIN_MORTAL_TURNSTILE_TIMEOUT=90`、`PUPULIN_MORTAL_ONLINE_PROXY`，
+`PUPULIN_MORTAL_TURNSTILE_TIMEOUT=120`、`PUPULIN_MORTAL_ONLINE_PROXY`，
 `PUPULIN_MORTAL_SAVE_HTML=true`、`PUPULIN_MORTAL_SAVE_SCREENSHOT=false`。
 提交前持久化提交记录；提交后超时先检查原页面，不重复 POST。
 若重启丢失会话，优先从保存的报告地址恢复；没有地址时需要找回报告并导入。
@@ -444,7 +444,7 @@ Mortal 子命令增加 `batch/table/links/status/report/chart/pause/resume/expor
 来自凤凰桌统计，并在图卡单独标明三/四麻、东南及收录场数，不能用来代替最近 N 场指标。
 三麻不使用四麻牌风标签。段位、积分及最高段位沿用水表网公开历史推算，
 R 值来自接口；缺失字段不伪造。新绑定不自动添加或移除任何监控，监控名单仍由负责人管理。
-仅监控群仍屏蔽这些查询和绑定命令，超级管理员285843647不受限制。
+受限群也开放上述绑定和查询命令。
 
 天凤个人查询统一使用账号最近一次重置后的记录，复用段位推算对过期、转生、
 对战序号重置与 PT 重置事件的判断。总场数、顺位分布、最近 N 场、活跃度及最高 R
@@ -604,12 +604,21 @@ Mortal表格优先显示原始牌谱的座位昵称：天凤读取官方XML的UN
 雀魂名单按群号及三/四麻独立保存，统一由 `PUPULIN_MONITOR_OWNER` 管理。
 升级前已开启的订阅原群保留，不复制到其他群；天凤名单保持独立。
 
-### 仅监控群
+### 受限群与二级会员
 
-`PUPULIN_MONITOR_ONLY_GROUPS=["706530575", "163355054", "996147537", "1076805406"]` 设置“仅监控群”，普通成员只响应
-`mswatch`、`thwatch`、`msstatus`、`thstatus`，其他命令保持静默。
-增删名单仍仅限 `PUPULIN_MONITOR_OWNER`，普通成员可查看监控名单和状态。
-雀魂、天凤正常播报；超级管理员自行创建的 Mortal 任务正常发送结果，其他后台 Mortal 消息在此类群保持静默。
+`PUPULIN_MONITOR_ONLY_GROUPS` 指定受限群。群内普通成员可以绑定、解绑、查询雀魂和天凤，
+以及使用 `help`。二级会员还可以使用 `mortal`、`msmortal`、`mstable`、`mortalstatus`
+和相关别名，按现有规则管理自己在原群创建的任务。
+监控命令 `mswatch`、`thwatch`、`msstatus`、`thstatus` 在受限群只向负责人和超级管理员开放。
+各群已配置的监控正常播报，增删监控对象仍由 `PUPULIN_MONITOR_OWNER` 负责。
+
+二级会员白名单按 QQ 账号全局生效，存入 SQLite。只有 `SUPERUSERS` 指定的 Bot 超级管理员可以操作：
+
+- `vip2 add <QQ号或@群友>` 添加。
+- `vip2 del <QQ号或@群友>` 移除。
+- `vip2 list` 查看。
+
+二级会员没有监控或白名单管理权限。普通群的普通成员沿用原有命令规则。
 新群名单默认留空，各群名单保持独立，不自动复制。
 
 结算播报会在检测到升段时追加“欢迎新<段位>”。雀魂只核对该场、该模式的段位与积分变化，
@@ -623,5 +632,5 @@ Mortal 全桌图片按最终名次排列，依次显示游戏昵称、最终名�
 
 超级管理员通过 NoneBot 的 `SUPERUSERS` 配置指定，例如 `SUPERUSERS=["285843647"]`。
 超级管理员可在所有群（包括仅监控群）使用全部有效命令、替群友绑定雀魂、管理任何 Mortal 任务。
-其在仅监控群创建的 Mortal 任务会正常发送进度及结果；其他成员仍受原有群权限与任务归属限制。
+超级管理员和二级会员在受限群创建的 Mortal 任务会正常发送进度及结果。
 权限例外不改变各群独立的监控名单，也不放宽数据验证或 API 限速。

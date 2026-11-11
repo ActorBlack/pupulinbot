@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import re
 
 import httpx
 from nonebot import get_driver, on_command, require
@@ -22,7 +23,13 @@ from .batch_review import STATUS_LABELS, BatchReviews, summaries, upload_report
 from .config import settings
 from .db import Database
 from .formatting import format_stats
-from .group_policy import check_group_command
+from .group_policy import (
+    MONITOR_COMMANDS,
+    MORTAL_COMMANDS,
+    check_group_command,
+    command_name,
+    monitor_allowed,
+)
 from .help_menu import BATCH_ACTIONS, send_help
 from .live import LiveServiceClient
 from .models import Player
@@ -55,7 +62,24 @@ superusers = frozenset(get_driver().config.superusers)
 
 @run_preprocessor
 async def restrict_group_commands(event: Event, state: T_State):
-    check_group_command(event, state, settings.monitor_only_groups, superusers=superusers)
+    if not isinstance(event, GroupMessageEvent):
+        return
+    user = str(event.user_id)
+    command = command_name(state)
+    restricted = str(event.group_id) in settings.monitor_only_groups
+    vip2 = (
+        user not in superusers
+        and (command in MONITOR_COMMANDS or (restricted and command in MORTAL_COMMANDS))
+        and await db.is_vip2(user)
+    )
+    check_group_command(
+        event,
+        state,
+        settings.monitor_only_groups,
+        superusers=superusers,
+        monitor_owner=settings.monitor_owner,
+        vip2=vip2,
+    )
 
 
 db = Database(settings.database, legacy_follow_group=settings.legacy_follow_group)
@@ -113,11 +137,16 @@ online = (
 )
 
 
+async def mortal_allowed(group_id, owner):
+    return (
+        str(group_id) not in settings.monitor_only_groups
+        or str(owner) in superusers
+        or bool(owner and await db.is_vip2(str(owner)))
+    )
+
+
 async def notify_batch(job):
-    if (
-        str(job["group_id"]) in settings.monitor_only_groups
-        and str(job.get("owner", "")) not in superusers
-    ):
+    if not await mortal_allowed(job["group_id"], job.get("owner")):
         return
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
@@ -166,7 +195,7 @@ batches = BatchReviews(
 
 @scheduler.scheduled_job("interval", seconds=15, id="pupulin_mortal_retry", max_instances=1)
 async def retry_mortal_jobs():
-    await batches.retry_due()
+    await batches.retry_due(allowed=mortal_allowed)
 
 
 async def build_monitor_notification(sub, game, event, fallback):
@@ -216,6 +245,7 @@ review_cmd = on_command("mortal", aliases={"msreview"}, priority=10, block=True)
 help_cmd = on_command("help", aliases={"mshelp"}, priority=20, block=True)
 stats_cmd = on_command("msstats", priority=10, block=True)
 rank_cmd = on_command("msrank", priority=10, block=True)
+vip2_cmd = on_command("vip2", priority=10, block=True, force_whitespace=True)
 
 
 @get_driver().on_startup
@@ -268,6 +298,31 @@ async def unbind(event: GroupMessageEvent):
     await unbind_cmd.finish(
         "已解除绑定。" if await db.unbind(str(event.user_id)) else "你还没有绑定雀魂 UID。"
     )
+
+
+@vip2_cmd.handle()
+async def manage_vip2(event: MessageEvent, args=CommandArg()):
+    if str(event.user_id) not in superusers:
+        await vip2_cmd.finish("仅 Bot 超级管理员可管理二级会员。")
+    usage = "用法：vip2 add <QQ号或@群友> / vip2 del <QQ号或@群友> / vip2 list"
+    parts = args.extract_plain_text().lower().split()
+    mentions = [str(s.data.get("qq", "")) for s in args if s.type == "at"]
+    targets = parts[1:] + mentions
+    if any(s.type not in {"text", "at"} for s in args):
+        await vip2_cmd.finish(usage)
+    if parts == ["list"] and not mentions:
+        members = await db.vip2_members()
+        await vip2_cmd.finish(f"二级会员（{len(members)} 人）\n" + ("、".join(members) or "空"))
+    if not parts or parts[0] not in {"add", "del"} or len(targets) != 1:
+        await vip2_cmd.finish(usage)
+    qq = targets[0]
+    if not re.fullmatch(r"[1-9][0-9]{4,11}", qq):
+        await vip2_cmd.finish("请指定一个有效 QQ 号或 @一位群友。")
+    add = parts[0] == "add"
+    changed = await db.set_vip2(qq, add)
+    if add:
+        await vip2_cmd.finish(f"{qq} 已加入二级会员白名单。" if changed else f"{qq} 已在名单中。")
+    await vip2_cmd.finish(f"{qq} 已从二级会员白名单移除。" if changed else f"{qq} 不在名单中。")
 
 
 @stats_cmd.handle()
@@ -476,7 +531,22 @@ async def event_bot_upload(event, path):
 
 @help_cmd.handle()
 async def help_handler(bot: Bot, event: MessageEvent):
-    await send_help(bot, event, live_enabled=live.enabled, mortal_enabled=batches.available)
+    user = str(event.user_id)
+    admin = user in superusers
+    group = isinstance(event, GroupMessageEvent)
+    restricted = group and str(event.group_id) in settings.monitor_only_groups
+    vip2 = group and not admin and await db.is_vip2(user)
+    await send_help(
+        bot,
+        event,
+        live_enabled=live.enabled,
+        mortal_enabled=batches.available,
+        show_mortal=not restricted or admin or vip2,
+        show_monitor=monitor_allowed(
+            restricted, vip2, maintainer=admin or user == settings.monitor_owner
+        ),
+        manage_vip2=admin,
+    )
     await help_cmd.finish()
 
 

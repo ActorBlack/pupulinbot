@@ -12,6 +12,9 @@ CREATE TABLE IF NOT EXISTS bindings(
   qq_id TEXT PRIMARY KEY, account_id INTEGER NOT NULL, nickname TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS vip2_members(
+  qq_id TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS subscriptions(
   group_id TEXT NOT NULL, qq_id TEXT NOT NULL,
   notify_start INTEGER NOT NULL DEFAULT 1, notify_finish INTEGER NOT NULL DEFAULT 1,
@@ -193,6 +196,31 @@ class Database:
             return await (
                 await db.execute("SELECT * FROM bindings WHERE qq_id=?", (qq_id,))
             ).fetchone()
+
+    async def is_vip2(self, qq_id: str) -> bool:
+        async with self.connect() as db:
+            row = await (
+                await db.execute("SELECT 1 FROM vip2_members WHERE qq_id=?", (qq_id,))
+            ).fetchone()
+            return row is not None
+
+    async def set_vip2(self, qq_id: str, enabled: bool) -> bool:
+        async with self.connect() as db:
+            sql = (
+                "INSERT INTO vip2_members(qq_id) VALUES(?) ON CONFLICT(qq_id) DO NOTHING"
+                if enabled
+                else "DELETE FROM vip2_members WHERE qq_id=?"
+            )
+            result = await db.execute(sql, (qq_id,))
+            await db.commit()
+            return result.rowcount > 0
+
+    async def vip2_members(self) -> list[str]:
+        async with self.connect() as db:
+            rows = await (
+                await db.execute("SELECT qq_id FROM vip2_members ORDER BY qq_id")
+            ).fetchall()
+            return [row["qq_id"] for row in rows]
 
     async def migrate_group_monitor_list(self):
         """Archive personal controls once, preserving effective per-group deliveries."""

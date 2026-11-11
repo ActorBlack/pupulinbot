@@ -10,6 +10,19 @@ from nonebot.params import CommandArg
 from .tenhou import CN, TenhouError, validate_name
 from .tenhou_queries import TenhouQueries
 
+QUERY_COMMANDS = (
+    "thbind",
+    "thunbind",
+    "th2",
+    "th",
+    "th4",
+    "th3",
+    "thlast",
+    "thdetail",
+    "thlife",
+    "thrank",
+)
+
 
 async def manage_watch(store, client, text, user_id, group_id, *, manager=None):
     parts = text.strip().split(maxsplit=1)
@@ -112,16 +125,5 @@ def install_tenhou_commands(store, client, monitor, *, manager=None):
                 )
             await matcher.finish(result)
 
-    for name in (
-        "thbind",
-        "thunbind",
-        "th2",
-        "th",
-        "th4",
-        "th3",
-        "thlast",
-        "thdetail",
-        "thlife",
-        "thrank",
-    ):
+    for name in QUERY_COMMANDS:
         register(name)

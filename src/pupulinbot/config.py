@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     mortal_online_timeout: float = Field(default=600, ge=30, le=3600)
     mortal_online_headless: bool = True
     mortal_online_retries: int = Field(default=2, ge=0, le=5)
-    mortal_turnstile_timeout: int = Field(default=90, ge=10, le=180)
+    mortal_turnstile_timeout: int = Field(default=120, ge=10, le=180)
     mortal_online_proxy: str | None = None
     mortal_save_html: bool = True
     mortal_save_screenshot: bool = False
