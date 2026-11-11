@@ -37,6 +37,7 @@ class RecordNames:
         self.archive_directory = Path(archive_directory) if archive_directory else None
         self.cache, self.pending = {}, {}
         self.results, self.result_pending = {}, {}
+        self.checks = {}
         self.gate = asyncio.Lock()
         self.next_at = 0.0
 
@@ -48,7 +49,7 @@ class RecordNames:
         if key in self.cache:
             return self.cache[key]
         if key not in self.pending:
-            self.pending[key] = asyncio.create_task(self._load(log))
+            self.pending[key] = asyncio.create_task(self._bounded_load(log))
         task = self.pending[key]
         try:
             names = await asyncio.shield(task)
@@ -60,6 +61,10 @@ class RecordNames:
         finally:
             if task.done() and self.pending.get(key) is task:
                 self.pending.pop(key, None)
+
+    async def _bounded_load(self, log):
+        async with asyncio.timeout(230):
+            return await self._load(log)
 
     def _remember_game(self, log, players):
         if len(players) != 4:
@@ -88,6 +93,8 @@ class RecordNames:
         if log.game_id != row["uuid"]:
             return {}
         key = log.source, log.game_id
+        if self.checks.get(key, {}).get("status") == "not_found":
+            return {}
         if key not in self.results:
             if key not in self.result_pending:
                 self.result_pending[key] = asyncio.create_task(self._load_result(log))
@@ -159,30 +166,51 @@ class RecordNames:
     async def _majsoul(self, log):
         client = self.clients.get(4)
         if client is None:
-            return []
+            raise ReviewError("未配置牌谱屋客户端，昵称尚未核验")
+        key = log.source, log.game_id
+        self.checks.pop(key, None)
         value = parse_qs(urlsplit(log.url).query).get("paipu", [""])[0]
         perspective = re.search(r"_a([0-9]+)(?:_[0-9]+)?$", value)
         date = re.match(r"([0-9]{6})-", log.game_id)
-        if not perspective or not date:
-            raise ReviewError("该雀魂链接缺少可检索的视角或日期，暂无法从牌谱屋补取昵称")
-        account_id = perspective_to_account(int(perspective[1]))
-        day = datetime.strptime("20" + date[1], "%Y%m%d").replace(tzinfo=UTC)
-        games, capped = await client.query_history(
-            account_id, 200, start=day - timedelta(days=1), end=day + timedelta(days=2)
-        )
-        game = next((g for g in games if g.uuid == log.game_id), None)
-        if not game or not game.ended_at or not game.seat(account_id) or len(game.players) != 4:
-            raise ReviewError(
-                "牌谱屋未找到该局的完整四麻记录" + ("，检索已达上限" if capped else "")
+        game = None
+        if perspective and date:
+            account_id = perspective_to_account(int(perspective[1]))
+            day = datetime.strptime("20" + date[1], "%Y%m%d").replace(tzinfo=UTC)
+            games, _ = await client.query_history(
+                account_id, 200, start=day - timedelta(days=1), end=day + timedelta(days=2)
             )
+            game = next((g for g in games if g.uuid == log.game_id), None)
+            if game and not game.seat(account_id):
+                raise ReviewError("牌谱屋记录与链接视角不符，昵称尚未核验")
+        # Missing perspective, a capped player history, or a stale cached page
+        # must not turn a searchable game into a blank nickname.
+        if game is None:
+            game = await client.find_game(log.game_id)
+        checked = {
+            "source": "paipuya",
+            "uuid": log.game_id,
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+        if game is None:
+            self.checks[key] = {**checked, "status": "not_found"}
+            return []
+        if game.uuid != log.game_id or not game.ended_at or len(game.players) != 4:
+            raise ReviewError("牌谱屋记录尚不完整，昵称尚未核验")
         players = game.players
-        if {p.get("seat") for p in players} == {0, 1, 2, 3}:
+        if any("seat" in p for p in players):
+            if {p.get("seat") for p in players} != {0, 1, 2, 3}:
+                raise ReviewError("牌谱屋记录座位异常，昵称尚未核验")
             players = sorted(players, key=lambda p: p["seat"])
-        names = [p.get("nickname", "") for p in players]
-        if not all(isinstance(n, str) and n.strip() for n in names):
-            raise ReviewError("牌谱屋该局的座位昵称不完整")
+        names = [
+            p.get("nickname", "").strip() if isinstance(p.get("nickname"), str) else ""
+            for p in players
+        ]
+        self.checks[key] = {**checked, "status": "found" if all(names) else "incomplete"}
         self._remember_game(log, players)
         return names
+
+    def name_check(self, row):
+        return dict(self.checks.get((row.get("source", "majsoul"), row["uuid"]), {}))
 
     def _archived_names(self, log):
         if not self.archive_directory:

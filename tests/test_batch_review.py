@@ -49,7 +49,7 @@ def game(index=0):
         datetime(2026, 1, index + 1, tzinfo=UTC),
         datetime(2026, 1, index + 1, 1, tzinfo=UTC),
         "12",
-        [{"account_id": 42, "rank": 1}],
+        [{"account_id": 42, "rank": 1, "nickname": "name"}],
         {},
     )
 

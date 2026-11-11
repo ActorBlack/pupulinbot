@@ -1,11 +1,12 @@
 import asyncio
 import logging
+import re
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 
@@ -39,12 +40,15 @@ class PaipuyaClient:
         self.last_success = None
         self.last_error = None
         self._http = None
+        self._game_searches = {}
 
     @property
     def modes(self) -> list[int]:
         return [26, 25, 24, 23, 22, 21] if self.mode == "三麻" else [16, 15, 12, 11, 9, 8]
 
-    async def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    async def _get(
+        self, path: str, params: dict[str, Any] | None = None, *, redirect_location=False
+    ) -> Any:
         try:
             self.access.validate_target(self.base_url)
             self.access.check_cooldown()
@@ -94,6 +98,13 @@ class PaipuyaClient:
                             seconds = 60
                     self.access.cooldown(max(1, seconds) if isfinite(seconds) else 60)
                     raise PaipuyaError("牌谱屋请求受限，已按 Retry-After 暂停请求，请稍后重试。")
+                if redirect_location and response.status_code in {301, 302, 303, 307, 308}:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise PaipuyaError("牌谱屋牌谱跳转缺少目标，昵称尚未核验")
+                    self.last_success = datetime.now(UTC)
+                    self.last_error = None
+                    return location
                 response.raise_for_status()
                 data = response.json()
                 self.last_success = datetime.now(UTC)
@@ -237,6 +248,118 @@ class PaipuyaClient:
             return [self._record(x) for x in data]
         except (TypeError, KeyError, ValueError, OverflowError, OSError) as exc:
             raise PaipuyaError("牌谱屋牌谱响应格式错误") from exc
+
+    async def find_game(self, game_uuid: str, *, max_pages=120) -> GameRecord | None:
+        """Find an exact UUID even when its link has no account perspective.
+
+        Use the upstream daily listing, not nickname search. Servers may return
+        fewer rows than requested, so only an empty page proves exhaustion.
+        """
+        match = re.fullmatch(r"([0-9]{6})-[A-Za-z0-9-]{8,94}", game_uuid)
+        try:
+            if not match:
+                raise ValueError
+            day = datetime.strptime("20" + match[1], "%Y%m%d").replace(tzinfo=UTC)
+        except ValueError as exc:
+            raise PaipuyaError("牌谱编号缺少有效日期，无法完成牌谱屋复核") from exc
+        if type(max_pages) is not int or max_pages < 1:
+            raise ValueError("max_pages must be positive")
+        # Include both UTC and East Asian calendar dates used by official links.
+        lower = int((day - timedelta(days=1)).timestamp() * 1000)
+        upper = int(min(datetime.now(UTC), day + timedelta(days=1)).timestamp() * 1000)
+        if upper <= lower:
+            raise PaipuyaError("牌谱日期尚未到达，无法完成牌谱屋复核")
+        modes = [12, 16, 9, 11, 15, 8] if self.mode == "四麻" else self.modes
+        if game_uuid not in self._game_searches:
+            if len(self._game_searches) >= 128:
+                self._game_searches.pop(next(iter(self._game_searches)))
+            self._game_searches[game_uuid] = dict.fromkeys(modes, upper)
+        cursors = self._game_searches[game_uuid]
+        pages = 0
+        while cursors:
+            # Advance each room in turn; one busy room must not postpone every
+            # other room until its entire day has been scanned.
+            for mode, cursor in list(cursors.items()):
+                if pages >= max_pages:
+                    raise PaipuyaError("牌谱屋昵称复核尚未查完，请稍后继续核验")
+                pages += 1
+                # The listing rejects windows shorter than ten seconds. Padding
+                # the lower edge avoids losing the final few seconds of a day.
+                data = await self._get(
+                    f"games/{cursor}/{lower - 10000}",
+                    {"limit": 500, "mode": mode, "descending": "true"},
+                )
+                if not isinstance(data, list):
+                    raise PaipuyaError("牌谱屋对局列表响应格式错误")
+                if not data:
+                    del cursors[mode]
+                    continue
+                try:
+                    games = [self._record(item) for item in data]
+                except (TypeError, KeyError, ValueError, OverflowError, OSError) as exc:
+                    raise PaipuyaError("牌谱屋对局列表响应格式错误") from exc
+                for game in games:
+                    stamp = int(game.started_at.timestamp() * 1000)
+                    if game.mode != str(mode) or not lower - 10000 <= stamp < cursor:
+                        raise PaipuyaError("牌谱屋对局列表房间或时间范围异常")
+                    if game.uuid == game_uuid and stamp >= lower:
+                        self._game_searches.pop(game_uuid, None)
+                        return game
+                    if stamp >= lower and self._masked_candidate(game, game_uuid):
+                        location = await self._get(
+                            f"view_game/1/{mode}/{quote(game.raw['_id'], safe='')}",
+                            redirect_location=True,
+                        )
+                        target = urlsplit(location)
+                        values = parse_qs(target.query).get("paipu", [])
+                        if (
+                            target.scheme != "https"
+                            or target.netloc != "game.maj-soul.com"
+                            or target.path not in {"/1", "/1/"}
+                            or len(values) != 1
+                        ):
+                            raise PaipuyaError("牌谱屋牌谱跳转格式异常，昵称尚未核验")
+                        resolved = re.sub(r"_a[0-9]+(?:_[0-9]+)?$", "", values[0])
+                        if resolved == game_uuid:
+                            game.uuid = game_uuid
+                            game.raw = {
+                                **game.raw,
+                                "uuid": game_uuid,
+                                "_uuid_verified_by": "view_game",
+                            }
+                            self._game_searches.pop(game_uuid, None)
+                            return game
+                # games/ uses an exclusive upper bound at second precision.
+                next_cursor = int(min(game.started_at for game in games).timestamp() * 1000)
+                if next_cursor <= lower:
+                    del cursors[mode]
+                else:
+                    del cursors[mode]
+                    cursors[mode] = next_cursor
+        self._game_searches.pop(game_uuid, None)
+        return None
+
+    @staticmethod
+    def _masked_candidate(game, game_uuid):
+        """The upstream Base62 document ID encodes start seconds and UUID prefix.
+
+        This is only a candidate filter; view_game must verify the full UUID.
+        See SAPikachu/amae-koromo-scripts couchStorage.generateCompressedId.
+        """
+        match = re.match(r"[0-9]{6}-([0-9a-fA-F]{8})-", game_uuid)
+        identifier = game.raw.get("_id", "")
+        if not match or not re.fullmatch(r"[0-9A-Za-z]{1,11}", identifier):
+            return False
+        alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+        number = 0
+        for char in identifier:
+            number = number * 62 + alphabet.index(char)
+        if number >= 1 << 64:
+            return False
+        value = number.to_bytes(8, "big")
+        return value[4:].hex() == match[1].lower() and int.from_bytes(value[:4], "big") == int(
+            game.started_at.timestamp()
+        )
 
     async def stats(self, account_id: int) -> PlayerStats:
         return await self.cache.get(

@@ -171,12 +171,17 @@ async def test_four_seat_and_link_manifests_preserve_unknown_metadata_and_owners
     assert [r["seat"] for r in job["rows"]] == [0, 1, 2, 3]
     assert all(r["started_at"] is None and r["mode"] == "file" for r in job["rows"])
     assert "未知（导入链接）" in render_report(job)
+    with pytest.raises(ReviewError, match="牌谱屋复核"):
+        render_batch_chart(job)
+    for row in job["rows"]:
+        row.update(player_name="原始牌谱昵称", player_name_source="original")
     assert Image.open(io.BytesIO(render_batch_chart(job))).format == "PNG"
     assert manager.load(job["id"], "g", "u")["kind"] == "table"
     with pytest.raises(ReviewError):
         manager.load(job["id"], "other", "u")
     links = await manager.create_links([LINK, LINK], "g", "u", seat=2)
     assert len(links["rows"]) == 1 and links["rows"][0]["seat"] == 2
+    links["rows"][0].update(player_name="原始牌谱昵称", player_name_source="original")
     assert Image.open(io.BytesIO(render_batch_chart(links))).format == "PNG"
     with pytest.raises(ReviewError):
         await manager.create_links(["https://evil.invalid/?paipu=abcdefgh"], "g", "u")
@@ -189,6 +194,7 @@ async def test_csv_and_xlsx_export_keep_blank_metadata_and_escape_spreadsheet_fo
     manager = BatchReviews(tmp_path, None, SimpleNamespace(client=SimpleNamespace(url=None)))
     job = await manager.create_links([LINK], "g", "u")
     job["nickname"] = '=HYPERLINK("bad")'
+    job["rows"][0].update(player_name=job["nickname"], player_name_source="original")
     job["rows"][0].update(status="done", metrics=report_metrics(native_report()))
     target = tmp_path / "result.csv"
     write_export(job, target)
@@ -251,7 +257,10 @@ async def test_table_report_does_not_average_different_players(tmp_path):
     manager = BatchReviews(tmp_path, None, SimpleNamespace(client=SimpleNamespace(url=None)))
     job = await manager.create_links([LINK], "g", "u", table=True)
     job["rows"][0].update(
-        status="done", metrics=report_metrics(native_report()), player_name="昵称<&>"
+        status="done",
+        metrics=report_metrics(native_report()),
+        player_name="昵称<&>",
+        player_name_source="original",
     )
     report = render_report(job)
     assert "不合并为同一玩家均值" in report
@@ -304,4 +313,10 @@ async def test_export_keeps_known_account_nickname_instead_of_anonymized_report_
     job = await manager.create_links([LINK], "g", "u")
     job.update(account_id=12342734, nickname="y024")
     job["rows"][0]["player_name"] = "Aさん"
+    job["rows"][0]["name_check"] = {
+        "source": "paipuya",
+        "uuid": job["rows"][0]["uuid"],
+        "status": "not_found",
+        "checked_at": "2026-11-11T00:00:00+00:00",
+    }
     assert export_rows(job)[0]["nickname"] == "y024"

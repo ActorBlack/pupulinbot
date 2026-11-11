@@ -231,15 +231,21 @@ async def test_majsoul_name_lookup_rejects_wrong_game_and_invalid_perspective():
 
     game_id = "261109-e1da5f5a-f5ff-4a3c-a11b-351b5660a489"
     other = GameRecord("another-game", datetime.now(UTC), datetime.now(UTC), "12", [], {})
-    client = SimpleNamespace(query_history=AsyncMock(return_value=([other], False)))
+    client = SimpleNamespace(
+        query_history=AsyncMock(return_value=([other], False)),
+        find_game=AsyncMock(return_value=None),
+    )
     resolver = RecordNames(clients={4: client})
     row = dict(uuid=game_id, url=f"https://game.maj-soul.com/1/?paipu={game_id}_a255244981", seat=0)
-    with pytest.raises(ReviewError, match="未找到该局"):
-        await resolver(row)
+    assert await resolver(row) == []
+    client.find_game.assert_awaited_once_with(game_id)
+    assert resolver.name_check(row)["status"] == "not_found"
     client.query_history.reset_mock()
+    client.find_game.reset_mock()
     with pytest.raises(ValueError, match="视角"):
         await resolver({**row, "url": row["url"].replace("255244981", "255244982")})
     client.query_history.assert_not_awaited()
+    client.find_game.assert_not_awaited()
 
 
 def test_majsoul_perspective_encoding_round_trips_and_is_distinct_from_friend_code():

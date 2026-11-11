@@ -6,12 +6,12 @@ import tempfile
 from pathlib import Path
 
 from ._batchmortal.export_schema import CSV_COLUMNS
-from .batch_review import require_tenhou_names, seat_nickname
+from .batch_review import require_record_names, seat_nickname
 from .review import ReviewError
 
 
 def export_rows(job):
-    require_tenhou_names(job)
+    require_record_names(job)
     result = []
     for row in job["rows"]:
         metric = row.get("metrics") or {}

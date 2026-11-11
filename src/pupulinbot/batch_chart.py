@@ -36,9 +36,9 @@ def chart_series(job: dict) -> tuple[list[dict], dict[tuple, list[float]]]:
 
 
 def render_batch_chart(job: dict) -> bytes:
-    from .batch_review import require_tenhou_names
+    from .batch_review import require_record_names
 
-    require_tenhou_names(job)
+    require_record_names(job)
     with _RENDER_LOCK:
         if job.get("kind") == "table":
             return _render_table_chart(job)
@@ -162,9 +162,9 @@ def render_batch_animation(job: dict) -> bytes:
     """Preview a gentle sweep of light across high-rating table cells."""
     from PIL import Image
 
-    from .batch_review import require_tenhou_names
+    from .batch_review import require_record_names
 
-    require_tenhou_names(job)
+    require_record_names(job)
     with _RENDER_LOCK:
         frames = [
             Image.open(io.BytesIO(_render_table_chart(job, shimmer_phase=i / 23))).convert("RGB")

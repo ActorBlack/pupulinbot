@@ -51,7 +51,7 @@ STATUS_LABELS = {
     "captcha_rejected": "服务器拒绝验证，待重试",
     "uncertain": "等待核对已提交场次",
     "retry_wait": "等待自动重试",
-    "names_missing": "等待读取天凤昵称",
+    "names_missing": "等待核验牌谱昵称",
     "rate_limited": "服务限流已暂停",
     "error": "浏览器错误已暂停",
     "verification_failed": "自动验证/准备失败，已保存任务",
@@ -258,6 +258,7 @@ class BatchReviews:
             rows.append(
                 {
                     "uuid": game.uuid,
+                    "source": "majsoul",
                     "started_at": game.started_at.isoformat(),
                     "ended_at": game.ended_at.isoformat(),
                     "mode": game.mode,
@@ -388,7 +389,7 @@ class BatchReviews:
             raise ReviewError("已有批量任务运行，请完成或暂停后再开始")
         job = self.load(job_id, group_id, owner)
         if all(row["status"] == "done" for row in job["rows"]):
-            if not missing_tenhou_names(job):
+            if not missing_record_names(job):
                 raise ReviewError("该任务已经全部完成，可直接查看报告")
             if not automatic:
                 job["retry_attempts"] = 0
@@ -430,7 +431,7 @@ class BatchReviews:
         if attempts >= 5:
             job.pop("next_retry_at", None)
             job["message"] = (
-                "天凤昵称自动读取已尝试5次；分析结果已保存，"
+                "牌谱昵称自动核验已尝试5次；分析结果已保存，"
                 f"发送 mortal resume {job['id']} 继续读取。"
                 if job.get("retry_phase") == "names"
                 else "自动恢复已尝试5次，仍未取得结果；已保存进度，请检查网络后继续。"
@@ -442,7 +443,7 @@ class BatchReviews:
             retry_attempts=attempts + 1,
             next_retry_at=(datetime.now(UTC) + timedelta(seconds=delay)).isoformat(),
             message=(
-                f"{delay}秒后重试读取天凤昵称（{attempts + 1}/5）；分析结果已保存，不会重新跑谱。"
+                f"{delay}秒后重试核验牌谱昵称（{attempts + 1}/5）；分析结果已保存，不会重新跑谱。"
                 if job.get("retry_phase") == "names"
                 else f"{delay}秒后自动恢复（{attempts + 1}/5）；已提交场次优先找回结果。"
             ),
@@ -523,6 +524,7 @@ class BatchReviews:
                 backend_artifacts=row.get("backend_artifacts", {}),
                 player_name=row.get("player_name"),
                 player_name_source=row.get("player_name_source"),
+                name_check=row.get("name_check"),
                 rank=row.get("rank"),
                 rank_source=row.get("rank_source"),
                 completed_at=datetime.now(UTC).isoformat(),
@@ -545,7 +547,8 @@ class BatchReviews:
         async with self.lock:
             current = self.load(job_id, group_id, owner)
             saved = current["rows"][index]
-            for field in ("player_name", "player_name_source", "rank", "rank_source"):
+            saved.pop("name_check", None)
+            for field in ("player_name", "player_name_source", "rank", "rank_source", "name_check"):
                 if row.get(field) is not None:
                     saved[field] = row[field]
             saved.setdefault("timings", {})["metadata_seconds"] = round(
@@ -558,12 +561,17 @@ class BatchReviews:
             return
 
         async def fill(row):
-            original_name = row.get("player_name_source") == "original" and row.get("player_name")
+            original_name = (
+                row.get("player_name_source") == "original"
+                and isinstance(row.get("player_name"), str)
+                and row["player_name"].strip()
+            )
             if original_name and row.get("rank") is not None:
                 return
             try:
-                async with asyncio.timeout(75):
+                async with asyncio.timeout(240):
                     if not original_name:
+                        row.pop("name_check", None)
                         names = await self.name_resolver(row)
                         if len(names) > row["seat"] and names[row["seat"]]:
                             row.update(
@@ -583,6 +591,10 @@ class BatchReviews:
                     type(exc).__name__,
                     exc,
                 )
+            finally:
+                check_loader = getattr(type(self.name_resolver), "name_check", None)
+                if check_loader and (check := self.name_resolver.name_check(row)):
+                    row["name_check"] = check
 
         await asyncio.gather(*(fill(row) for row in rows))
 
@@ -596,21 +608,24 @@ class BatchReviews:
                     row.update(player_name=updated["player_name"], player_name_source="original")
                 if updated.get("rank_source") == "original":
                     row.update(rank=updated["rank"], rank_source="original")
+                row.pop("name_check", None)
+                if updated.get("name_check"):
+                    row["name_check"] = updated["name_check"]
             if all(row["status"] == "done" for row in current["rows"]):
-                if current["status"] == "done" and missing_tenhou_names(current):
+                if current["status"] == "done" and missing_record_names(current):
                     current.update(status="names_missing", retry_phase="names", retry_attempts=0)
                     self.schedule_retry(current)
                 elif (
                     current["status"] in {"retry_wait", "names_missing"}
                     and current.get("retry_phase") == "names"
-                    and not missing_tenhou_names(current)
+                    and not missing_record_names(current)
                 ):
                     current["status"] = "done"
                     for key in ("next_retry_at", "retry_phase", "message"):
                         current.pop(key, None)
             self.save(current)
         if strict:
-            require_tenhou_names(current)
+            require_record_names(current)
         return current
 
     async def _recover_names(self, job_id, group_id, owner):
@@ -618,7 +633,7 @@ class BatchReviews:
         try:
             job = await self.refresh_names(job_id, group_id, owner, strict=False)
             job.pop("next_retry_at", None)
-            if missing_tenhou_names(job):
+            if missing_record_names(job):
                 job["status"] = "names_missing"
                 self.schedule_retry(job)
             else:
@@ -779,7 +794,7 @@ class BatchReviews:
         if not stopped.is_set():
             job["status"] = "done"
             job.pop("message", None)
-            if missing_tenhou_names(job):
+            if missing_record_names(job):
                 job.update(status="names_missing", retry_phase="names", retry_attempts=0)
                 self.schedule_retry(job)
             self.save(job)
@@ -840,9 +855,48 @@ def require_tenhou_names(job):
         )
 
 
+def majsoul_names_checked(row):
+    check = row.get("name_check") or {}
+    return (
+        check.get("source") == "paipuya"
+        and check.get("uuid") == row.get("uuid")
+        and check.get("status") in {"not_found", "incomplete"}
+        and bool(check.get("checked_at"))
+    )
+
+
+def missing_record_names(job):
+    return missing_tenhou_names(job) or any(
+        majsoul_row(row)
+        and not (
+            row.get("player_name_source") == "original"
+            and isinstance(row.get("player_name"), str)
+            and row["player_name"].strip()
+        )
+        and not majsoul_names_checked(row)
+        for row in job["rows"]
+    )
+
+
+def require_record_names(job):
+    require_tenhou_names(job)
+    if missing_record_names(job):
+        raise ReviewError("雀魂昵称尚未完成牌谱屋复核，请稍后重试；分析结果已保存，无需重新跑谱。")
+
+
+def majsoul_row(row):
+    return row.get("source") == "majsoul" or (
+        not row.get("source") and str(row.get("url", "")).startswith("https://game.maj-soul.com/")
+    )
+
+
 def seat_nickname(row):
     """Use the analyzed seat's game nickname, including previously saved artifacts."""
     name = row.get("player_name")
+    if majsoul_row(row) and not (
+        row.get("player_name_source") == "original" and isinstance(name, str) and name.strip()
+    ):
+        return "" if majsoul_names_checked(row) else "昵称核验中"
     if row.get("source") == "tenhou" and (
         row.get("player_name_source") != "original" or not isinstance(name, str) or not name.strip()
     ):
@@ -868,6 +922,7 @@ def render_report(job: dict) -> str:
     def fmt(value):
         return "—" if value is None else f"{value:.2f}"
 
+    table = job.get("kind") == "table"
     body = []
     for index, row in enumerate(job["rows"], 1):
         m = row.get("metrics") or {}
@@ -886,9 +941,8 @@ def render_report(job: dict) -> str:
                 if job.get("kind") == "table"
                 else row.get("rank", "—")
             ),
-            seat_nickname(row)
-            if job.get("kind") == "table"
-            else STATUS_LABELS.get(row["status"], row["status"]),
+            seat_nickname(row),
+            *([] if table else [STATUS_LABELS.get(row["status"], row["status"])]),
             m.get("model", "—"),
             fmt(m.get("rating")),
             fmt(m.get("agreement")),
@@ -919,7 +973,8 @@ def render_report(job: dict) -> str:
         "开始时间（北京时间）",
         "模式",
         "起始座位" if job.get("kind") == "table" else "顺位",
-        "游戏昵称" if job.get("kind") == "table" else "状态",
+        "游戏昵称",
+        *([] if table else ["状态"]),
         "模型",
         "Rating",
         "一致率 %",
