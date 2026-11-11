@@ -290,6 +290,46 @@ async def verify_tenhou_picture_delivery():
     fake.get_msg.assert_awaited_once_with(message_id=123, _timeout=4)
 asyncio.run(verify_tenhou_picture_delivery())
 
+async def verify_group_phrase_replacement():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+    original = Message([
+        MessageSegment.text('真好'),
+        MessageSegment.text('厉害！'),
+        MessageSegment.face(3),
+        MessageSegment.text('好厉害 [CQ:at,qq=all]'),
+    ])
+    def event(message_id, group, user, message):
+        return GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=message_id,
+            group_id=group, user_id=user, self_id=100, original_message=message,
+            message=Message('adapter-processed text'),
+        )
+
+    with patch.object(bot, 'send_group_msg', new=send):
+        for update in (
+            event(1, 1131357545, 42, original),
+            event(2, 546573626, 100, original),
+            event(3, 546573626, 42, Message('好强')),
+        ):
+            assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+        send.assert_not_awaited()
+        matching = event(4, 546573626, 42, original)
+        assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+        assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+
+    send.assert_awaited_once_with(group_id=546573626, message=Message([
+        MessageSegment.text('真井棋风！'),
+        MessageSegment.face(3),
+        MessageSegment.text('井棋风 [CQ:at,qq=all]'),
+    ]))
+    assert original.extract_plain_text() == '真好厉害！好厉害 [CQ:at,qq=all]'
+asyncio.run(verify_group_phrase_replacement())
+
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS
 for command in ('雀魂绑定', '绑定雀魂', '雀魂解绑', '解绑雀魂', '雀魂牌谱', '牌谱屋', '最近牌谱',

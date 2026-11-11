@@ -61,13 +61,26 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 superusers = frozenset(get_driver().config.superusers)
 MORTAL_PAUSE_ALERT_GROUP = 1131357545
+logger = logging.getLogger(__name__)
 repeat_stop = RepeatStop()
 
 
 @event_preprocessor
-async def stop_repeated_group_messages(bot: Bot, event: Event):
-    if isinstance(event, GroupMessageEvent):
-        await repeat_stop.handle(bot, event)
+async def handle_group_reactions(bot: Bot, event: Event):
+    if not isinstance(event, GroupMessageEvent) or not await repeat_stop.handle(bot, event):
+        return
+    message = event.original_message.copy()
+    message.reduce()
+    changed = False
+    for segment in message["text"]:
+        if "好厉害" in segment.data["text"]:
+            segment.data["text"] = segment.data["text"].replace("好厉害", "井棋风")
+            changed = True
+    if changed:
+        try:
+            await bot.send_group_msg(group_id=event.group_id, message=message)
+        except Exception:
+            logger.exception("发送井棋风替换消息失败")
 
 
 @run_preprocessor
@@ -295,7 +308,6 @@ watch_commands = WatchCommands(
     notify_starts=settings.monitor_notify_start,
 )
 auto_review_tasks: set[asyncio.Task] = set()
-logger = logging.getLogger(__name__)
 install_commands(
     MahjongQueries(db, paipuya, sanma, live=live, admins=settings.admin_users | superusers)
 )
