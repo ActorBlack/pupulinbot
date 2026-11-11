@@ -3,7 +3,7 @@
 import io
 import math
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 from .batch_insights import batch_insights, metric_group, metric_value
 from .typography import face
@@ -87,62 +87,28 @@ class Canvas:
         if radius > 4:
             self.draw.ellipse(self.box((x - 1.6, y - 1.6, x + 1.6, y + 1.6)), fill="white")
 
-    def rating(self, x, y, value, games):
-        from .batch_chart import GOLD_RATING, RAINBOW_RATING, rating_color
+    def rating(self, x, y, value, games, *, right):
+        from .batch_chart import GOLD_RATING, RAINBOW_RATING, rating_color, shiny_rating_layer
 
         label = number(value)
         color = rating_color(value, games=games)
         if color not in {GOLD_RATING, RAINBOW_RATING}:
             self.text(x, y, label, 62, INK, "number")
             return
-        font = face(124, "number")
-        width = math.ceil(self.draw.textlength(label, font=font)) + 32
-        mask = Image.new("L", (width, 164))
-        ImageDraw.Draw(mask).text((16, 16), label, font=font, fill=255, anchor="lt")
-        bounds = mask.getbbox()
-        if bounds is None:
-            return
-        stops = (
-            (
-                (255, 128, 218),
-                (199, 151, 255),
-                (101, 190, 255),
-                (37, 211, 235),
-                (62, 217, 166),
-                (255, 189, 76),
-                (255, 160, 120),
-            )
-            if color == RAINBOW_RATING
-            else (
-                (224, 154, 18),
-                (255, 211, 60),
-                (255, 244, 170),
-                (255, 205, 45),
-                (242, 173, 18),
-                (216, 145, 11),
-            )
+        left, right = self.box((x - 12, right - 12))
+        layer = shiny_rating_layer(
+            label, rainbow=color == RAINBOW_RATING, font_size=62 * self.scale
         )
-        gradient = Image.new("RGBA", mask.size)
-        painter = ImageDraw.Draw(gradient)
-        axis = 0 if color == RAINBOW_RATING else 1
-        for i in range(mask.size[axis]):
-            position = min(1, max(0, (i - bounds[axis]) / max(1, bounds[axis + 2] - bounds[axis])))
-            position *= len(stops) - 1
-            index = min(len(stops) - 2, int(position))
-            weight = position - index
-            rgb = tuple(
-                round(a + (b - a) * weight)
-                for a, b in zip(stops[index], stops[index + 1], strict=True)
+        start, _, end, _ = layer.getbbox()
+        layer = layer.crop((start, 0, end, layer.height))
+        span = right - left
+        if layer.width > span:
+            layer = layer.resize(
+                (span, max(1, round(layer.height * span / layer.width))), Image.Resampling.LANCZOS
             )
-            painter.line(
-                (i, 0, i, mask.height) if axis == 0 else (0, i, width, i), fill=(*rgb, 255)
-            )
-        shadow = Image.new("RGBA", mask.size, "#cbb2df" if axis == 0 else "#daa548")
-        shadow.putalpha(mask.filter(ImageFilter.GaussianBlur(2)).point(lambda p: round(p * 0.35)))
-        gradient.putalpha(mask)
-        shadow.alpha_composite(gradient)
         self.image.alpha_composite(
-            shadow, (round(x * 2 - 16), round(y * 2 - (bounds[1] + bounds[3]) / 2))
+            layer,
+            (round((left + right - layer.width) / 2), round(y * self.scale - layer.height / 2)),
         )
 
     def png(self):
@@ -241,7 +207,7 @@ def render_dashboard(job):
 
     c.panel((40, 122, 1400, 302))
     c.text(66, 153, "平均 Rating" if len(groups) < 2 else "分组评分", 19, MUTED)
-    c.rating(66, 222, summary.get("mean_rating"), sole["count"] if sole else 0)
+    c.rating(66, 222, summary.get("mean_rating"), sole["count"] if sole else 0, right=330)
     c.text(66, 276, "中位 " + number(summary.get("median_rating")), 16, MUTED)
     c.line(((330, 149), (330, 276)), "#e9eef5")
     decisions = summary.get("decisions")

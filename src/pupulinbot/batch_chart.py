@@ -186,30 +186,34 @@ def render_batch_animation(job: dict) -> bytes:
         return output.getvalue()
 
 
-def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None):
+def shiny_rating_layer(value, *, rainbow=False, shimmer_phase=None, font_size=32):
     from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
     from .typography import face
 
-    draw = ImageDraw.Draw(image)
-    font = face(32, "number")
-    width = math.ceil(draw.textlength(value, font=font))
-    size = (width + 90, 76) if rainbow else (width + 44, 66)
+    font = face(font_size, "number")
+    scale = font_size / 32
+    stroke = max(1, round(scale))
+    width = math.ceil(font.getlength(value))
+    padding, height = (90, 76) if rainbow else (44, 66)
+    size = (width + round(padding * scale), round(height * scale))
     center = (size[0] / 2, size[1] / 2)
     mask = Image.new("L", size)
     ImageDraw.Draw(mask).text(center, value, font=font, fill=255, anchor="mm")
     bounds = mask.getbbox()
     if bounds is None:
-        return
+        return Image.new("RGBA", size)
     glow = Image.new("RGBA", size, "#bc92ff" if rainbow else "#ffcd40")
-    glow.putalpha(mask.filter(ImageFilter.GaussianBlur(3)).point(lambda alpha: int(alpha * 0.42)))
+    glow.putalpha(
+        mask.filter(ImageFilter.GaussianBlur(3 * scale)).point(lambda alpha: int(alpha * 0.42))
+    )
     outline = Image.new("RGBA", size)
     ImageDraw.Draw(outline).text(
         center,
         value,
         font=font,
         fill="#9571c6" if rainbow else "#d39412",
-        stroke_width=1,
+        stroke_width=stroke,
         stroke_fill="#ffffff" if rainbow else "#cf941c",
         anchor="mm",
     )
@@ -248,12 +252,18 @@ def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None)
     if rainbow:
         # Keep the colored halo and ornaments inside this rating's table cell.
         halo = gradient.copy()
-        halo.putalpha(mask.filter(ImageFilter.GaussianBlur(6)))
+        halo.putalpha(mask.filter(ImageFilter.GaussianBlur(6 * scale)))
         glow = halo
         decoration = Image.new("RGBA", size)
         ornament = ImageDraw.Draw(decoration)
         cx, cy = center
-        ornament.arc((18, 13, size[0] - 18, size[1] - 13), 30, 90, fill="#a7deef", width=1)
+        ornament.arc(
+            (18 * scale, 13 * scale, size[0] - 18 * scale, size[1] - 13 * scale),
+            30,
+            90,
+            fill="#a7deef",
+            width=stroke,
+        )
 
         def star(sx, sy, radius, color):
             points = []
@@ -262,20 +272,21 @@ def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None)
                 length = radius if point % 2 == 0 else radius * 0.22
                 points.append((sx + math.cos(angle) * length, sy + math.sin(angle) * length))
             ornament.polygon(points, fill=color)
-            ornament.ellipse((sx - 1, sy - 1, sx + 1, sy + 1), fill="white")
+            ornament.ellipse((sx - scale, sy - scale, sx + scale, sy + scale), fill="white")
 
-        for sx, sy, radius, color in (
-            (cx - width / 2 - 17, cy + 7, 5, "#db9cf3"),
-            (cx + width / 2 + 17, cy - 7, 6, "#a6acff"),
-            (cx - 13, cy - 22, 3, "#efaddb"),
+        for edge, dx, dy, radius, color in (
+            (-1, -17, 7, 5, "#db9cf3"),
+            (1, 17, -7, 6, "#a6acff"),
+            (0, -13, -22, 3, "#efaddb"),
         ):
-            star(sx, sy, radius, color)
+            star(cx + edge * width / 2 + dx * scale, cy + dy * scale, radius * scale, color)
         for dx, dy, color in ((19, -20, "#99dce9"), (-26, 22, "#cbb4f5")):
-            ornament.ellipse((cx + dx - 1, cy + dy - 1, cx + dx + 1, cy + dy + 1), fill=color)
+            sx, sy = cx + dx * scale, cy + dy * scale
+            ornament.ellipse((sx - scale, sy - scale, sx + scale, sy + scale), fill=color)
         star_glow = Image.new("RGBA", size, "#ce8bff")
         star_glow.putalpha(
             decoration.getchannel("A")
-            .filter(ImageFilter.GaussianBlur(3))
+            .filter(ImageFilter.GaussianBlur(3 * scale))
             .point(lambda alpha: round(alpha * 0.65))
         )
         glow.alpha_composite(star_glow)
@@ -285,49 +296,55 @@ def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None)
         # An even pearly highlight avoids washing out one side of the rainbow.
         highlight_y = bounds[1] + (bounds[3] - bounds[1]) * 0.3
         shine.rectangle(
-            (0, highlight_y - 1, size[0], highlight_y + 2),
+            (0, highlight_y - scale, size[0], highlight_y + 2 * scale),
             fill=(255, 255, 255, 40),
         )
-        gradient = Image.alpha_composite(gradient, sheen.filter(ImageFilter.GaussianBlur(2)))
+        gradient = Image.alpha_composite(
+            gradient, sheen.filter(ImageFilter.GaussianBlur(2 * scale))
+        )
         # The moving highlight is clipped to the digits, leaving the table still.
         if shimmer_phase is not None:
             sweep = Image.new("RGBA", size)
             sweep_draw = ImageDraw.Draw(sweep)
-            sweep_x = bounds[0] - 36 + shimmer_phase * (bounds[2] - bounds[0] + 72)
-            for dx in range(-15, 16):
-                alpha = round(195 * math.exp(-((dx / 7) ** 2)))
+            sweep_x = bounds[0] - 36 * scale + shimmer_phase * (bounds[2] - bounds[0] + 72 * scale)
+            span = round(15 * scale)
+            for dx in range(-span, span + 1):
+                alpha = round(195 * math.exp(-((dx / (7 * scale)) ** 2)))
                 sweep_draw.line(
-                    (sweep_x + dx - 12, 0, sweep_x + dx + 12, size[1]),
+                    (sweep_x + dx - 12 * scale, 0, sweep_x + dx + 12 * scale, size[1]),
                     fill=(255, 255, 255, alpha),
                 )
             gradient = Image.alpha_composite(gradient, sweep)
         # A colored rim and a shallow extrusion keep the original type size
         # while giving the rainbow the same raised finish as the gold score.
-        rim_mask = mask.filter(ImageFilter.MaxFilter(3))
+        rim_mask = mask.filter(ImageFilter.MaxFilter(2 * stroke + 1))
         outline = gradient.convert("RGB").point(lambda channel: round(channel * 0.9 + 8))
         outline = outline.convert("RGBA")
         outline.putalpha(rim_mask)
         depth = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
         depth = depth.convert("RGBA")
         depth.putalpha(rim_mask.point(lambda alpha: round(alpha * 0.35)))
-        glow.alpha_composite(depth, (1, 1))
+        glow.alpha_composite(depth, (stroke, stroke))
     gradient.putalpha(mask)
     glow.alpha_composite(outline)
     glow.alpha_composite(gradient)
     if rainbow:
-        top_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, 1))
+        top_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, stroke))
         highlight = Image.new("RGBA", size, "#ffffff")
         highlight.putalpha(top_edge.point(lambda alpha: round(alpha * 0.8)))
         glow.alpha_composite(highlight)
-        bottom_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, -1))
+        bottom_edge = ImageChops.subtract(mask, ImageChops.offset(mask, 0, -stroke))
         bevel = gradient.convert("RGB").point(lambda channel: round(channel * 0.85))
         bevel = bevel.convert("RGBA")
         bevel.putalpha(bottom_edge.point(lambda alpha: round(alpha * 0.18)))
         glow.alpha_composite(bevel)
-    image.alpha_composite(glow, (round(x - size[0] / 2), round(y - size[1] / 2)))
     if rainbow:
-        return
-    for sx, sy, radius in ((x + width / 2 + 12, y - 10, 5), (x - width / 2 - 10, y + 10, 3)):
+        return glow
+    draw = ImageDraw.Draw(glow)
+    x, y = center
+    for edge, dx, dy, radius in ((1, 12, -10, 5), (-1, -10, 10, 3)):
+        sx, sy = x + edge * width / 2 + dx * scale, y + dy * scale
+        radius *= scale
         draw.polygon(
             [
                 (sx, sy - radius),
@@ -339,8 +356,14 @@ def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None)
                 (sx - radius, sy),
                 (sx - radius * 0.28, sy - radius * 0.28),
             ],
-            fill="#ab7dea" if rainbow else "#f3c841",
+            fill="#f3c841",
         )
+    return glow
+
+
+def _draw_shiny_rating(image, x, y, value, *, rainbow=False, shimmer_phase=None):
+    layer = shiny_rating_layer(value, rainbow=rainbow, shimmer_phase=shimmer_phase)
+    image.alpha_composite(layer, (round(x - layer.width / 2), round(y - layer.height / 2)))
 
 
 def _render_table_chart(job, *, shimmer_phase=None):
