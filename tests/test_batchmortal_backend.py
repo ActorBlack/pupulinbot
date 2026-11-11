@@ -15,6 +15,7 @@ from pupulinbot.batch_export import write_export
 from pupulinbot.batch_review import BatchReviews, render_report, report_metrics
 from pupulinbot.batchmortal_worker import (
     BrowserWorker,
+    VerificationTimeout,
     atomic_json,
     browser_options,
     validate_request,
@@ -133,6 +134,23 @@ def test_postsubmit_failure_and_restart_cannot_duplicate_post(tmp_path):
         worker.run(request("other:0"))
         worker.automator.analyze_single.assert_not_called()
         assert emit.call_args.kwargs["status"] == "uncertain"
+
+
+def test_verification_timeout_returns_to_batch_scheduler_without_submitting(tmp_path):
+    worker = fake_worker(tmp_path)
+    with (
+        patch.object(
+            worker.automator,
+            "analyze_single",
+            create=True,
+            side_effect=VerificationTimeout("test"),
+        ) as analyze,
+        patch("pupulinbot.batchmortal_worker.emit") as emit,
+    ):
+        worker.run(request())
+    analyze.assert_called_once()
+    assert [call.kwargs["status"] for call in emit.call_args_list] == ["verification_timeout"]
+    assert not worker.submitted and not worker.journal_path.exists()
 
 
 @pytest.mark.asyncio

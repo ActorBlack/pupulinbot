@@ -73,6 +73,18 @@ class OnlinePool:
     def pending_key(self):
         return next((w.pending_key for w in self.workers if w.pending_key), None)
 
+    def job_progress(self, job_id):
+        stages = []
+        for worker in self.workers:
+            if (
+                worker.progress
+                and worker.pending_key
+                and worker.pending_key.startswith(job_id + ":")
+            ):
+                index = int(worker.pending_key.rsplit(":", 1)[1])
+                stages.append((index, worker.progress))
+        return [f"第 {index + 1} 项：{message}" for index, message in sorted(stages)]
+
     @property
     def recovery_slots(self):
         """Keep durable results pinned even if the parent died before saving its row."""

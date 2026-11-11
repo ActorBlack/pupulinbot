@@ -447,6 +447,9 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
     )
     if job.get("message"):
         text += "\n" + job["message"]
+    if action == "status" and job["status"] == "running" and online:
+        for progress in online.job_progress(job["id"]):
+            text += "\n" + progress
     hits = sum(bool(row.get("review_cache_hit")) for row in job["rows"])
     if hits:
         text += f"\n其中 {hits} 场复用已完成报告，无需再次跑谱。"

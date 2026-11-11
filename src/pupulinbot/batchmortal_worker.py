@@ -116,6 +116,10 @@ class SubmissionStopped(RuntimeError):
     pass
 
 
+class VerificationTimeout(RuntimeError):
+    pass
+
+
 def wait_for_submission_departure(read_state, log_prefix, timeout):
     """An accepted progress page is distinct from a still-unsubmitted form."""
     deadline = time.monotonic() + timeout
@@ -207,6 +211,7 @@ class BrowserWorker:
                 return state
 
             def _poke_captcha(self, sb):
+                emit(status="verification_wait")
                 lock_path = owner.options.get("gui_lock_path")
                 if not lock_path:
                     return super()._poke_captcha(sb)
@@ -214,6 +219,16 @@ class BrowserWorker:
 
                 with FileLock(lock_path, timeout=30):
                     return super()._poke_captcha(sb)
+
+            def _wait_for_turnstile_token(self, sb, log_prefix, timeout):
+                try:
+                    super()._wait_for_turnstile_token(sb, log_prefix, timeout)
+                except RuntimeError as exc:
+                    # The pinned backend reports elapsed verification time as a
+                    # RuntimeError. Keep explicit challenge failures distinct.
+                    if str(exc) == f"{log_prefix} Timed out waiting for Turnstile token":
+                        raise VerificationTimeout(str(exc)) from exc
+                    raise
 
             def _submit_review(self, sb, log_prefix):
                 state = self._read_review_state(sb)
@@ -454,6 +469,13 @@ class BrowserWorker:
                         pass
                     emit(
                         status="uncertain", message="提交后未取得可验证报告；保留会话，不会重复提交"
+                    )
+                    return
+                if isinstance(exc, VerificationTimeout):
+                    # The batch scheduler owns the backoff between full verification attempts.
+                    emit(
+                        status="verification_timeout",
+                        message="Mortal 网页验证超时，本场尚未提交。",
                     )
                     return
                 text = str(exc).lower()

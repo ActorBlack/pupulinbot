@@ -55,6 +55,7 @@ STATUS_LABELS = {
     "rate_limited": "服务限流已暂停",
     "error": "浏览器错误已暂停",
     "verification_failed": "自动验证/准备失败，已保存任务",
+    "verification_timeout": "网页验证超时，已保存任务",
     "pending": "待复盘",
     "waiting_service": "等待分析服务",
     "ready": "待开始",
@@ -425,6 +426,22 @@ class BatchReviews:
 
     def schedule_retry(self, job):
         """Persist bounded backoff; ambiguous submissions are only read/recovered."""
+        if job["status"] == "verification_timeout":
+            attempts = job.get("retry_attempts", 0)
+            if attempts >= 2:
+                job.pop("next_retry_at", None)
+                job["message"] = (
+                    f"Mortal 网页验证连续超时，已保存进度。发送 mortal resume {job['id']} 可继续。"
+                )
+                return
+            delay = 60 * 2**attempts
+            job.update(
+                status="retry_wait",
+                retry_attempts=attempts + 1,
+                next_retry_at=(datetime.now(UTC) + timedelta(seconds=delay)).isoformat(),
+                message=f"Mortal 网页验证超时。{delay} 秒后继续未完成项（{attempts + 1}/2）。",
+            )
+            return
         if job["status"] not in {"uncertain", "server_timeout", "error", "names_missing"}:
             return
         attempts = job.get("retry_attempts", 0)

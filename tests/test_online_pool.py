@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from test_batch_review import game, native_report
@@ -467,3 +467,73 @@ async def test_retry_exhaustion_manual_pause_and_limits_do_not_loop(tmp_path):
         job["status"] = status
         batches.schedule_retry(job)
         assert job["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_status_reports_waiting_for_verification_before_any_submission(tmp_path):
+    pool = OnlinePool(tmp_path, concurrency=1)
+    worker = pool.workers[0]
+    reading_failure, release_failure = asyncio.Event(), asyncio.Event()
+
+    async def failure():
+        reading_failure.set()
+        await release_failure.wait()
+        return b'PUPULIN_ONLINE {"status":"verification_timeout"}\n'
+
+    responses = iter([b'PUPULIN_ONLINE {"status":"verification_wait"}\n', None])
+
+    async def readline():
+        return next(responses) or await failure()
+
+    stdin = SimpleNamespace(write=Mock(), drain=AsyncMock())
+    worker.process = SimpleNamespace(
+        returncode=None, stdin=stdin, stdout=SimpleNamespace(readline=readline)
+    )
+    on_submitted = AsyncMock()
+    pending = asyncio.create_task(
+        worker.submit("job:3", {"seat": 3, "online_url": "test"}, on_submitted)
+    )
+    try:
+        await asyncio.wait_for(reading_failure.wait(), 1)
+        assert pool.job_progress("job") == ["第 4 项：等待 Mortal 网页验证，尚未提交"]
+        assert pool.job_progress("other") == []
+    finally:
+        release_failure.set()
+        with pytest.raises(OnlinePaused) as stopped:
+            await pending
+    assert stopped.value.status == "verification_timeout" and pool.job_progress("job") == []
+    stdin.write.assert_called_once()
+    on_submitted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_verification_timeout_retry_skips_completed_rows_and_stops(tmp_path):
+    from datetime import datetime
+
+    submit = AsyncMock(side_effect=OnlinePaused("verification_timeout", "未取得验证令牌"))
+    online = SimpleNamespace(concurrency=2, submit=submit)
+    batches = manager(tmp_path, online)
+    job = await batches.create(4, "g", "u", Player(42, "player"))
+    for index in (1, 2):
+        job["rows"][index].update(status="done", metrics={"rating": 87})
+
+    # Allow both browsers to start before either times out.
+    async def time_out(*args):
+        await asyncio.sleep(0)
+        raise OnlinePaused("verification_timeout", "未取得验证令牌")
+
+    submit.side_effect = time_out
+    batches.save(job)
+    job_id = job["id"]
+    await batches._run(job_id, "g", "u")
+    for attempt, delay in enumerate((60, 120), 1):
+        queued = batches.load(job_id, "g", "u")
+        assert queued["status"] == "retry_wait" and queued["retry_attempts"] == attempt
+        assert f"{delay} 秒后" in queued["message"]
+        await batches.retry_due(datetime.fromisoformat(queued["next_retry_at"]))
+        await batches.tasks[job_id]
+    final = batches.load(job_id, "g", "u")
+    assert final["status"] == "verification_timeout" and "next_retry_at" not in final
+    assert [final["rows"][i]["metrics"] for i in (1, 2)] == [{"rating": 87}] * 2
+    assert all(not final["rows"][i].get("online_submitted") for i in (0, 3))
+    assert [c.args[0] for c in submit.await_args_list] == [f"{job_id}:0", f"{job_id}:3"] * 3

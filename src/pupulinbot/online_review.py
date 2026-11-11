@@ -30,6 +30,7 @@ class OnlineReviews:
         self.lock = asyncio.Lock()
         self.pending = None
         self.pending_key = None
+        self.progress = None
         self.last_submission = 0
         self.active_submitted_key = None
 
@@ -47,6 +48,7 @@ class OnlineReviews:
             finally:
                 if self.pending.done():
                     self.pending = self.pending_key = None
+                    self.progress = None
 
     async def _submit(self, key, row, on_submitted):
         def completed_journal():
@@ -112,6 +114,7 @@ class OnlineReviews:
             "backend": "batchmortal",
             "options": {**self.options, "cooldown": self.cooldown},
         }
+        self.progress = "正在打开 Mortal 复盘页"
         self.process.stdin.write((json.dumps(request) + "\n").encode())
         await self.process.stdin.drain()
         try:
@@ -127,6 +130,7 @@ class OnlineReviews:
                     event = json.loads(line[len(b"PUPULIN_ONLINE ") :])
                     status = event.get("status")
                     if status == "ready_to_submit":
+                        self.progress = "验证已通过，等待提交"
                         allowed = await self.gate.acquire() if self.gate else True
                         self.process.stdin.write(
                             (
@@ -136,9 +140,14 @@ class OnlineReviews:
                         )
                         await self.process.stdin.drain()
                         continue
+                    if status == "verification_wait":
+                        self.progress = "等待 Mortal 网页验证，尚未提交"
+                        continue
                     if status == "preparing_retry":
+                        self.progress = event.get("message") or "正在重试打开复盘页"
                         continue
                     if status == "submitted":
+                        self.progress = "已发起提交，等待报告"
                         self.active_submitted_key = key
                         self.last_submission = asyncio.get_running_loop().time()
                         await on_submitted()
