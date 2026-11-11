@@ -32,7 +32,6 @@ class Settings(BaseSettings):
     mortal_online_model: str = "4.1b"
     mortal_online_cooldown: float = Field(default=10, ge=10, le=300)
     mortal_online_timeout: float = Field(default=600, ge=30, le=3600)
-    mortal_online_concurrency: int = Field(default=2, ge=1, le=2)
     mortal_online_headless: bool = True
     mortal_online_retries: int = Field(default=2, ge=0, le=5)
     mortal_turnstile_timeout: int = Field(default=90, ge=10, le=180)

@@ -150,7 +150,7 @@ Rating 按成功场次计算平均／中位数；一致率按决策数加权；�
 群文件通过 `base64://` 传输（最大 2 MiB），需要 OneBot 服务端支持该格式；
 本机 NapCat 已支持，无需让 QQ 沙箱读取 Bot 项目目录。
 
-启用 Chrome 在线引擎后，Bot 默认使用两个独立浏览器并行准备与收集报告，统一节流提交作者网站，保存每场原生 JSON，最后自动发送折线图。
+启用 Chrome 在线引擎后，Bot 使用一个浏览器逐项提交和读取报告，保存每场原生 JSON，最后自动发送折线图。
 桥接服务已配置时优先使用桥接服务；否则使用在线引擎。安装与配置：
 
 ```bash
@@ -163,7 +163,6 @@ PUPULIN_MORTAL_BROWSER_PROFILE=data/mortal-chrome
 PUPULIN_MORTAL_ONLINE_MODEL=4.1b
 PUPULIN_MORTAL_ONLINE_COOLDOWN=20
 PUPULIN_MORTAL_ONLINE_TIMEOUT=600
-PUPULIN_MORTAL_ONLINE_CONCURRENCY=2
 ```
 
 采用本机 Downloads/batchmortal 最新版的 BrowserAutomator（MIT），源文件及哈希记录在
@@ -173,26 +172,23 @@ Linux 后台运行按原项目转为 Xvfb 虚拟显示；macOS 保持真正无�
 可能不可用，不能保证获得验证 Token。首次启动可能下载匹配的 ChromeDriver。
 使用独立持久化配置目录，不读取个人 Chrome 配置。
 
-`PUPULIN_MORTAL_ONLINE_CONCURRENCY` 支持 1–2。每个浏览器使用独立进程、
-配置目录、提交日志和调试端口；GUI 验证点击使用跨进程锁。
-两个进程共用 `PUPULIN_MORTAL_ONLINE_COOLDOWN` 提交时钟（默认 10 秒），
-并行重叠准备、验证和等报告，增加浏览器不会把提交频率直接翻倍。
-任何一路失败会停止派发与新提交；已提交的另一路仍收集结果并保存。
-暂停/重启后先恢复已提交场次，再派发新场次。配置变更时不会迁移未知提交。
+`PUPULIN_MORTAL_ONLINE_COOLDOWN` 设置两次提交的最短间隔（默认 10 秒）。
+旧配置中的 `PUPULIN_MORTAL_ONLINE_CONCURRENCY` 已停用。
+暂停或重启后先恢复已提交的场次。旧浏览器目录里的结果可从本机报告或已保存的远端地址读取，
+尚未提交的场次会由当前浏览器继续处理。
 网络、浏览器异常或服务任务超时会自动按30/60/120/240/300秒退避恢复，最多5次；
 恢复计划保存在任务文件中，每15秒检查，重启后仍有效。优先按已保存的报告或进度页地址
-只读找回结果，核验座位和模型后继续；未知提交不重复发送。人工暂停、验证失败及限流不会自动恢复。
+只读找回结果，核验座位和模型后继续；未知提交不重复发送。
+网页验证超时后按 60/120 秒退避恢复，最多两次。人工暂停、明确验证失败及限流需要手动继续。
 
 已自动完成的本机报告按“牌谱 UUID＋座位＋模型”复用，无需再次启动浏览器。
 复用前重新验证原始 JSON 的座位、模型与指标，手动指定场次导入的报告不作此缓存。
 缓存来自 `PUPULIN_BATCH_DIRECTORY`；再次查询、读取牌谱索引和画图仍有各自耗时。
-未缓存场次的吞吐量取决于网站验证、排队和网络；不能保证并发 2 就快两倍。
 
 
 其他配置：`PUPULIN_MORTAL_ONLINE_RETRIES=2`（仅提交前准备失败重试），
 `PUPULIN_MORTAL_TURNSTILE_TIMEOUT=90`、`PUPULIN_MORTAL_ONLINE_PROXY`，
 `PUPULIN_MORTAL_SAVE_HTML=true`、`PUPULIN_MORTAL_SAVE_SCREENSHOT=false`。
-准备失败、验证超时或限流会保存并暂停，避免无限重试。
 提交前持久化提交记录；提交后超时先检查原页面，不重复 POST。
 若重启丢失会话，优先从保存的报告地址恢复；没有地址时需要找回报告并导入。
 仅当服务器正文明确为 `invalid captcha response` 时记为拒绝接受，允许稍后重试；
@@ -595,7 +591,7 @@ Bot 打开独立 Chrome 雀魂窗口，用户自行登录；登录资料由该�
 
 `PUPULIN_MONITOR_NOTIFY_START=false` 全局关闭雀魂三麻及四麻开局提醒，保留原有结算通知，不影响天凤监控或手动观战查询。
 
-Mortal 支持雀魂与天凤四麻半庄牌谱：`mortal <天凤链接> [座位0–3]`、`mstable <天凤链接>` 和 `mortal links <链接1> <链接2>…` 共用现有双浏览器、重试及图片报告流程。天凤链接中的 `tw` 为默认座位，显式指定的座位优先；无 `tw` 时为0。支持普通 http/https 官方天凤回放链接及 log 编号，内部统一为 HTTPS。多链接按来源、牌谱与座位去重，导出来源区分 tenhou/majsoul；最近N场昵称批跑仍使用雀魂账号。
+Mortal 支持雀魂与天凤四麻半庄牌谱：`mortal <天凤链接> [座位0–3]`、`mstable <天凤链接>` 和 `mortal links <链接1> <链接2>…` 共用在线跑谱、重试及图片报告流程。天凤链接中的 `tw` 为默认座位，显式指定的座位优先；无 `tw` 时为0。支持普通 http/https 官方天凤回放链接及 log 编号，内部统一为 HTTPS。多链接按来源、牌谱与座位去重，导出来源区分 tenhou/majsoul；最近N场昵称批跑仍使用雀魂账号。
 
 Mortal表格优先显示原始牌谱的座位昵称：天凤读取官方XML的UN字段并解码；雀魂最近N场任务保留牌谱屋原始昵称；导入链接优先使用本地已收录对局和历史任务，缺失时解码牌谱视角、按日期从标准 Bearer API 检索，并严格匹配原牌谱 UUID 和座位。补昵称共用现有 1 QPS 限速，不重新分析；无视角且未被收录的链接仍可能无法补齐。查看旧报告时可补齐昵称，无需重新分析。查看器的A/B/C/D匿名占位名不作为真实昵称。天凤报告及导出要求真实座位昵称全部就绪；读取失败自动重试并保存独立的昵称恢复计划，不重新跑谱。尚未读取完整时不输出占位报告。雀魂无法核实的昵称仍显示—。
 

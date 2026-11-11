@@ -93,50 +93,54 @@ async def test_slow_metadata_does_not_occupy_review_workers_or_lose_results(tmp_
 
 
 @pytest.mark.asyncio
-async def test_unsubmitted_retries_do_not_keep_stale_serial_slot_assignment(tmp_path):
-    release, both = asyncio.Event(), asyncio.Event()
-    locks = [asyncio.Lock(), asyncio.Lock()]
+async def test_unsubmitted_rows_from_old_second_browser_run_sequentially(tmp_path):
+    pool = OnlinePool(tmp_path / "browser")
+    release = asyncio.Event()
+    first = asyncio.Event()
     entered = []
 
     async def submit(key, row, callback):
-        slot = row["online_slot"]
-        async with locks[slot]:
-            entered.append(slot)
-            if len(entered) == 2:
-                both.set()
-            await release.wait()
-            await callback()
-            return native_report(), REPORT
+        entered.append((int(key.rsplit(":", 1)[1]), row["online_slot"]))
+        first.set()
+        await release.wait()
+        await callback()
+        return native_report(), REPORT
 
-    batches = manager(tmp_path, SimpleNamespace(concurrency=2, submit=submit))
+    pool.worker.submit = submit
+    batches = manager(tmp_path / "jobs", pool)
     job = await batches.create(4, "g", "u", Player(42, "player"))
     for row in job["rows"]:
-        row["online_slot"] = 0
+        row["online_slot"] = 1
+    for index in (1, 2):
+        job["rows"][index].update(status="done", metrics={"rating": 87})
     batches.save(job)
     batches.start(job["id"], "g", "u")
     task = batches.tasks[job["id"]]
     try:
-        await asyncio.wait_for(both.wait(), 2)
-        assert sorted(entered[:2]) == [0, 1]
+        await asyncio.wait_for(first.wait(), 2)
+        assert entered == [(0, 0)]
     finally:
         release.set()
         await task
+    assert entered == [(0, 0), (3, 0)]
     assert batches.load(job["id"], "g", "u")["status"] == "done"
+    await pool.close()
 
 
 @pytest.mark.asyncio
 async def test_durable_done_result_recovers_its_actual_slot_without_parent_flag_or_new_post(
     tmp_path,
 ):
-    pool = OnlinePool(tmp_path / "browser", concurrency=2)
+    pool = OnlinePool(tmp_path / "browser")
     batches = manager(tmp_path / "jobs", pool, count=1)
     job = await batches.create(1, "g", "u", Player(42, "player"))
     job["rows"][0]["online_slot"] = 0
     batches.save(job)
-    path = pool.workers[1].profile / "artifacts/result.json"
+    legacy = pool.profile / "worker-1"
+    path = legacy / "artifacts/result.json"
     atomic_json(path, native_report())
     atomic_json(
-        pool.workers[1].profile / "submission-journal.json",
+        legacy / "submission-journal.json",
         {
             "key": job["id"] + ":0",
             "state": "done",
@@ -353,7 +357,7 @@ async def test_malformed_durable_state_cannot_start_a_fresh_submission(tmp_path)
     pool = OnlinePool(tmp_path / "browser")
     batches = manager(tmp_path / "jobs", pool, count=1)
     job = await batches.create(1, "g", "u", Player(42, "player"))
-    atomic_json(pool.workers[1].profile / "submission-journal.json", [])
+    atomic_json(pool.profile / "worker-1/submission-journal.json", [])
     with patch(
         "pupulinbot.online_review.asyncio.create_subprocess_exec", new=AsyncMock()
     ) as launch:

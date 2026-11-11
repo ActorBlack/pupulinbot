@@ -1,11 +1,10 @@
-"""Two independent browser processes, with one global submission clock."""
+"""One Chrome worker with read-only recovery of historical browser journals."""
 
 import asyncio
 import json
 from pathlib import Path
 
 from .online_review import OnlinePaused, OnlineReviews
-from .review import ReviewError
 from .review_cache import ReviewCache
 
 
@@ -30,6 +29,8 @@ class SubmissionGate:
 
 
 class OnlinePool:
+    concurrency = 1
+
     def __init__(
         self,
         profile: Path,
@@ -38,73 +39,54 @@ class OnlinePool:
         timeout=600,
         *,
         options=None,
-        concurrency=2,
         cache_directory=None,
     ):
-        if type(concurrency) is not int or not 1 <= concurrency <= 2:
-            raise ValueError("在线浏览器并发数仅支持1–2")
-        self.profile, self.concurrency = profile, concurrency
+        self.profile = profile
         self.cache = ReviewCache(cache_directory) if cache_directory else None
         self.cache_lock = asyncio.Lock()
         self.gate = SubmissionGate(cooldown)
-        self.workers = [
-            OnlineReviews(
-                profile / f"worker-{i}",
-                model,
-                cooldown=0,
-                timeout=timeout,
-                options={
-                    **(options or {}),
-                    "controlled_gate": True,
-                    "unique_debug_port": True,
-                    "gui_lock_path": str((profile / "verification-gui.lock").resolve()),
-                    "cooldown": 0,
-                },
-                gate=self.gate,
-            )
-            for i in range(concurrency)
-        ]
-
-    @property
-    def pending_keys(self):
-        return {w.pending_key for w in self.workers if w.pending_key}
+        self.worker = OnlineReviews(
+            profile / "worker-0",
+            model,
+            cooldown=0,
+            timeout=timeout,
+            options={
+                **(options or {}),
+                "controlled_gate": True,
+                "unique_debug_port": True,
+            },
+            gate=self.gate,
+        )
+        self.legacy_profiles = (profile / "worker-1", profile)
 
     @property
     def pending_key(self):
-        return next((w.pending_key for w in self.workers if w.pending_key), None)
+        return self.worker.pending_key
 
     def job_progress(self, job_id):
-        stages = []
-        for worker in self.workers:
-            if (
-                worker.progress
-                and worker.pending_key
-                and worker.pending_key.startswith(job_id + ":")
-            ):
-                index = int(worker.pending_key.rsplit(":", 1)[1])
-                stages.append((index, worker.progress))
-        return [f"第 {index + 1} 项：{message}" for index, message in sorted(stages)]
+        key, progress = self.pending_key, self.worker.progress
+        if key and progress and key.startswith(job_id + ":"):
+            index = int(key.rsplit(":", 1)[1])
+            return [f"第 {index + 1} 项：{progress}"]
+        return []
 
-    @property
-    def recovery_slots(self):
-        """Keep durable results pinned even if the parent died before saving its row."""
-        slots = {}
-        for path in [
-            self.profile / "submission-journal.json",
-            *sorted(self.profile.glob("worker-*/submission-journal.json")),
-        ]:
+    def _journals(self):
+        for profile in (self.worker.profile, *self.legacy_profiles):
+            path = profile / "submission-journal.json"
             if not path.exists():
                 continue
             state = json.loads(path.read_text())
             if not isinstance(state, dict):
                 raise ValueError("浏览器恢复记录格式无效")
-            if state.get("state") not in {"submitted", "done"} or not state.get("key"):
-                continue
-            slot = (
-                0 if path.parent == self.profile else int(path.parent.name.removeprefix("worker-"))
-            )
-            slots[state["key"]] = slot
-        return slots
+            yield profile, state
+
+    @property
+    def recovery_slots(self):
+        return {
+            state["key"]: int(profile == self.legacy_profiles[0])
+            for profile, state in self._journals()
+            if state.get("state") in {"submitted", "done"} and state.get("key")
+        }
 
     def begin(self):
         self.gate.blocked = False
@@ -113,52 +95,48 @@ class OnlinePool:
         self.gate.blocked = True
 
     async def submit(self, key, row, on_submitted):
-        slot = row.get("online_slot", int(key.rsplit(":", 1)[1]) % self.concurrency)
-        if type(slot) is not int or not 0 <= slot < self.concurrency:
-            raise ReviewError("原任务的浏览器槽位超出当前并发设置，请恢复原并发配置")
-        own_journal = self.workers[slot].profile / "submission-journal.json"
-        own_state = json.loads(own_journal.read_text()) if own_journal.exists() else {}
-        recovering = own_state.get("key") == key and own_state.get("state") in {"submitted", "done"}
-        # Keep one global unresolved-submission barrier even across restarts/config changes.
-        for path in [
-            self.profile / "submission-journal.json",
-            *self.profile.glob("worker-*/submission-journal.json"),
-        ]:
-            if path.exists():
-                state = json.loads(path.read_text())
-                if state.get("state") == "submitted" and state.get("key") != key:
-                    active = any(w.pending_key == state.get("key") for w in self.workers)
-                    # Recovering an existing submission cannot create a fresh review.
-                    # Two interrupted workers must not block each other's recovery.
-                    if not active and not recovering:
-                        self.halt()
-                        raise OnlinePaused(
-                            "uncertain", "另一个浏览器有已提交但未核对的场次，请先恢复原任务"
-                        )
-        if self.cache:
+        journals = list(self._journals())
+        matching = next(
+            (
+                (profile, state)
+                for profile, state in journals
+                if state.get("key") == key and state.get("state") in {"submitted", "done"}
+            ),
+            None,
+        )
+        if matching is None and any(state.get("state") == "submitted" for _, state in journals):
+            self.halt()
+            raise OnlinePaused("uncertain", "有已提交但未核对的场次，请先恢复原任务")
+        if self.cache and matching is None:
             async with self.cache_lock:
-                cached = await asyncio.to_thread(self.cache.find, row, self.workers[slot].model)
+                cached = await asyncio.to_thread(self.cache.find, row, self.worker.model)
             if cached:
                 row["review_cache_hit"] = True
                 return cached
-        worker = self.workers[slot]
         try:
-            result = await worker.submit(key, row, on_submitted)
-            legacy = self.profile / "submission-journal.json"
-            if legacy.exists():
-                await OnlineReviews(self.profile).acknowledge_import(key, result[1], result[0])
+            if matching and matching[0] != self.worker.profile:
+                profile, journal = matching
+                result = await OnlineReviews(profile, self.worker.model).recover(
+                    key, row, on_submitted, journal
+                )
+                if result is None:
+                    raise OnlinePaused(
+                        "uncertain", "旧浏览器已提交，但未保存报告地址，请找回报告并导入"
+                    )
+            else:
+                result = await self.worker.submit(key, row, on_submitted)
             if self.cache:
-                self.cache.remember(row, worker.model, result)
+                self.cache.remember(row, self.worker.model, result)
             return result
         except Exception:
             self.halt()
             raise
 
     async def acknowledge_import(self, key, url, data):
-        await OnlineReviews(self.profile).acknowledge_import(key, url, data)
-        for worker in self.workers:
-            await worker.acknowledge_import(key, url, data)
+        await self.worker.acknowledge_import(key, url, data)
+        for profile in self.legacy_profiles:
+            await OnlineReviews(profile).acknowledge_import(key, url, data)
 
     async def close(self):
         self.halt()
-        await asyncio.gather(*(w.close() for w in self.workers))
+        await self.worker.close()

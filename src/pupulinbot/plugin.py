@@ -94,7 +94,6 @@ online = (
         settings.mortal_online_model,
         settings.mortal_online_cooldown,
         settings.mortal_online_timeout,
-        concurrency=settings.mortal_online_concurrency,
         cache_directory=settings.batch_directory,
         options={
             "retries": settings.mortal_online_retries,
@@ -542,7 +541,7 @@ async def mortal_status(event: GroupMessageEvent, args=CommandArg()):
         f"在线 Chrome 批跑：{'已启用' if online else '未启用'}\n"
         f"桥接服务：{'已配置' if reviews.client.url else '未配置'}\n"
         f"运行中任务：{', '.join(batches.tasks) or '无'}\n"
-        f"浏览器并发：{settings.mortal_online_concurrency}；全局提交间隔：{settings.mortal_online_cooldown:g}秒\n"
+        f"在线模式：单浏览器逐项提交，最短提交间隔 {settings.mortal_online_cooldown:g} 秒\n"
         "已完成报告缓存：开启（同牌谱、座位、模型）\n"
         "用法：msmortal [玩家] -l 1–100；mortalstatus <任务编号>"
     )

@@ -50,12 +50,8 @@ class OnlineReviews:
                     self.pending = self.pending_key = None
                     self.progress = None
 
-    async def _submit(self, key, row, on_submitted):
-        def completed_journal():
-            path = self.profile / "submission-journal.json"
-            return json.loads(path.read_text()) if path.exists() else {}
-
-        journal = await asyncio.to_thread(completed_journal)
+    async def recover(self, key, row, on_submitted, journal):
+        """Recover a known report without launching Chrome or submitting a review."""
         if journal.get("key") == key and journal.get("state") == "done":
             from .batch_review import report_url
 
@@ -89,6 +85,17 @@ class OnlineReviews:
             await self._store_completed(key, row["online_report_url"], data)
             self.active_submitted_key = None
             return data, row["online_report_url"]
+        return None
+
+    async def _submit(self, key, row, on_submitted):
+        def read_journal():
+            path = self.profile / "submission-journal.json"
+            return json.loads(path.read_text()) if path.exists() else {}
+
+        journal = await asyncio.to_thread(read_journal)
+        recovered = await self.recover(key, row, on_submitted, journal)
+        if recovered is not None:
+            return recovered
         if self.process is None or self.process.returncode is not None:
             self.process = await asyncio.create_subprocess_exec(
                 sys.executable,

@@ -196,38 +196,44 @@ async def test_worker_cannot_submit_without_global_permit(tmp_path, monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_pool_has_independent_profiles_and_restart_barrier(tmp_path):
-    pool = OnlinePool(tmp_path, concurrency=2)
-    assert [w.profile.name for w in pool.workers] == ["worker-0", "worker-1"]
+async def test_single_browser_honors_legacy_restart_barrier(tmp_path):
+    pool = OnlinePool(tmp_path)
+    assert pool.concurrency == 1 and pool.worker.profile.name == "worker-0"
     atomic_json(
         tmp_path / "worker-1/submission-journal.json", {"key": "old:1", "state": "submitted"}
     )
-    pool.workers[0].submit = AsyncMock()
+    pool.worker.submit = AsyncMock()
     with pytest.raises(OnlinePaused, match="未核对"):
         await pool.submit("new:0", {"uuid": "x", "seat": 0}, AsyncMock())
-    pool.workers[0].submit.assert_not_called()
+    with pytest.raises(OnlinePaused, match="找回报告"):
+        await pool.submit("old:1", {"uuid": "x", "seat": 0}, AsyncMock())
+    pool.worker.submit.assert_not_called()
     assert pool.gate.blocked
     await pool.close()
 
 
 @pytest.mark.asyncio
-async def test_interrupted_workers_can_recover_without_opening_submission_barrier(tmp_path):
-    pool = OnlinePool(tmp_path, concurrency=2)
+async def test_both_old_journals_recover_without_starting_another_browser(tmp_path, monkeypatch):
+    pool = OnlinePool(tmp_path)
+    launch = AsyncMock()
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    read = MagicMock(return_value=native_report())
+    monkeypatch.setattr("pupulinbot.native_report.read_native_report", read)
     for index in (0, 1):
         atomic_json(
             tmp_path / f"worker-{index}/submission-journal.json",
-            {"key": f"job:{index}", "state": "submitted"},
+            {"key": f"job:{index}", "state": "submitted", "remote_report_url": REPORT},
         )
-        pool.workers[index].submit = AsyncMock(return_value=(native_report(), REPORT))
     pool.halt()
     await pool.submit("job:0", {"uuid": "x", "seat": 0}, AsyncMock())
-    pool.workers[0].submit.assert_awaited_once()
-    assert pool.gate.blocked
-    await pool.submit("job:1", {"uuid": "x", "seat": 1}, AsyncMock())
-    pool.workers[1].submit.assert_awaited_once()
     with pytest.raises(OnlinePaused, match="未核对"):
         await pool.submit("job:2", {"uuid": "x", "seat": 2}, AsyncMock())
-    assert pool.workers[0].submit.await_count == 1
+    await pool.submit("job:1", {"uuid": "x", "seat": 0}, AsyncMock())
+    assert pool.gate.blocked and read.call_count == 2
+    launch.assert_not_called()
+    for index in (0, 1):
+        state = json.loads((tmp_path / f"worker-{index}/submission-journal.json").read_text())
+        assert state["state"] == "done"
     await pool.close()
 
 
@@ -275,12 +281,12 @@ async def test_cache_hit_does_not_launch_browser_or_call_submission_callback(tmp
     batches.save(job)
     atomic_json(archive / job["id"] / "1.json", data)
     pool = OnlinePool(tmp_path / "browser", cache_directory=archive)
-    pool.workers[0].submit = AsyncMock()
+    pool.worker.submit = AsyncMock()
     callback = AsyncMock()
     request = {"uuid": row["uuid"], "seat": 0}
     result = await pool.submit("new:0", request, callback)
     assert result[0]["review"]["rating"] == 0.87 and request["review_cache_hit"]
-    pool.workers[0].submit.assert_not_called()
+    pool.worker.submit.assert_not_called()
     callback.assert_not_called()
     await pool.close()
 
@@ -315,11 +321,13 @@ async def test_done_journal_resumes_without_browser_or_network(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_manual_import_also_releases_legacy_single_browser_journal(tmp_path):
+@pytest.mark.parametrize("legacy", ["", "worker-1"])
+async def test_manual_import_releases_legacy_browser_journal(tmp_path, legacy):
     pool = OnlinePool(tmp_path)
-    atomic_json(tmp_path / "submission-journal.json", {"key": "old:0", "state": "submitted"})
+    journal = tmp_path / legacy / "submission-journal.json"
+    atomic_json(journal, {"key": "old:0", "state": "submitted"})
     await pool.acknowledge_import("old:0", REPORT, native_report())
-    state = json.loads((tmp_path / "submission-journal.json").read_text())
+    state = json.loads(journal.read_text())
     assert state["state"] == "done"
     await pool.close()
 
@@ -471,8 +479,8 @@ async def test_retry_exhaustion_manual_pause_and_limits_do_not_loop(tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_reports_waiting_for_verification_before_any_submission(tmp_path):
-    pool = OnlinePool(tmp_path, concurrency=1)
-    worker = pool.workers[0]
+    pool = OnlinePool(tmp_path)
+    worker = pool.worker
     reading_failure, release_failure = asyncio.Event(), asyncio.Event()
 
     async def failure():
