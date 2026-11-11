@@ -113,17 +113,22 @@ async def test_date_filters_reach_range_api_without_history_limit_and_text_stays
 
 @pytest.mark.parametrize("mode", [3, 4])
 @pytest.mark.asyncio
-async def test_unfiltered_profile_keeps_full_mode_stats_and_existing_image_switch(mode):
-    client = client_for(mode)
+async def test_profile_without_room_uses_latest_games_room_for_cumulative_stats(mode):
+    room = 25 if mode == 3 else 15
+    client = client_for(mode, room)
     with patch("pupulinbot.ms_commands.render_profile", return_value=b"profile") as render:
         assert (
             await MahjongQueries(None, client, client).query(f"ms{mode}", "示例玩家 -i", 1, 2)
             == b"profile"
         )
-    render.assert_called_once_with(Player(ACCOUNT, "示例玩家"), client.stats.return_value)
-    client.stats.assert_awaited_once_with(ACCOUNT)
-    client.range_stats.assert_not_awaited()
-    client.query_history.assert_not_awaited()
+    assert render.call_args.args[0] == Player(ACCOUNT, "示例玩家")
+    assert render.call_args.args[1].games == 4
+    name = "王东" if mode == 3 else "王座东"
+    assert f"{name}　已收录 4 场" in render.call_args.kwargs["scope"]
+    assert client.range_stats.call_args.kwargs["modes"] == [room]
+    assert client.range_stats.call_args.kwargs["start"].timestamp() == 0
+    client.query_history.assert_awaited_once_with(ACCOUNT, 1, modes=None)
+    client.stats.assert_not_awaited()
 
 
 @pytest.mark.parametrize("kind", ["missing", "mismatch", "duplicate", "wrong_room", "empty"])

@@ -110,6 +110,22 @@ async def test_matchup_routes_own_binding_and_sanma_without_opponent_lookup():
 
 
 @pytest.mark.asyncio
+async def test_matchup_default_room_is_based_on_the_callers_latest_game():
+    db = SimpleNamespace(binding=AsyncMock(return_value={"account_id": 42, "nickname": "本人"}))
+    latest = game(1)
+    latest.mode = "16"
+    client = SimpleNamespace(
+        modes=[8, 9, 11, 12, 15, 16],
+        history=AsyncMock(side_effect=[([latest], False), ([latest], False)]),
+    )
+    query = MahjongQueries(db, client, None)
+    assert "同桌 1 场" in await query.query("msvs", "99", 1, 2)
+    latest_call, sample_call = client.history.await_args_list
+    assert latest_call.args == (42, 1) and latest_call.kwargs["modes"] is None
+    assert sample_call.args == (42, 200) and sample_call.kwargs["modes"] == [16]
+
+
+@pytest.mark.asyncio
 async def test_compare_defaults_to_100_and_exact_mode_filter():
     db = SimpleNamespace(binding=AsyncMock(return_value={"account_id": 42, "nickname": "本人"}))
     client = SimpleNamespace(history=AsyncMock(return_value=([game(i) for i in range(4)], False)))

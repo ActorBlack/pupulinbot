@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -162,7 +162,7 @@ def test_summary_uses_matching_sample_points_and_weighted_win_deal_difference(
 
 
 @pytest.mark.asyncio
-async def test_swapped_commands_preserve_profile_and_default_summary():
+async def test_summary_and_profiles_select_a_single_room():
     client = SimpleNamespace(
         modes=[11, 12],
         resolve=AsyncMock(return_value=Player(42, "喵杰")),
@@ -174,12 +174,10 @@ async def test_swapped_commands_preserve_profile_and_default_summary():
     service.profile_query = AsyncMock(return_value="profile")
     assert await service.query("ms4", "喵杰 last=100 room=玉", 1, 2) == "profile"
     assert service.profile_query.call_args.args[1].modes == [12]
-    with patch("pupulinbot.ms_commands.format_stats", return_value="cumulative"):
-        assert (await service.query("ms4", "喵杰", 1, 2)).startswith("cumulative")
-        for other in ("ms3",):
-            assert (await service.query(other, "喵杰", 1, 2)).startswith("cumulative")
+    client.history.assert_not_called()
     service.summary_query = AsyncMock(return_value="sample")
     assert await service.query("ms", "喵杰", 1, 2) == "sample"
+    assert service.summary_query.call_args.args[1].modes == [12]
 
 
 @pytest.mark.asyncio

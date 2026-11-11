@@ -17,7 +17,7 @@ from .monitor_card import collect_profiles, render_monitor_card
 from .ms_charts import render_history, render_profile
 from .ms_extra import matchup, render_comparison
 from .ms_ids import account_to_friend, friend_to_account
-from .ms_options import MODE_NAMES, TZ, level_label, parse_options
+from .ms_options import MODE_NAMES, TZ, parse_options
 from .ms_recent import render_recent
 from .ms_style import style_lines
 from .ms_style_chart import render_style
@@ -122,42 +122,44 @@ class MahjongQueries:
             raise ValueError(
                 "个人关注已取消；使用 mswatch list 查看本群监控，添加和删除仅限负责人。"
             )
-        profile_filtered = bool(
-            options.start or options.end or options.modes or options.last_explicit
+        options = parse_options(
+            text,
+            mode=options.mode,
+            single_room=True,
+            default_room=None,
+            max_last=last_limit,
         )
-        if command not in {"ms4", "ms3"} or profile_filtered:
-            options = parse_options(
-                text,
-                mode=options.mode,
-                single_room=True,
-                default_room=None if command in {"ms", "msstyle"} else "玉",
-                max_last=last_limit,
-            )
+        supports_image = command in {"ms3", "ms4", "mslast", "mscompare", "msstyle", "msvs"}
+        if options.image and not supports_image:
+            raise ValueError("-i 用于 ms4/ms3 面板或 mslast 牌谱图片；图表命令直接发送图片")
+        if command in {"ms", "mscompare", "msstyle"} and not options.last_explicit:
+            options.last = 100
+        if command == "mslast":
+            if not options.last_explicit:
+                options.last = 10
+            if options.image and options.last > 20:
+                raise ValueError("最近牌谱图片最多 20 场，请使用 -l 1–20")
+            if options.last > 50:
+                raise ValueError("最近牌谱文本最多 50 场；更长历史请使用图表命令")
+
         async with self.gate:
             if command == "msvs":
                 if not options.player:
                     raise ValueError("用法：msvs <对手昵称/account ID> [-l 200] [-r 玉南]")
                 if options.image:
                     raise ValueError("同桌统计目前发送文字及牌谱链接，请去掉 -i")
-                own = await self.player(replace(options, player="", numeric=False), target)
+                player = await self.player(replace(options, player="", numeric=False), target)
                 opponent = (
                     Player(int(options.player), options.player)
                     if options.player.isdecimal()
                     else await self.player(options, target)
                 )
-                if own.account_id == opponent.account_id:
+                if player.account_id == opponent.account_id:
                     raise ValueError("请指定另一位玩家，不能与本人比较")
-                load = getattr(client, "query_history", client.history)
-                games, truncated = await load(
-                    own.account_id,
-                    options.last,
-                    start=options.start,
-                    end=options.end,
-                    modes=options.modes,
-                )
-                return matchup(own, opponent, games, options, truncated)
-            player = await self.player(options, target)
-            if command in {"ms", "msstyle"} and (not options.modes or len(options.modes) > 1):
+            else:
+                player = await self.player(options, target)
+
+            if not options.modes or len(options.modes) > 1:
                 load = getattr(client, "query_history", client.history)
                 latest, _ = await load(player.account_id, 1, modes=options.modes)
                 finished = [g for g in latest if g.ended_at and g.seat(player.account_id)]
@@ -168,37 +170,21 @@ class MahjongQueries:
                 if mode not in {str(m) for m in allowed}:
                     raise PaipuyaError("最近对局的房间信息异常，请稍后重试")
                 options.modes = [int(mode)]
+
             if command == "ms":
-                if not options.last_explicit:
-                    options.last = 100
                 return await self.summary_query(player, options, client)
             if command in {"ms4", "ms3"}:
-                if profile_filtered:
-                    return await self.profile_query(player, options, client)
-                stats = await client.stats(player.account_id)
-                if options.image:
-                    return await asyncio.to_thread(render_profile, player, stats)
-                return (
-                    format_stats(player.nickname, stats)
-                    + f"\n记录段位：{level_label(stats.raw.get('level'))}｜ID {player.account_id}"
-                    + "\n"
-                    + "\n".join(style_lines(stats, mode=options.mode, scope="累计"))
-                )
-            if options.image and command not in {"mslast", "mscompare", "msstyle"}:
-                raise ValueError("-i 用于 ms4/ms3 面板或 mslast 牌谱图片；图表命令直接发送图片")
-            if command in {"mscompare", "msstyle"} and not options.last_explicit:
-                options.last = 100
-            limit = options.last
-            if command == "mslast":
-                limit = 10 if not options.last_explicit else limit
-                if options.image and limit > 20:
-                    raise ValueError("最近牌谱图片最多 20 场，请使用 -l 1–20")
-                if limit > 50:
-                    raise ValueError("最近牌谱文本最多 50 场；更长历史请使用图表命令")
+                return await self.profile_query(player, options, client)
             load_history = getattr(client, "query_history", client.history)
             games, truncated = await load_history(
-                player.account_id, limit, start=options.start, end=options.end, modes=options.modes
+                player.account_id,
+                options.last,
+                start=options.start,
+                end=options.end,
+                modes=options.modes,
             )
+            if command == "msvs":
+                return matchup(player, opponent, games, options, truncated)
             if command == "mslast":
                 if options.image:
                     return await asyncio.to_thread(render_recent, player, games, options.mode)
@@ -216,7 +202,7 @@ class MahjongQueries:
             )
 
     async def profile_query(self, player, options, client):
-        """A filtered profile uses exact window aggregates, never lifetime rates."""
+        """Load a room profile over the selected period or record window."""
         try:
             async with asyncio.timeout(210):
                 now = datetime.now(TZ)

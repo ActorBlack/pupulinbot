@@ -1,7 +1,7 @@
 import math
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -136,3 +136,55 @@ async def test_graph_selection_uses_correct_sanma_client_and_no_extra_stats():
     assert result == b"png"
     assert three.history.call_args.kwargs["modes"] == [24]
     four.history.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "renderer", "options"),
+    [
+        ("mslife", "render_history", ""),
+        ("msheat", "render_history", ""),
+        ("msstat", "render_history", ""),
+        ("mssession", "render_history", ""),
+        ("mscompare", "render_comparison", ""),
+        ("mslast", "render_recent", " -i"),
+    ],
+)
+async def test_room_filtered_charts_default_to_latest_room(command, renderer, options):
+    latest = game(2)
+    latest.mode = "15"
+    sample = game(1)
+    sample.mode = "15"
+    client = SimpleNamespace(
+        modes=[8, 9, 11, 12, 15, 16],
+        resolve=AsyncMock(return_value=Player(42, "测试")),
+        history=AsyncMock(side_effect=[([latest], False), ([sample], False)]),
+    )
+    service = MahjongQueries(None, client, None)
+    with patch(f"pupulinbot.ms_commands.{renderer}", return_value=b"png"):
+        assert await service.query(command, "测试 -l 5" + options, 1, 2) == b"png"
+    assert client.history.await_args_list == [
+        call(42, 1, modes=None),
+        call(42, 5, start=None, end=None, modes=[15]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mslife_applies_dates_to_sample_and_game_length_to_room_selection():
+    latest = game(200)
+    latest.mode = "11"
+    sample = game(1)
+    sample.mode = "11"
+    client = SimpleNamespace(
+        resolve=AsyncMock(return_value=Player(42, "测试")),
+        history=AsyncMock(side_effect=[([latest], False), ([sample], False)]),
+    )
+    service = MahjongQueries(None, client, None)
+    text = "测试 game=东 start=2026-01-01 end=2026-01-02"
+    dates = parse_options(text)
+    with patch("pupulinbot.ms_commands.render_history", return_value=b"png"):
+        assert await service.query("mslife", text, 1, 2) == b"png"
+    assert client.history.await_args_list == [
+        call(42, 1, modes=[8, 11, 15]),
+        call(42, 200, start=dates.start, end=dates.end, modes=[11]),
+    ]
