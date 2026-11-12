@@ -80,12 +80,23 @@ async def handle_group_reactions(bot: Bot, event: Event):
     if event.user_id == event.self_id or key in replied_message_ids:
         return
     original = event.original_message
-    fssz = re.fullmatch(r"fssz(?: ([1-9]|[12][0-9]|3[0-2]))?", original.extract_plain_text())
-    if fssz and all(segment.type == "text" for segment in original):
+    is_plain_text = all(segment.type == "text" for segment in original)
+    text = original.extract_plain_text() if is_plain_text else ""
+    fssz = re.fullmatch(r"fssz(?: ([1-9]|[12][0-9]|3[0-2]))?", text)
+    if fssz:
         limit = fssz[1]
         prefix = "发四是巨大猪" if limit else "发四是巨大"
         count = randint(1, int(limit) if limit else 6)
         message = Message(MessageSegment.text(prefix + "🐷" * count))
+    elif text == "alsz":
+        roll = randint(1, 100)
+        if roll <= 45:
+            reply = "阿落是小🐷"
+        elif roll <= 90:
+            reply = "阿落不是小🐷"
+        else:
+            reply = "泥才是小🐷"
+        message = Message(MessageSegment.text(reply))
     elif event.group_id in PHRASE_REWRITE_GROUPS:
         message = original.copy()
         message.reduce()

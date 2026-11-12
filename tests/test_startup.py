@@ -365,7 +365,7 @@ async def verify_group_phrase_replacement():
     assert original.extract_plain_text() == '真好厉害！好厉害 [CQ:at,qq=all]'
 asyncio.run(verify_group_phrase_replacement())
 
-async def verify_fssz_reply():
+async def verify_group_text_replies():
     from unittest.mock import AsyncMock, call, patch
     from nonebot.adapters.onebot.v11 import Bot
     from nonebot.message import _apply_event_preprocessors
@@ -380,8 +380,9 @@ async def verify_fssz_reply():
             message=Message('fssz'),
         )
 
+    rolls = [1, 6, 1, 17, 32, 45, 46, 90, 91]
     with patch.object(bot, 'send_group_msg', new=send), \\
-         patch('pupulinbot.plugin.randint', side_effect=[1, 6, 1, 17, 32]) as choose:
+         patch('pupulinbot.plugin.randint', side_effect=rolls) as choose:
         for message_id, value in enumerate((
             Message('fssz '),
             Message(' fssz'),
@@ -399,29 +400,50 @@ async def verify_fssz_reply():
             Message('fssz 32 extra'),
             Message('fssz 32') + MessageSegment.face(3),
             MessageSegment.at(100) + Message('fssz 32'),
+            Message(' alsz'),
+            Message('alsz '),
+            Message('alsz 1'),
+            Message('ALSZ'),
+            Message('/alsz'),
+            Message('alsz') + MessageSegment.face(3),
+            MessageSegment.at(100) + Message('alsz'),
+            MessageSegment.reply(99) + Message('alsz'),
         ), 10):
             update = event(message_id, value)
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
         assert await _apply_event_preprocessors(
-            bot, event(30, Message('fssz'), user=100), {}, show_log=False
+            bot, event(40, Message('fssz'), user=100), {}, show_log=False
+        )
+        assert await _apply_event_preprocessors(
+            bot, event(41, Message('alsz'), user=100), {}, show_log=False
         )
         send.assert_not_awaited()
         choose.assert_not_called()
-        matching = event(31, Message('fssz'))
+        matching = event(42, Message('fssz'))
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
-        for message_id, value in enumerate(('fssz', 'fssz 1', 'fssz 19', 'fssz 32'), 32):
+        for message_id, value in enumerate(('fssz', 'fssz 1', 'fssz 19', 'fssz 32'), 43):
             update = event(message_id, Message(value))
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
-    assert choose.call_args_list == [call(1, 6), call(1, 6), call(1, 1), call(1, 19), call(1, 32)]
+        for message_id in range(47, 51):
+            update = event(message_id, Message('alsz'))
+            assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+            assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+    assert choose.call_args_list == [
+        call(1, 6), call(1, 6), call(1, 1), call(1, 19), call(1, 32), *[call(1, 100)] * 4,
+    ]
     assert send.await_args_list == [
         call(group_id=1131357545, message=Message('发四是巨大🐷')),
         call(group_id=1131357545, message=Message('发四是巨大🐷🐷🐷🐷🐷🐷')),
         call(group_id=1131357545, message=Message('发四是巨大猪🐷')),
         call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 17)),
         call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 32)),
+        call(group_id=1131357545, message=Message('阿落是小🐷')),
+        call(group_id=1131357545, message=Message('阿落不是小🐷')),
+        call(group_id=1131357545, message=Message('阿落不是小🐷')),
+        call(group_id=1131357545, message=Message('泥才是小🐷')),
     ]
-asyncio.run(verify_fssz_reply())
+asyncio.run(verify_group_text_replies())
 
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS
