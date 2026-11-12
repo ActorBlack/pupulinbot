@@ -19,18 +19,27 @@ GRID, NEUTRAL = "#dce5ef", "#a6b5c8"
 BONUS_INK, BONUS_LINE = "#936000", "#be8317"
 BONUS_FILL, BONUS_BACKGROUND = "#faebc6", "#fff8e9"
 NORMAL = NormalDist()
-BONUS_THRESHOLD = NORMAL.cdf(3)
-BONUS_CAP_THRESHOLD = NORMAL.cdf(5)
+BONUS_START = {
+    "进攻": 2.0,
+    "防守": 1.6,
+    "副露": 2.0,
+    "立直": 2.6,
+    "速度": 3.0,
+    "打点": 2.0,
+}
+BONUS_CAP_DEVIATION = 5.0
+BONUS_CAP_THRESHOLD = NORMAL.cdf(BONUS_CAP_DEVIATION)
 
 
-def radar_bonus_score(score):
+def radar_bonus_score(score, *, start=3.0):
     """Map the upper tail of an unrounded radar score to a display-only extension."""
-    if score is None or score / 100 <= BONUS_THRESHOLD:
+    if score is None or score / 100 <= NORMAL.cdf(start):
         return None
     if score / 100 >= BONUS_CAP_THRESHOLD:
         return 150
     deviation = NORMAL.inv_cdf(score / 100)
-    bonus = round(100 + 25 * (deviation - 3))
+    points_per_deviation = 50 / (BONUS_CAP_DEVIATION - start)
+    bonus = round(100 + points_per_deviation * (deviation - start))
     return bonus if bonus > 100 else None
 
 
@@ -78,7 +87,10 @@ def render_style(player, stats, games, options, *, current_level=None):
     if hands is not None and (not hands.is_integer() or hands < count):
         hands = None
     scores = [axis_score(axis, actual, reference, hands) for axis in AXES]
-    bonuses = [radar_bonus_score(score) for score in scores]
+    bonuses = [
+        radar_bonus_score(score, start=BONUS_START[axis.name])
+        for axis, score in zip(AXES, scores, strict=True)
+    ]
     display_scores = [
         bonus if bonus is not None else score for score, bonus in zip(scores, bonuses, strict=True)
     ]

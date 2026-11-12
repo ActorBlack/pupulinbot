@@ -215,7 +215,7 @@ def test_radar_centers_exact_current_grade_in_each_room():
 
 
 def test_radar_bonus_uses_unrounded_extremes_and_caps_at_150():
-    from pupulinbot.ms_style_chart import radar_bonus_score
+    from pupulinbot.ms_style_chart import BONUS_START, radar_bonus_score
 
     assert radar_bonus_score(None) is None
     for deviation, expected in (
@@ -229,6 +229,17 @@ def test_radar_bonus_uses_unrounded_extremes_and_caps_at_150():
     ):
         score = 50 * (1 + math.erf(deviation / math.sqrt(2)))
         assert radar_bonus_score(score) == expected
+
+    score = 50 * (1 + math.erf(2.7 / math.sqrt(2)))
+    assert {axis: radar_bonus_score(score, start=start) for axis, start in BONUS_START.items()} == {
+        "进攻": 112,
+        "防守": 116,
+        "副露": 112,
+        "立直": 102,
+        "速度": None,
+        "打点": 112,
+    }
+    assert all(radar_bonus_score(100, start=start) == 150 for start in BONUS_START.values())
 
 
 def test_radar_combines_opportunities_and_propagates_cross_axis_changes():
