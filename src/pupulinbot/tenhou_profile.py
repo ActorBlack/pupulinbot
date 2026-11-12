@@ -133,6 +133,8 @@ def rank_history(
             if level == 0 and stamp < 1508792400:
                 first, second = 30, 0
             delta = (first if rank == 1 else second if rank == 2 else 0) * factor
+        if include_records and n == mode:
+            row["_pt_delta"] = delta
         state["pt"] += delta
         for event in row.get("ptevents", []):
             if event.get("addpt"):

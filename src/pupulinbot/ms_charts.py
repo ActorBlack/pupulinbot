@@ -59,16 +59,38 @@ def sessions(games, gap=60):
     return groups
 
 
+def activity_counts(stamps, *, yearly=False):
+    lo, hi = min(stamps), max(stamps)
+    daily = not yearly and (hi.date() - lo.date()).days < 31
+    pattern = "%Y" if yearly else "%m-%d" if daily else "%Y-%m"
+    counts = Counter(s.strftime(pattern) for s in stamps)
+    labels = []
+    cursor = lo.replace(hour=0, minute=0, second=0, microsecond=0)
+    if not daily:
+        cursor = cursor.replace(day=1, month=1 if yearly else cursor.month)
+    while cursor <= hi:
+        labels.append(cursor.strftime(pattern))
+        if daily:
+            cursor += timedelta(days=1)
+        elif yearly:
+            cursor = cursor.replace(year=cursor.year + 1)
+        else:
+            cursor = cursor.replace(
+                year=cursor.year + (cursor.month == 12), month=cursor.month % 12 + 1
+            )
+    return labels, [counts[k] for k in labels], "年" if yearly else "日" if daily else "月"
+
+
 def render_profile(player, stats, *, scope=None, games=()):
     with _RENDER_LOCK:
         return render_profile_card(player, stats, scope=scope, games=games)
 
 
-def render_history(kind, player, games, truncated, options):
+def render_history(kind, player, games, truncated, options, *, scope=None):
     if not games:
         raise ValueError("筛选范围内没有牌谱屋已收录对局")
     with _RENDER_LOCK:
-        return _render_history(kind, player, games, truncated, options)
+        return _render_history(kind, player, games, truncated, options, scope=scope)
 
 
 def _render_life(player, games, options):
@@ -263,7 +285,7 @@ def _render_life(player, games, options):
     return save(figure)
 
 
-def _render_history(kind, player, games, truncated, options):
+def _render_history(kind, player, games, truncated, options, *, scope=None):
     games = sorted(games, key=lambda g: g.started_at)
     if kind == "mslife":
         return _render_life(player, games, options)
@@ -283,7 +305,7 @@ def _render_history(kind, player, games, truncated, options):
     figure.text(
         0.08,
         0.875,
-        f"{mode}  {len(games)} 场　{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
+        f"{mode}{scope or ''}  {len(games)} 场　{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
         fontproperties=fp,
         fontsize=12,
     )
@@ -306,29 +328,12 @@ def _render_history(kind, player, games, truncated, options):
         note = "按对局开始时间计数；颜色表示样本内对局数量。"
     elif kind == "msstat":
         stamps = [g.started_at.astimezone(TZ) for g in games]
-        yearly = options.year
-        daily = not yearly and (hi.date() - lo.date()).days < 31
-        pattern = "%Y" if yearly else "%m-%d" if daily else "%Y-%m"
-        keys = Counter(s.strftime(pattern) for s in stamps)
-        labels = []
-        cursor = lo.replace(hour=0, minute=0, second=0, microsecond=0)
-        if not daily:
-            cursor = cursor.replace(day=1, month=1 if yearly else cursor.month)
-        while cursor <= hi:
-            labels.append(cursor.strftime(pattern))
-            if daily:
-                cursor += timedelta(days=1)
-            elif yearly:
-                cursor = cursor.replace(year=cursor.year + 1)
-            else:
-                cursor = cursor.replace(
-                    year=cursor.year + (cursor.month == 12), month=cursor.month % 12 + 1
-                )
-        ax.bar(range(len(labels)), [keys[k] for k in labels], color="#2563eb")
+        labels, counts, period = activity_counts(stamps, yearly=options.year)
+        ax.bar(range(len(labels)), counts, color="#2563eb")
         stride = max(1, len(labels) // 15)
         ax.set_xticks(range(0, len(labels), stride), labels[::stride], rotation=35, ha="right")
         ax.set_ylabel("样本对局数", fontproperties=fp)
-        note = "按年统计" if yearly else "按日统计（跨度不超过 31 天）" if daily else "按月统计"
+        note = "按日统计（跨度不超过 31 天）" if period == "日" else f"按{period}统计"
     else:
         groups = sessions(games, options.gap)
         ax.bar(range(1, len(groups) + 1), [len(g) for g in groups], color="#0f766e")

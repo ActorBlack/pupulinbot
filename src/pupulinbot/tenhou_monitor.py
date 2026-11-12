@@ -55,6 +55,17 @@ class TenhouStore:
             ).fetchone()
             return row["name"] if row else None
 
+    async def member_names(self, member_ids):
+        async with self.db.connect() as conn:
+            rows = await (
+                await conn.execute(
+                    """SELECT DISTINCT name FROM tenhou_bindings
+                    WHERE qq_id IN (SELECT value FROM json_each(?)) ORDER BY name""",
+                    (json.dumps([str(qq) for qq in member_ids]),),
+                )
+            ).fetchall()
+            return [row["name"] for row in rows]
+
     async def bind(self, user_id, name, *, if_absent=False):
         name = validate_name(name)
         async with self.db.connect() as conn:

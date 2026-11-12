@@ -338,15 +338,16 @@ class Database:
                 current[flag] = int(bool(current[flag] or row[flag]))
         return list(groups.values())
 
-    async def group_bindings(self, group_id: str, mode: int = 4):
-        return sorted(
-            [
-                r
-                for r in await self.subscriptions()
-                if r["group_id"] == group_id and r["mode"] == mode
-            ],
-            key=lambda r: r["nickname"],
-        )
+    async def member_bindings(self, member_ids):
+        async with self.connect() as db:
+            return await (
+                await db.execute(
+                    """SELECT account_id, MIN(nickname) AS nickname FROM bindings
+                    WHERE qq_id IN (SELECT value FROM json_each(?))
+                    GROUP BY account_id ORDER BY nickname, account_id""",
+                    (json.dumps([str(qq) for qq in member_ids]),),
+                )
+            ).fetchall()
 
     async def own_subscriptions(self, group_id: str, qq_id: str):
         async with self.connect() as db:

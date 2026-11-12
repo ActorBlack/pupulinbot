@@ -15,7 +15,13 @@ from pupulinbot.tenhou import CN, TenhouClient, TenhouError
 from pupulinbot.tenhou_monitor import TenhouStore
 from pupulinbot.tenhou_options import parse_tenhou_options
 from pupulinbot.tenhou_queries import TenhouQueries, make_view, summary_text
-from pupulinbot.tenhou_query_card import SIZE, render_life, render_profile, render_recent
+from pupulinbot.tenhou_query_card import (
+    SIZE,
+    STYLE_SIZE,
+    render_life,
+    render_profile,
+    render_recent,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures/tenhou"
 NOW = datetime(2026, 11, 10, 20, tzinfo=CN)
@@ -67,6 +73,9 @@ def test_short_options_rooms_dates_zero_boundaries_and_quoted_names():
     assert parse_tenhou_options("-l 500 -r 特上").last == 500
     assert parse_tenhou_options("-r 特上").room == 2
     assert parse_tenhou_options("game=东 -r 特东").length == 1
+    assert parse_tenhou_options("-r 凤 game=东").length == 1
+    assert parse_tenhou_options("game=东风 -r 凤").length == 1
+    assert parse_tenhou_options("-y").year and parse_tenhou_options("gap=15").gap == 15
     month = parse_tenhou_options("-m", now=NOW)
     assert month.start == datetime(2026, 11, 1, tzinfo=CN).timestamp()
     assert month.end == NOW.timestamp()
@@ -83,8 +92,10 @@ def test_short_options_rooms_dates_zero_boundaries_and_quoted_names():
         "-r 玉",
         "mode=2",
         "-x",
-        "-r 凤 game=东",
-        "game=东 -r 凤",
+        "-r 凤南 game=东",
+        "game=东 -r 凤南",
+        "gap=0",
+        "gap=1441",
         "-m -y",
         "-m start=2026-11-01",
         "start=2026-11-12 end=2026-11-01",
@@ -122,7 +133,9 @@ def test_recent_default_room_one_mode_and_correct_stat_scope():
 def test_full_profile_and_date_filter_dont_mix_latest_room_or_modes():
     data = history()
     view = make_view(data, "applePie", parse_tenhou_options(""), recent=False)
-    assert view["count"] == 3 and view["scope"] == "全部房间"
+    assert view["count"] == 2 and view["total_count"] == 3 and view["scope"] == "鳳南"
+    east = make_view(data, "applePie", parse_tenhou_options("game=东"), recent=False)
+    assert east["count"] == 1 and east["scope"] == "特东"
     opts = parse_tenhou_options("start=2026-11-11")
     with pytest.raises(TenhouError, match="没有已收录"):
         make_view(data, "applePie", opts, recent=True)
@@ -156,8 +169,8 @@ async def test_self_binding_default_query_profile_and_missing_account(store):
     assert "applePie（" in await service.query("th", "-l 100", "user", "group")
     source.phoenix_stats.assert_not_awaited()
     profile = await service.query("th4", "", "user", "group")
-    assert "凤凰桌统计　四鳳东/南（839 战）" in profile
-    source.phoenix_stats.assert_awaited_once_with("applePie", 4, None)
+    assert "凤凰桌累计　四鳳南（839 战）" in profile
+    source.phoenix_stats.assert_awaited_once_with("applePie", 4, 2)
     assert "安定段:" in profile
     assert await service.query("thunbind", "", "user", "group") == "已解除绑定"
     assert await store.binding("user") is None
@@ -188,9 +201,11 @@ async def test_binding_other_member_requires_authority_and_never_overwrites(stor
     )
     source.user_history.assert_not_awaited()
     assert await store.binding("managerfriend") == "applePie"
-    assert "applePie（" in await service.query(
-        "th2", "", "ordinary", "group", mentioned="managerfriend"
+    assert (
+        await service.query("th2", "", "ordinary", "group", mentioned="managerfriend")
+        == "天凤账号：applePie"
     )
+    source.user_history.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -224,16 +239,36 @@ async def test_sanma_and_scope_specific_hand_stats_and_optional_failure(store):
 
 
 @pytest.mark.asyncio
-async def test_group_rank_uses_only_current_group_watch_names(store):
-    await store.add("group", "manager", "applePie")
-    await store.add("other", "manager", "other")
+async def test_group_rank_uses_current_group_members_with_bindings(store):
+    await store.bind("member", "applePie")
+    await store.bind("another", "applePie")
+    await store.bind("left", "formerMember")
+    await store.add("group", "manager", "formerMember")
+    await store.add("group", "manager", "watchOnly")
     source = client()
     service = TenhouQueries(store, source)
-    result = await service.query("thrank", "", "user", "group")
-    assert "applePie " in result and "other" not in result
+    members = {"member", "another", "unbound"}
+    result = await service.query("thrank", "", "user", "group", member_ids=members)
+    assert result.count("applePie ") == 1
+    assert "formerMember" not in result and "watchOnly" not in result
     source.user_history.assert_awaited_once_with("applePie")
     source.phoenix_stats.assert_not_awaited()
-    assert await service.query("thrank", "", "user", "emptygroup") == "本群天凤监控名单为空。"
+    assert "本群天凤三麻排行" in await service.ranking("sanma", members)
+    assert await service.ranking("", {"unbound"}) == "本群还没有成员绑定天凤账号。"
+
+
+@pytest.mark.asyncio
+async def test_group_rank_pages_include_all_bound_members(store):
+    members = {str(i) for i in range(21)}
+    for member in members:
+        await store.bind(member, f"player{int(member):02}")
+    source = client()
+    source.user_history.side_effect = history
+    pages = await TenhouQueries(store, source).ranking("", members)
+    assert len(pages) == 2
+    assert len(pages[0].splitlines()) == 21
+    assert pages[1].splitlines()[0].endswith("（2 / 2）")
+    assert pages[1].splitlines()[1].startswith("player20 ")
 
 
 @pytest.mark.asyncio
@@ -290,3 +325,85 @@ def test_real_rendering_text_bounds_modes_missing_data_and_separate_phoenix_scop
         selected = make_view(data, "applePie", parse_tenhou_options(text, mode=mode), recent=True)
         assert render_recent("applePie", selected["rows"], mode).startswith(b"\x89PNG")
     assert render_life(view).startswith(b"\x89PNG")
+
+
+def test_sample_pt_uses_replay_unless_source_sequence_exposes_gaps():
+    data = history()
+    assert make_view(
+        data,
+        "applePie",
+        parse_tenhou_options("-l 2"),
+        recent=True,
+    )["pt_deltas"] == [None, None]
+    count = {3: 0, 4: 0}
+    for row in data["list"]:
+        n = row["playernum"]
+        count[n] += 1
+        row["seq"] = count[n]
+    assert make_view(
+        data,
+        "applePie",
+        parse_tenhou_options("-l 2"),
+        recent=True,
+    )["pt_deltas"] == [90, 90]
+    for row in data["list"]:
+        row.pop("seq")
+    view = make_view(data, "applePie", parse_tenhou_options("-l 2"), recent=True)
+    assert view["pt_deltas"] == [90, 90]
+    assert all("_pt_delta" not in row for row in data["list"])
+
+
+@pytest.mark.asyncio
+async def test_tenhou_room_charts_matchup_and_phoenix_radar(store):
+    source = client()
+    data = history()
+    for i, row in enumerate(data["list"]):
+        row.update(playernum=4, playerlevel=3, playlength=2, seq=i + 1)
+    source.user_history.return_value = data
+    source.phoenix_percentiles.return_value = {"agariC": 60, "houjuuC": 40, "riichC": 55}
+    service = TenhouQueries(store, source)
+    for command in ("thlife", "thheat", "thstat", "thsession", "thcompare"):
+        text = "applePie gap=10" if command == "thsession" else "applePie"
+        assert (await service.query(command, text, "user", "group")).startswith(b"\x89PNG")
+    source.phoenix_stats.assert_not_awaited()
+    await store.bind("user", "applePie")
+    opponent = data["list"][-1]["player2"]
+    text = await service.query("thvs", opponent, "user", "group")
+    assert "同桌 4 场" in text and "领先 4 场" in text and "https://tenhou.net/4/?log=" in text
+    png = await service.query("thstyle", "applePie -r 凤南", "user", "group")
+    assert Image.open(io.BytesIO(png)).size == STYLE_SIZE
+    source.phoenix_stats.assert_awaited_once_with("applePie", 4, 2)
+    with pytest.raises(TenhouError, match="累计"):
+        await service.query("thstyle", "applePie -l 20", "user", "group")
+
+
+@pytest.mark.asyncio
+async def test_latest_non_phoenix_profile_uses_room_records_without_phoenix_stats(store):
+    source = client()
+    data = history()
+    data["list"][-1].update(playerlevel=2, playlength=1)
+    source.user_history.return_value = data
+    service = TenhouQueries(store, source)
+    text = await service.query("th4", "applePie", "user", "group")
+    assert "特东2战" in text and "凤凰桌" not in text
+    png = await service.query("th4", "applePie -i", "user", "group")
+    assert Image.open(io.BytesIO(png)).size == (1600, 765)
+    source.phoenix_stats.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tenhou_observation_uses_live_feed_and_existing_card(store):
+    source = client()
+    game = json.loads((FIXTURES / "live.json").read_text())[0]
+    source.live = AsyncMock(return_value=[game])
+    render = AsyncMock(return_value=b"card")
+    service = TenhouQueries(store, source, start_card=render)
+    name = game["players"][0]["name"]
+    command = f"th{game['info']['playernum']}"
+    text = await service.query(command, f"{name} -o", "user", "group")
+    assert "https://tenhou.net/4/?wg=" in text and name in text
+    assert await service.query(command, f"{name} -o -i", "user", "group") == b"card"
+    render.assert_awaited_once_with(game)
+    source.user_history.assert_not_awaited()
+    with pytest.raises(TenhouError, match="观战用法"):
+        await service.query(command, f"{name} -o -r 凤", "user", "group")

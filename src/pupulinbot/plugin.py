@@ -4,6 +4,7 @@ import logging
 import re
 from collections import deque
 from datetime import datetime
+from random import randint
 
 import httpx
 from nonebot import get_driver, on_command, require
@@ -47,6 +48,7 @@ from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
 from .qq_delivery import send_verified_image
+from .qq_members import GroupMembersError, group_member_ids
 from .record_names import RecordNames
 from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
 from .repeat_stop import RepeatStop
@@ -66,7 +68,7 @@ MORTAL_PAUSE_ALERT_GROUP = 1131357545
 PHRASE_REWRITE_GROUPS = frozenset({REPEAT_STOP_GROUP, 996147537})
 logger = logging.getLogger(__name__)
 repeat_stop = RepeatStop()
-rewritten_message_ids: deque[tuple[int, int]] = deque(maxlen=64)
+replied_message_ids: deque[tuple[int, int]] = deque(maxlen=64)
 
 
 @event_preprocessor
@@ -75,25 +77,30 @@ async def handle_group_reactions(bot: Bot, event: Event):
         return
     await repeat_stop.handle(bot, event)
     key = (event.group_id, event.message_id)
-    if (
-        event.group_id not in PHRASE_REWRITE_GROUPS
-        or event.user_id == event.self_id
-        or key in rewritten_message_ids
-    ):
+    if event.user_id == event.self_id or key in replied_message_ids:
         return
-    message = event.original_message.copy()
-    message.reduce()
-    changed = False
-    for segment in message["text"]:
-        if "好厉害" in segment.data["text"]:
-            segment.data["text"] = segment.data["text"].replace("好厉害", "井棋风")
-            changed = True
-    if changed:
-        rewritten_message_ids.append(key)
-        try:
-            await bot.send_group_msg(group_id=event.group_id, message=message)
-        except Exception:
-            logger.exception("发送井棋风替换消息失败")
+    original = event.original_message
+    if original.extract_plain_text() == "fssz" and all(
+        segment.type == "text" for segment in original
+    ):
+        message = Message(MessageSegment.text("发四是巨大" + "🐷" * randint(1, 6)))
+    elif event.group_id in PHRASE_REWRITE_GROUPS:
+        message = original.copy()
+        message.reduce()
+        changed = False
+        for segment in message["text"]:
+            if "好厉害" in segment.data["text"]:
+                segment.data["text"] = segment.data["text"].replace("好厉害", "井棋风")
+                changed = True
+        if not changed:
+            return
+    else:
+        return
+    replied_message_ids.append(key)
+    try:
+        await bot.send_group_msg(group_id=event.group_id, message=message)
+    except Exception:
+        logger.exception("发送群消息自动回复失败")
 
 
 @run_preprocessor
@@ -439,16 +446,23 @@ async def stats(event: GroupMessageEvent, args=CommandArg()):
 
 
 @rank_cmd.handle()
-async def group_rank(event: GroupMessageEvent, args=CommandArg()):
+async def group_rank(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
     mode = args.extract_plain_text().strip().lower()
     client = sanma if mode in {"3", "sanma"} else paipuya
-    bindings = await db.group_bindings(str(event.group_id), 3 if client is sanma else 4)
+    try:
+        members = await group_member_ids(bot, event.group_id)
+    except GroupMembersError as exc:
+        await rank_cmd.finish(str(exc))
+    bindings = await db.member_bindings(members)
     if not bindings:
-        await rank_cmd.finish("本群还没有已开启监控的雀魂玩家。")
+        await rank_cmd.finish("本群还没有成员绑定雀魂账号。")
     result = await group_ranking(client, bindings)
-    if isinstance(result, bytes):
-        result = MessageSegment.image("base64://" + base64.b64encode(result).decode("ascii"))
-    await rank_cmd.finish(result)
+    if isinstance(result, str):
+        await rank_cmd.finish(result)
+    pages = result if isinstance(result, list) else [result]
+    for page in pages:
+        await rank_cmd.send(MessageSegment.image(page))
+    await rank_cmd.finish()
 
 
 watch_cmd = on_command("mswatch", priority=10, block=True)
@@ -504,11 +518,21 @@ async def mortal(event: GroupMessageEvent, args=CommandArg()):
         await review_cmd.finish(str(exc))
 
 
+async def delete_batch_task(event, arguments):
+    if len(arguments) != 1:
+        raise ReviewError("用法：msmortal delete <任务编号>")
+    job_id = arguments[0]
+    await batches.delete(job_id, str(event.group_id), str(event.user_id))
+    return f"任务 {job_id} 已删除。"
+
+
 async def batch_command(event: GroupMessageEvent, parts: list[str]):
     group_id, owner = str(event.group_id), str(event.user_id)
     action = parts[0]
     if action not in BATCH_ACTIONS:
         raise ReviewError("仅支持英文子命令，请发送 /help 查看用法")
+    if action == "delete":
+        await review_cmd.finish(await delete_batch_task(event, parts[1:]))
     if action in {"table", "links"}:
         if len(parts) < 2:
             raise ReviewError(
@@ -572,7 +596,9 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
         await review_cmd.finish(task_start_reply(job["id"]))
     if action == "pause":
         await batches.pause(job["id"], group_id, owner)
-        await review_cmd.finish("批量任务已暂停。已提交到外部服务的分析可能仍会继续。")
+        await review_cmd.finish(
+            "任务已暂停，可以开始其他任务。已提交的场次会在继续时尝试找回报告。"
+        )
     if action in {"report", "chart"}:
         picture = await asyncio.to_thread(render_batch_chart, job)
         encoded = base64.b64encode(picture).decode("ascii")
@@ -689,7 +715,7 @@ async def mortal_status(event: GroupMessageEvent, args=CommandArg()):
         f"运行中任务：{', '.join(batches.tasks) or '无'}\n"
         f"在线模式：单浏览器逐项提交，最短提交间隔 {settings.mortal_online_cooldown:g} 秒\n"
         "已完成报告缓存：开启（同牌谱、座位、模型）\n"
-        "用法：msmortal [玩家] -l 1–100；mortalstatus <任务编号>"
+        "用法：msmortal [玩家] -l 1–100；mortalstatus <任务编号>；msmortal delete <任务编号>"
     )
 
 
@@ -697,6 +723,9 @@ async def mortal_status(event: GroupMessageEvent, args=CommandArg()):
 async def ms_mortal(event: GroupMessageEvent, args=CommandArg()):
     try:
         text = args.extract_plain_text().strip()
+        parts = text.split()
+        if parts and parts[0].lower() == "delete":
+            await msmortal_cmd.finish(await delete_batch_task(event, parts[1:]))
         options = parse_options(text, max_last=MAX_BATCH_COUNT, allow_all=False)
         count = batch_count(options.last if options.last_explicit else None)
         if options.mode != 4:
@@ -714,7 +743,12 @@ async def ms_mortal(event: GroupMessageEvent, args=CommandArg()):
             count, str(event.group_id), str(event.user_id), player, games=games
         )
         if batches.available:
-            batches.start(job["id"], str(event.group_id), str(event.user_id))
+            try:
+                batches.start(job["id"], str(event.group_id), str(event.user_id))
+            except ReviewError as exc:
+                await msmortal_cmd.finish(
+                    f"任务 {job['id']} 已保存。{exc}\n可发送 mortal resume {job['id']} 开始。"
+                )
         await msmortal_cmd.finish(
             f"任务 {job['id']}：找到 {len(job['rows'])} 场四麻半庄。\n"
             f"进度：mortal status {job['id']}\n图表：mortal report {job['id']}"

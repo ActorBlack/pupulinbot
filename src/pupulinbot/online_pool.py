@@ -5,8 +5,8 @@ import json
 import logging
 from pathlib import Path
 
-from .batch_review import VERIFICATION_RETRY_STATUSES
-from .online_review import OnlinePaused, OnlineReviews
+from .batch_review import VERIFICATION_RETRY_STATUSES, finish_file_write
+from .online_review import OnlinePaused, OnlineReviews, paused_journal
 from .review_cache import ReviewCache
 
 logger = logging.getLogger(__name__)
@@ -74,23 +74,62 @@ class OnlinePool:
             return [f"第 {index + 1} 项：{progress}"]
         return []
 
-    def _journals(self):
-        for profile in (self.worker.profile, *self.legacy_profiles):
-            path = profile / "submission-journal.json"
-            if not path.exists():
-                continue
-            state = json.loads(path.read_text())
-            if not isinstance(state, dict):
-                raise ValueError("浏览器恢复记录格式无效")
-            yield profile, state
-
     @property
-    def recovery_slots(self):
-        return {
+    def profiles(self):
+        return (self.worker.profile, *self.legacy_profiles)
+
+    @staticmethod
+    def read_journal(path):
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict) or not isinstance(state.get("key", ""), str):
+            raise ValueError("浏览器恢复记录格式无效")
+        return state
+
+    def _journals(self):
+        for profile in self.profiles:
+            path = profile / "submission-journal.json"
+            if path.exists():
+                yield profile, self.read_journal(path)
+
+    def _paused_paths(self, profile, job_id):
+        return (profile / "paused-submissions").glob(f"{job_id}:*.json")
+
+    def recovery_slots_for(self, job_id):
+        slots = {
             state["key"]: int(profile == self.legacy_profiles[0])
             for profile, state in self._journals()
             if state.get("state") in {"submitted", "done"} and state.get("key")
         }
+        for profile in self.profiles:
+            for path in self._paused_paths(profile, job_id):
+                state = self.read_journal(path)
+                if state.get("key") != path.stem or state.get("state") not in {"submitted", "done"}:
+                    raise ValueError("暂停场次恢复记录格式无效")
+                slots.setdefault(path.stem, int(profile == self.legacy_profiles[0]))
+        return slots
+
+    async def park_jobs(self, job_ids):
+        current = self.worker.profile / "submission-journal.json"
+        state = self.read_journal(current) if current.exists() else {}
+        submitted_key = state.get("key") if state.get("state") == "submitted" else None
+        await self.worker.release_jobs(job_ids, submitted_key=submitted_key)
+        for profile, state in self._journals():
+            key = state.get("key") or ""
+            if key.partition(":")[0] not in job_ids or state.get("state") not in {
+                "submitted",
+                "done",
+            }:
+                continue
+            if profile == self.worker.profile and self.worker.pending_key:
+                continue
+            destination = paused_journal(profile, key)
+            destination.parent.mkdir(mode=0o700, exist_ok=True)
+            (profile / "submission-journal.json").replace(destination)
+
+    def forget_job(self, job_id):
+        for profile in self.profiles:
+            for path in self._paused_paths(profile, job_id):
+                path.unlink(missing_ok=True)
 
     def begin(self):
         self.gate.blocked = False
@@ -111,28 +150,39 @@ class OnlinePool:
         if matching is None and any(state.get("state") == "submitted" for _, state in journals):
             self.halt()
             raise OnlinePaused("uncertain", "有已提交但未核对的场次，请先恢复原任务")
+        parked = None
+        if matching is None:
+            for profile in self.profiles:
+                path = paused_journal(profile, key)
+                if path.exists():
+                    state = self.read_journal(path)
+                    if state.get("key") != key or state.get("state") not in {"submitted", "done"}:
+                        raise ValueError("暂停场次恢复记录格式无效")
+                    matching = (profile, state)
+                    parked = path
+                    break
         if self.cache and matching is None:
             async with self.cache_lock:
-                cached = await asyncio.to_thread(self.cache.find, row, self.worker.model)
+                cached = await finish_file_write(self.cache.find, row, self.worker.model)
             if cached:
                 row["review_cache_hit"] = True
                 return cached
         try:
-            if matching and matching[0] != self.worker.profile:
+            if matching and (parked or matching[0] != self.worker.profile):
                 profile, journal = matching
                 result = await OnlineReviews(profile, self.worker.model).recover(
-                    key, row, on_submitted, journal
+                    key, row, on_submitted, journal, journal_path=parked
                 )
                 if result is None:
                     raise OnlinePaused(
-                        "uncertain", "旧浏览器已提交，但未保存报告地址，请找回报告并导入"
+                        "uncertain", "这场已提交，但未保存报告地址，请找回报告并导入"
                     )
             else:
                 result = await self.worker.submit(key, row, on_submitted)
             if self.cache:
                 try:
                     async with self.cache_lock:
-                        await asyncio.to_thread(self.cache.remember, row, self.worker.model, result)
+                        await finish_file_write(self.cache.remember, row, self.worker.model, result)
                 except OSError:
                     logger.warning("Mortal 报告无法写入独立缓存", exc_info=True)
             return result

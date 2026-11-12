@@ -1,3 +1,4 @@
+import asyncio
 import base64
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -166,6 +167,33 @@ async def test_pause_keeps_completed_results_and_checks_owner(tmp_path):
     stored = batches.load(job["id"], "group", "owner")
     assert stored["status"] == "paused"
     assert stored["rows"][0]["metrics"]["rating"] == 87
+
+
+@pytest.mark.asyncio
+async def test_pause_prevents_an_already_scanning_retry_from_restarting_task(tmp_path):
+    batches = manager(tmp_path, True)
+    job = await batches.create(1, "group", "owner", Player(42, "name"))
+    job.update(status="retry_wait", next_retry_at=datetime(2026, 1, 1, tzinfo=UTC).isoformat())
+    batches.save(job)
+    checking, release = asyncio.Event(), asyncio.Event()
+
+    async def allowed(group_id, owner):
+        checking.set()
+        await release.wait()
+        return True
+
+    retry = asyncio.create_task(
+        batches.retry_due(datetime(2026, 1, 2, tzinfo=UTC), allowed=allowed)
+    )
+    try:
+        await asyncio.wait_for(checking.wait(), 2)
+        await batches.pause(job["id"], "group", "owner")
+    finally:
+        release.set()
+        await retry
+    assert not batches.tasks
+    assert batches.load(job["id"], "group", "owner")["status"] == "paused"
+    batches.reviews.submit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

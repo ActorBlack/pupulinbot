@@ -16,6 +16,7 @@ RANK_COLORS = {
     "圣": "#991f36",
     "魂": "#40b9e9",
 }
+PAGE_SIZE = 20
 
 
 async def ranking_rows(client, bindings):
@@ -36,7 +37,7 @@ async def ranking_rows(client, bindings):
         reverse=True,
     )
     standings = []
-    for row, rank in available[:20]:
+    for row, rank in available:
         unit = point_unit(rank)
         points = point_number(point_value(rank["points"], rank), unit)
         cap = "—" if rank["cap"] is None else point_number(point_value(rank["cap"], rank), unit)
@@ -48,16 +49,29 @@ async def group_ranking(client, bindings):
     standings = await ranking_rows(client, bindings)
     if not standings:
         return "牌谱屋暂时没有本群玩家的段位数据。"
-    return await asyncio.to_thread(render_ranking, client.mode, standings)
+    if len(standings) <= PAGE_SIZE:
+        return await asyncio.to_thread(render_ranking, client.mode, standings)
+    total = (len(standings) + PAGE_SIZE - 1) // PAGE_SIZE
+    return [
+        await asyncio.to_thread(
+            render_ranking,
+            client.mode,
+            standings[start : start + PAGE_SIZE],
+            page=f"{index} / {total}",
+        )
+        for index, start in enumerate(range(0, len(standings), PAGE_SIZE), start=1)
+    ]
 
 
-def render_ranking(mode, standings):
+def render_ranking(mode, standings, *, page=None):
     height = 210 + len(standings) * 64
     image = Image.new("RGB", (680, height), "#f2f5fa")
     draw = ImageDraw.Draw(image)
     ink, muted = "#22324b", "#7f8da3"
     draw.rounded_rectangle((24, 40, 30, 82), radius=3, fill="#4479d7")
     draw.text((48, 60), f"本群{mode}排行", font=face(34, "title"), fill=ink, anchor="lm")
+    if page:
+        draw.text((632, 60), page, font=face(23, "number"), fill=muted, anchor="rm")
     draw.rounded_rectangle((24, 116, 656, height - 28), radius=20, fill="white")
     draw.text((48, 150), "游戏昵称", font=face(23, "bold"), fill=muted, anchor="lm")
     draw.text((302, 150), "段位", font=face(23, "bold"), fill=muted, anchor="lm")

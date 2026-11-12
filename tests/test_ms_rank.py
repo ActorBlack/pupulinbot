@@ -5,8 +5,34 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image, ImageDraw
 
+from pupulinbot.db import Database
 from pupulinbot.ms_rank import group_ranking, ranking_rows
 from pupulinbot.paipuya import PaipuyaError
+from pupulinbot.qq_members import GroupMembersError, group_member_ids
+
+
+@pytest.mark.asyncio
+async def test_rank_candidates_are_current_members_with_bound_accounts(tmp_path):
+    db = Database(tmp_path / "bot.sqlite")
+    await db.initialize()
+    await db.bind("101", 1, "当前群友")
+    await db.bind("102", 1, "当前群友")
+    await db.bind("201", 2, "已退群")
+    await db.subscribe("1000", "201", mode=4)
+    bot = SimpleNamespace(
+        get_group_member_list=AsyncMock(
+            return_value=[{"user_id": 101}, {"user_id": "102"}, {"user_id": 103}]
+        )
+    )
+    members = await group_member_ids(bot, 1000)
+    bot.get_group_member_list.assert_awaited_once_with(group_id=1000, no_cache=True)
+    bindings = await db.member_bindings(members)
+    assert [dict(row) for row in bindings] == [{"account_id": 1, "nickname": "当前群友"}]
+    assert not await db.member_bindings({103})
+
+    bot.get_group_member_list.return_value = None
+    with pytest.raises(GroupMembersError, match="无法获取本群成员名单"):
+        await group_member_ids(bot, 1000)
 
 
 @pytest.mark.asyncio
@@ -60,6 +86,30 @@ async def test_standings_apply_promotion_and_skip_unavailable_rank():
     ]
     client.metadata = AsyncMock(return_value=SimpleNamespace(raw={}))
     assert await group_ranking(client, bindings) == "牌谱屋暂时没有本群玩家的段位数据。"
+
+
+@pytest.mark.asyncio
+async def test_rank_reply_paginates_without_dropping_players(monkeypatch):
+    import pupulinbot.ms_rank as module
+
+    bindings = [{"account_id": i, "nickname": f"玩家{i}"} for i in range(21)]
+    client = SimpleNamespace(
+        mode="四麻",
+        metadata=AsyncMock(
+            side_effect=lambda i: SimpleNamespace(
+                raw={"level": {"id": 10502, "score": 3000 + i, "delta": 0}}
+            )
+        ),
+    )
+    render = []
+
+    def capture(mode, rows, *, page):
+        render.append((page, [row[0] for row in rows]))
+        return b"png"
+
+    monkeypatch.setattr(module, "render_ranking", capture)
+    assert await group_ranking(client, bindings) == [b"png", b"png"]
+    assert render == [("1 / 2", [f"玩家{i}" for i in range(20, 0, -1)]), ("2 / 2", ["玩家0"])]
 
 
 @pytest.mark.asyncio

@@ -4,15 +4,28 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 from pathlib import Path
 
-from .batch_review import VERIFICATION_RETRY_STATUSES, fetch_report, report_metrics
+from .batch_review import (
+    VERIFICATION_RETRY_STATUSES,
+    fetch_report,
+    finish_file_write,
+    report_metrics,
+)
 from .online_worker import TURNSTILE_TIMEOUT, progress_report_url
 from .review import ReviewError
 
 logger = logging.getLogger(__name__)
+
+
+def paused_journal(profile, key):
+    job_id, _, ordinal = key.partition(":")
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+", job_id) or not re.fullmatch(r"[0-9]+", ordinal):
+        raise ValueError("浏览器恢复记录的任务编号无效")
+    return profile / "paused-submissions" / f"{job_id}:{ordinal}.json"
 
 
 class OnlinePaused(ReviewError):
@@ -53,7 +66,7 @@ class OnlineReviews:
                     self.pending = self.pending_key = None
                     self.progress = None
 
-    async def recover(self, key, row, on_submitted, journal):
+    async def recover(self, key, row, on_submitted, journal, *, journal_path=None):
         """Recover a known report without launching Chrome or submitting a review."""
         if journal.get("key") == key and journal.get("state") == "done":
             from .batch_review import report_url
@@ -79,13 +92,15 @@ class OnlineReviews:
                 raise OnlinePaused(
                     "uncertain", "已提交结果尚未读到，稍后只重试读取，不重复提交"
                 ) from exc
-            await self._store_completed(key, recovery_url, data)
+            await self._store_completed(key, recovery_url, data, journal_path=journal_path)
             await on_submitted(recovery_url)
             self.active_submitted_key = None
             return data, recovery_url
         if row.get("online_report_url"):
             data = await self._fetch(row["online_report_url"], row)
-            await self._store_completed(key, row["online_report_url"], data)
+            await self._store_completed(
+                key, row["online_report_url"], data, journal_path=journal_path
+            )
             self.active_submitted_key = None
             return data, row["online_report_url"]
         return None
@@ -202,7 +217,7 @@ class OnlineReviews:
             raise OnlinePaused("uncertain", "浏览器响应超时，任务已暂停；不会自动重复提交") from exc
         raise ReviewError("浏览器进程已退出，请重启后继续")
 
-    async def _store_completed(self, key, url, data):
+    async def _store_completed(self, key, url, data, *, journal_path=None):
         import hashlib
 
         from .batchmortal_worker import atomic_json
@@ -213,11 +228,11 @@ class OnlineReviews:
             )
             atomic_json(artifact, data)
             atomic_json(
-                self.profile / "submission-journal.json",
+                journal_path or self.profile / "submission-journal.json",
                 {"key": key, "state": "done", "url": url, "report_file": str(artifact.resolve())},
             )
 
-        await asyncio.to_thread(record)
+        await finish_file_write(record)
 
     async def _read_native(self, filename, row):
         def read():
@@ -263,24 +278,55 @@ class OnlineReviews:
             await self._terminate()
 
         def record():
-            journal = self.profile / "submission-journal.json"
-            if not journal.exists():
-                return
-            state = json.loads(journal.read_text())
-            if state.get("key") != key:
+            active = self.profile / "submission-journal.json"
+            journals = []
+            for journal in (active, paused_journal(self.profile, key)):
+                if not journal.exists():
+                    continue
+                state = json.loads(journal.read_text())
+                if state.get("key") == key and (
+                    journal != active or state.get("state") == "submitted"
+                ):
+                    journals.append(journal)
+            if not journals:
                 return
             artifact = (
                 self.profile / "artifacts" / (hashlib.sha256(key.encode()).hexdigest() + ".json")
             )
             atomic_json(artifact, data)
-            atomic_json(
-                journal,
-                {"key": key, "state": "done", "url": url, "report_file": str(artifact.resolve())},
-            )
+            for journal in journals:
+                atomic_json(
+                    journal,
+                    {
+                        "key": key,
+                        "state": "done",
+                        "url": url,
+                        "report_file": str(artifact.resolve()),
+                    },
+                )
 
-        await asyncio.to_thread(record)
+        await finish_file_write(record)
         if self.active_submitted_key == key:
             self.active_submitted_key = None
+
+    async def release_jobs(self, job_ids, *, submitted_key=None):
+        """Stop an owned browser operation before its journal can be moved."""
+
+        def owned(key):
+            return key and key.partition(":")[0] in job_ids
+
+        if self.pending_key and not owned(self.pending_key):
+            return
+        if not any(
+            owned(key) for key in (self.pending_key, self.active_submitted_key, submitted_key)
+        ):
+            return
+        async with self.lock:
+            if self.pending is not None:
+                self.pending.cancel()
+                await asyncio.gather(self.pending, return_exceptions=True)
+            await self._terminate()
+            self.pending = self.pending_key = self.active_submitted_key = self.progress = None
 
     async def _terminate(self):
         if self.process and self.process.returncode is None:

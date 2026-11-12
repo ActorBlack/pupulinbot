@@ -84,7 +84,7 @@ def split_comparison(games, account, mode=4):
     return halves, [sample_summary(h, account, mode) for h in halves]
 
 
-def render_comparison(player, games, truncated, options):
+def render_comparison(player, games, truncated, options, *, scope=None):
     halves, summaries = split_comparison(games, player.account_id, options.mode)
     with _RENDER_LOCK:
         fp = font()
@@ -101,7 +101,8 @@ def render_comparison(player, games, truncated, options):
         fig.text(
             0.06,
             0.84,
-            f"{'三麻' if options.mode == 3 else '四麻'}　{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
+            f"{'三麻' if options.mode == 3 else '四麻'}{scope or ''}　"
+            f"{lo:%Y-%m-%d} 至 {hi:%Y-%m-%d}",
             fontproperties=fp,
             fontsize=12,
             color="#64748b",

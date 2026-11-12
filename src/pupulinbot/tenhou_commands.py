@@ -4,9 +4,10 @@ import base64
 from datetime import datetime
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.params import CommandArg
 
+from .qq_members import GroupMembersError, group_member_ids
 from .tenhou import CN, TenhouError, validate_name
 from .tenhou_queries import TenhouQueries
 
@@ -20,6 +21,12 @@ QUERY_COMMANDS = (
     "thlast",
     "thdetail",
     "thlife",
+    "thheat",
+    "thstat",
+    "thsession",
+    "thcompare",
+    "thvs",
+    "thstyle",
     "thrank",
 )
 
@@ -54,7 +61,9 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
     watch = on_command("thwatch", priority=10, block=True)
     status = on_command("thstatus", priority=10, block=True)
     rounds = on_command("thlive", priority=10, block=True, force_whitespace=True)
-    queries = TenhouQueries(store, client, manager=manager)
+    queries = TenhouQueries(
+        store, client, manager=manager, superusers=superusers, start_card=monitor.start_message
+    )
 
     async def status_text(event):
         rows = await store.subscriptions(event.group_id)
@@ -126,13 +135,14 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
         matcher = on_command(name, priority=10, block=True, force_whitespace=True)
 
         @matcher.handle()
-        async def handler(event: GroupMessageEvent, args=CommandArg()):
+        async def handler(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
             mentioned = [
                 s.data.get("qq") for s in args if s.type == "at" and s.data.get("qq") != "all"
             ]
             if len(mentioned) > 1 or (mentioned and name != "th2"):
                 await matcher.finish("只有 th2 支持 @一位群友查询或代绑账号。")
             try:
+                members = await group_member_ids(bot, event.group_id) if name == "thrank" else ()
                 result = await queries.query(
                     name,
                     args.extract_plain_text().strip(),
@@ -140,13 +150,18 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                     event.group_id,
                     role=event.sender.role or "member",
                     mentioned=mentioned[0] if mentioned else None,
+                    member_ids=members,
                 )
-            except TenhouError as exc:
+            except (TenhouError, GroupMembersError) as exc:
                 await matcher.finish(str(exc))
             if isinstance(result, bytes):
                 result = MessageSegment.image(
                     "base64://" + base64.b64encode(result).decode("ascii")
                 )
+            if isinstance(result, list):
+                for page in result:
+                    await matcher.send(MessageSegment.text(page))
+                await matcher.finish()
             await matcher.finish(result)
 
     for name in QUERY_COMMANDS:

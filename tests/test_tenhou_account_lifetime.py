@@ -92,8 +92,8 @@ async def test_ranking_does_not_list_players_only_active_in_previous_life():
     data = reused_history()
     reset = data["list"][-2]["starttime"] - 1
     data["ptevents"] = [{"starttime": reset, "continuous": False}]
-    store = SimpleNamespace(subscriptions=AsyncMock(return_value=[{"name": "lingran"}]))
+    store = SimpleNamespace(member_names=AsyncMock(return_value=["lingran"]))
     source = SimpleNamespace(user_history=AsyncMock(return_value=data))
     service = TenhouQueries(store, source)
-    assert await service.ranking("", "group") == "水表网暂时没有本群玩家的段位数据。"
-    assert "lingran" in await service.ranking("sanma", "group")
+    assert await service.ranking("", {"member"}) == "水表网暂时没有本群玩家的段位数据。"
+    assert "lingran" in await service.ranking("sanma", {"member"})

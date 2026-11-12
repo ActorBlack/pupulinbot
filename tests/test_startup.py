@@ -262,6 +262,32 @@ async def verify_mortal_batch_default_and_limit():
         create.assert_not_awaited()
 asyncio.run(verify_mortal_batch_default_and_limit())
 
+async def verify_mortal_delete_aliases():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.exception import FinishedException
+    from pupulinbot.plugin import batch_command, ms_mortal, msmortal_cmd, review_cmd
+
+    job_id = 'abcdef012345'
+    event = GroupMessageEvent.model_construct(
+        post_type='message', group_id=1131357545, user_id=285843647,
+    )
+    with patch.object(batches, 'delete', new=AsyncMock()) as delete, \
+         patch.object(msmortal_cmd, 'finish', new=AsyncMock(side_effect=FinishedException)), \
+         patch.object(review_cmd, 'finish', new=AsyncMock(side_effect=FinishedException)):
+        for invoke in (
+            lambda: ms_mortal(event, Message(f'delete {job_id}')),
+            lambda: batch_command(event, ['delete', job_id]),
+        ):
+            try:
+                await invoke()
+            except FinishedException:
+                pass
+            else:
+                raise AssertionError('Missing command completion')
+        assert delete.await_count == 2
+        assert delete.await_args.args == (job_id, '1131357545', '285843647')
+asyncio.run(verify_mortal_delete_aliases())
+
 async def verify_tenhou_picture_delivery():
     import json
     from unittest.mock import AsyncMock, patch
@@ -338,6 +364,53 @@ async def verify_group_phrase_replacement():
     ]
     assert original.extract_plain_text() == '真好厉害！好厉害 [CQ:at,qq=all]'
 asyncio.run(verify_group_phrase_replacement())
+
+async def verify_fssz_reply():
+    from unittest.mock import AsyncMock, call, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+
+    def event(message_id, message, user=42):
+        return GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=message_id,
+            group_id=1131357545, user_id=user, self_id=100, original_message=message,
+            message=Message('fssz'),
+        )
+
+    with patch.object(bot, 'send_group_msg', new=send), \\
+         patch('pupulinbot.plugin.randint', side_effect=[1, 6]) as choose:
+        for message_id, value in enumerate((
+            Message('fssz '),
+            Message(' fssz'),
+            Message('FSSZ'),
+            Message('/fssz'),
+            Message('请发fssz'),
+            Message('fssz') + MessageSegment.face(3),
+            MessageSegment.at(100) + Message('fssz'),
+            MessageSegment.reply(99) + Message('fssz'),
+        ), 10):
+            update = event(message_id, value)
+            assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+        assert await _apply_event_preprocessors(
+            bot, event(18, Message('fssz'), user=100), {}, show_log=False
+        )
+        send.assert_not_awaited()
+        choose.assert_not_called()
+        matching = event(19, Message('fssz'))
+        assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+        assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
+        assert await _apply_event_preprocessors(
+            bot, event(20, Message('fssz')), {}, show_log=False
+        )
+    assert choose.call_args_list == [call(1, 6), call(1, 6)]
+    assert send.await_args_list == [
+        call(group_id=1131357545, message=Message('发四是巨大🐷')),
+        call(group_id=1131357545, message=Message('发四是巨大🐷🐷🐷🐷🐷🐷')),
+    ]
+asyncio.run(verify_fssz_reply())
 
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS

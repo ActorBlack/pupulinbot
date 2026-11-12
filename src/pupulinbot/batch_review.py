@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import re
+import shutil
 import statistics
 import time
 import uuid
@@ -29,6 +30,16 @@ VERIFICATION_RETRY_STATUSES = frozenset({"verification_timeout", "verification_r
 VERIFICATION_RESTART_LIMIT = 10
 VERIFICATION_PAUSE_LIMIT = 2
 VERIFICATION_PAUSE_SECONDS = 60
+
+
+async def finish_file_write(write, *args):
+    """Let an in-progress disk write finish before cancelling its owner."""
+    task = asyncio.create_task(asyncio.to_thread(write, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 async def upload_report(bot, group_id: int, path: Path):
@@ -206,6 +217,7 @@ class BatchReviews:
         self.name_resolver = name_resolver
         self.superusers = frozenset(str(user) for user in superusers)
         self.lock = asyncio.Lock()
+        self.lifecycle = asyncio.Lock()
         self.tasks: dict[str, asyncio.Task] = {}
 
     @property
@@ -364,7 +376,9 @@ class BatchReviews:
         if data.get("player_id") != job["rows"][ordinal - 1]["seat"]:
             raise ReviewError("报告座位与目标玩家不符，不能导入")
         metrics = report_metrics(data)
-        async with self.lock:
+        async with self.lifecycle, self.lock:
+            if job_id in self.tasks:
+                raise ReviewError("请先暂停任务，再手动导入报告")
             job = self.load(job_id, group_id, owner)
             row = job["rows"][ordinal - 1]
             row.update(
@@ -379,7 +393,10 @@ class BatchReviews:
             raw = self._path(job_id).parent / f"{ordinal}.json"
             raw.write_text(json.dumps(data, ensure_ascii=False))
             raw.chmod(0o600)
-            job["status"] = "done" if all(r["status"] == "done" for r in job["rows"]) else "partial"
+            if all(r["status"] == "done" for r in job["rows"]):
+                job["status"] = "done"
+            elif job["status"] != "paused":
+                job["status"] = "partial"
             self.save(job)
             if self.online and hasattr(self.online, "acknowledge_import"):
                 await self.online.acknowledge_import(f"{job_id}:{ordinal - 1}", url, data)
@@ -391,11 +408,15 @@ class BatchReviews:
         return job
 
     def start(self, job_id, group_id, owner, *, automatic=False):
+        if self.lifecycle.locked():
+            raise ReviewError("正在处理任务变更，请稍后再开始")
         if job_id in self.tasks:
             raise ReviewError("此批量任务正在运行")
         if self.tasks:
             raise ReviewError("已有批量任务运行，请完成或暂停后再开始")
         job = self.load(job_id, group_id, owner)
+        if automatic and job["status"] != "retry_wait":
+            raise ReviewError("任务已退出自动恢复队列")
         if all(row["status"] == "done" for row in job["rows"]):
             if not missing_record_names(job):
                 raise ReviewError("该任务已经全部完成，可直接查看报告")
@@ -410,19 +431,23 @@ class BatchReviews:
             return
         if not self.available:
             raise ReviewError("自动批跑需要启用在线 Chrome 引擎或 Mortal 桥接服务")
+        paused_jobs = set()
         if self.online and not self.reviews.client.url:
             for manifest in self.directory.glob("*/job.json"):
                 if manifest.parent.name == job_id:
                     continue
                 other = json.loads(manifest.read_text())
+                if other["status"] == "paused" and hasattr(self.online, "park_jobs"):
+                    paused_jobs.add(other["id"])
+                    continue
                 if any(r.get("online_submitted") and r["status"] != "done" for r in other["rows"]):
                     raise ReviewError(
                         f"任务 {other['id']} 有已提交但未取回的结果。"
-                        f"请发送 mortal resume {other['id']} 恢复；已完成场次会跳过。"
+                        f"可继续该任务，或发送 mortal pause {other['id']} 让出队列。"
                     )
-        if self.online and getattr(self.online, "pending_key", None):
-            if not self.online.pending_key.startswith(job_id + ":"):
-                raise ReviewError("上一个任务仍有场次等待浏览器结果，请先继续该任务")
+        pending = getattr(self.online, "pending_key", None)
+        if pending and pending.partition(":")[0] not in paused_jobs | {job_id}:
+            raise ReviewError("上一个任务仍有场次等待浏览器结果，请先继续或暂停该任务")
         if not automatic:
             job["retry_attempts"] = 0
             job.pop("verification_retries", None)
@@ -431,7 +456,7 @@ class BatchReviews:
             job.pop("retry_phase")
         job.pop("next_retry_at", None)
         self.save(job)
-        task = asyncio.create_task(self._run(job_id, group_id, owner))
+        task = asyncio.create_task(self._run(job_id, group_id, owner, paused_jobs=paused_jobs))
         self.tasks[job_id] = task
         task.add_done_callback(lambda _: self.tasks.pop(job_id, None))
 
@@ -537,7 +562,7 @@ class BatchReviews:
             raw = self._path(job_id).parent / f"{index + 1}.json"
             from .batchmortal_worker import atomic_json
 
-            await asyncio.to_thread(atomic_json, raw, data)
+            await finish_file_write(atomic_json, raw, data)
         else:
             result = await self.reviews.submit(row["url"], row["seat"])
             data = result.raw
@@ -695,14 +720,12 @@ class BatchReviews:
             self.save(job)
             raise
 
-    async def _run(self, job_id, group_id, owner):
+    async def _run(self, job_id, group_id, owner, *, paused_jobs=()):
         job = self.load(job_id, group_id, owner)
         job["status"] = "running"
         job.pop("message", None)
         job.pop("phase", None)
         self.save(job, write_report=False)
-        if self.online and hasattr(self.online, "begin"):
-            self.online.begin()
         stopped = asyncio.Event()
         consumers = []
         metadata_tasks = []
@@ -714,7 +737,10 @@ class BatchReviews:
             else getattr(self.reviews, "workers", 1)
         )
         try:
-            recovery_slots = getattr(self.online, "recovery_slots", {}) if online_mode else {}
+            if paused_jobs:
+                await self.online.park_jobs(paused_jobs)
+            load_slots = getattr(self.online, "recovery_slots_for", None)
+            recovery_slots = load_slots(job_id) if online_mode and load_slots else {}
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("Mortal 恢复记录读取失败：%s", type(exc).__name__)
             if hasattr(self.online, "halt"):
@@ -724,6 +750,8 @@ class BatchReviews:
             self.save(job)
             await self._notify(job)
             return
+        if self.online and hasattr(self.online, "begin"):
+            self.online.begin()
         pending_keys = set(getattr(self.online, "pending_keys", set()))
         pending_key = getattr(self.online, "pending_key", None)
         if pending_key:
@@ -891,16 +919,54 @@ class BatchReviews:
         if self.online:
             await self.online.close()
 
-    async def pause(self, job_id, group_id, owner):
-        job = self.load(job_id, group_id, owner)
+    async def _stop_task(self, job_id):
         task = self.tasks.get(job_id)
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        else:
-            job["status"] = "paused"
-            job.pop("next_retry_at", None)
-            self.save(job)
+
+    async def _park_task(self, job_id):
+        if self.online and hasattr(self.online, "park_jobs"):
+            try:
+                await self.online.park_jobs({job_id})
+            except (OSError, ValueError) as exc:
+                logger.warning("暂停任务时无法转移浏览器恢复记录：job=%s", job_id, exc_info=True)
+                raise ReviewError("无法保存浏览器恢复记录，请检查服务器日志") from exc
+
+    async def pause(self, job_id, group_id, owner):
+        async with self.lifecycle:
+            self.load(job_id, group_id, owner)
+            await self._stop_task(job_id)
+            async with self.lock:
+                job = self.load(job_id, group_id, owner)
+                job["status"] = "paused"
+                for field in ("next_retry_at", "phase", "message"):
+                    job.pop(field, None)
+                self.save(job)
+            await self._park_task(job_id)
+
+    async def delete(self, job_id, group_id, owner):
+        async with self.lifecycle:
+            self.load(job_id, group_id, owner)
+            await self._stop_task(job_id)
+            await self._park_task(job_id)
+            async with self.lock:
+                path = self._path(job_id).parent
+                tombstone = self.directory / ".deleted" / job_id
+                try:
+                    tombstone.parent.mkdir(mode=0o700, exist_ok=True)
+                    path.rename(tombstone)
+                except OSError as exc:
+                    raise ReviewError("无法删除批量任务，请检查服务器日志") from exc
+            if self.online and hasattr(self.online, "forget_job"):
+                try:
+                    self.online.forget_job(job_id)
+                except OSError:
+                    logger.exception("已删除任务的浏览器恢复记录清理失败：job=%s", job_id)
+        try:
+            await finish_file_write(shutil.rmtree, tombstone)
+        except OSError as exc:
+            raise ReviewError("任务已移出队列，但清理任务文件失败") from exc
 
 
 def anonymous_names(names):

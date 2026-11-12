@@ -345,12 +345,16 @@ def trait_tags(
     return result
 
 
-def select_tags(existing, extra, maximum):
-    """Up to ten total, three luck and three achievements, with stable priorities."""
+def select_tags(existing, extra, maximum, *, easter_egg=None):
+    """Reserve display slots for achievements, luck and an optional easter egg."""
     if maximum <= 0:
         return []
     achievements = list(dict.fromkeys(extra["achievement"]))[: min(3, maximum)]
     luck = list(dict.fromkeys(extra["luck"]))[: min(3, maximum - len(achievements))]
     slots = maximum - len(luck) - len(achievements)
-    styles = list(dict.fromkeys(existing[:2] + extra["style"] + existing[2:]))
-    return achievements + styles[: max(0, slots)] + luck
+    eggs = [easter_egg] if easter_egg and slots > 0 else []
+    base_priority = 2 - len(eggs)
+    styles = list(
+        dict.fromkeys(existing[:base_priority] + extra["style"] + existing[base_priority:])
+    )
+    return achievements + eggs + styles[: slots - len(eggs)] + luck

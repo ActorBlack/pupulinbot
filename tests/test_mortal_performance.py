@@ -12,7 +12,7 @@ from pupulinbot.batchmortal_worker import atomic_json
 from pupulinbot.models import Player
 from pupulinbot.native_report import compact_report
 from pupulinbot.online_pool import OnlinePool
-from pupulinbot.online_review import OnlineReviews
+from pupulinbot.online_review import OnlineReviews, paused_journal
 from pupulinbot.record_names import RecordNames
 from pupulinbot.review import MortalClient, ReviewError, ReviewResult
 from pupulinbot.review_cache import ReviewCache
@@ -125,6 +125,124 @@ async def test_unsubmitted_rows_from_old_second_browser_run_sequentially(tmp_pat
     assert entered == [(0, 0), (3, 0)]
     assert batches.load(job["id"], "g", "u")["status"] == "done"
     await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_received_submission", [True, False])
+async def test_pause_allows_another_batch_then_recovers_without_resubmission(
+    tmp_path,
+    monkeypatch,
+    parent_received_submission,
+):
+    pool = OnlinePool(tmp_path / "browser")
+    batches = manager(tmp_path / "jobs", pool, count=1)
+    first = await batches.create(1, "g", "u", Player(42, "first"))
+    second = await batches.create(1, "g", "u", Player(42, "second"))
+    first_key = f"{first['id']}:0"
+    entered = asyncio.Event()
+    submissions = []
+    active_journal = pool.worker.profile / "submission-journal.json"
+
+    async def submit(key, row, callback):
+        submissions.append(key)
+        if key == first_key:
+            atomic_json(
+                active_journal,
+                {"key": key, "state": "submitted", "remote_report_url": REPORT},
+            )
+            if parent_received_submission:
+                pool.worker.active_submitted_key = key
+                await callback()
+            entered.set()
+            await asyncio.Future()
+        return native_report(), REPORT
+
+    pool.worker._submit = submit
+    pool.worker._terminate = AsyncMock()
+    read = Mock(return_value=native_report())
+    monkeypatch.setattr("pupulinbot.native_report.read_native_report", read)
+    try:
+        batches.start(first["id"], "g", "u")
+        await asyncio.wait_for(entered.wait(), 2)
+        await batches.pause(first["id"], "g", "u")
+        assert not batches.tasks and pool.pending_key is None
+        assert batches.load(first["id"], "g", "u")["status"] == "paused"
+        assert paused_journal(pool.worker.profile, first_key).exists()
+        assert not active_journal.exists()
+        pool.worker._terminate.assert_awaited_once()
+
+        batches.start(second["id"], "g", "u")
+        await batches.tasks[second["id"]]
+        assert batches.load(second["id"], "g", "u")["status"] == "done"
+
+        batches.start(first["id"], "g", "u")
+        await batches.tasks[first["id"]]
+        assert batches.load(first["id"], "g", "u")["status"] == "done"
+        assert submissions == [first_key, f"{second['id']}:0"]
+        read.assert_called_once_with(REPORT, 0, pool.worker.model)
+    finally:
+        await batches.close()
+
+
+@pytest.mark.asyncio
+async def test_saved_paused_job_yields_even_if_old_journal_has_no_report_url(tmp_path):
+    pool = OnlinePool(tmp_path / "browser")
+    batches = manager(tmp_path / "jobs", pool, count=1)
+    first = await batches.create(1, "g", "u", Player(42, "first"))
+    second = await batches.create(1, "g", "u", Player(42, "second"))
+    first.update(status="paused")
+    first["rows"][0]["online_submitted"] = True
+    batches.save(first)
+    profile = pool.profile / "worker-1"
+    journal = profile / "submission-journal.json"
+    key = f"{first['id']}:0"
+    atomic_json(journal, {"key": key, "state": "submitted"})
+    pool.worker.submit = AsyncMock(return_value=(native_report(), REPORT))
+
+    batches.start(second["id"], "g", "u")
+    await batches.tasks[second["id"]]
+    assert batches.load(second["id"], "g", "u")["status"] == "done"
+    assert batches.load(first["id"], "g", "u")["status"] == "paused"
+    assert paused_journal(profile, key).exists() and not journal.exists()
+
+    batches.start(first["id"], "g", "u")
+    await batches.tasks[first["id"]]
+    assert "报告地址" in batches.load(first["id"], "g", "u")["rows"][0]["error"]
+    pool.worker.submit.assert_awaited_once()
+    await batches.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_an_outstanding_job_clears_its_legacy_recovery_barrier(tmp_path):
+    pool = OnlinePool(tmp_path / "browser")
+    batches = manager(tmp_path / "jobs", pool, count=1)
+    first = await batches.create(1, "g", "u", Player(42, "first"))
+    second = await batches.create(1, "g", "u", Player(42, "second"))
+    first.update(status="uncertain")
+    first["rows"][0]["online_submitted"] = True
+    batches.save(first)
+    profile = pool.profile / "worker-1"
+    journal = profile / "submission-journal.json"
+    key = f"{first['id']}:0"
+    atomic_json(journal, {"key": key, "state": "submitted"})
+    pool.worker.submit = AsyncMock(return_value=(native_report(), REPORT))
+
+    with pytest.raises(ReviewError, match="本人"):
+        await batches.delete(first["id"], "g", "stranger")
+    assert journal.exists()
+    with pytest.raises(ReviewError, match="已提交"):
+        batches.start(second["id"], "g", "u")
+
+    await batches.delete(first["id"], "g", "u")
+    assert not (batches.directory / first["id"]).exists()
+    assert not journal.exists() and not paused_journal(profile, key).exists()
+    with pytest.raises(ReviewError, match="不存在"):
+        batches.load(first["id"], "g", "u")
+
+    batches.start(second["id"], "g", "u")
+    await batches.tasks[second["id"]]
+    assert batches.load(second["id"], "g", "u")["status"] == "done"
+    await batches.close()
 
 
 @pytest.mark.asyncio

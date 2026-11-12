@@ -14,6 +14,7 @@ BATCH_ACTIONS = frozenset(
         "file",
         "resume",
         "pause",
+        "delete",
         "import",
     )
 )
@@ -46,7 +47,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msstats [玩家] [sanma]：统计文字\n"
             "/mslast [玩家] -l 10 [-i]：最近对局\n"
             "/ms [玩家] -l 100：最近 X 场文字摘要（默认最近对局房间）\n"
-            "/msrank [sanma]：本群监控名单按段位、PT 排行\n"
+            "/msrank [sanma]：本群已绑定雀魂的成员按段位、PT 排行\n"
             "/msfri <好友码>：好友码转账号\n/mssfri [玩家]：查询好友码",
         ),
         (
@@ -83,14 +84,19 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "天凤绑定、查询与监控",
             "/thbind <天凤昵称> / thunbind：绑定 / 解绑\n"
             "/th2 @群友 [昵称]：查询 / 管理员代绑；已有绑定不覆盖\n"
-            "/th4 [昵称] -i / th3 [昵称] -i：四麻 / 三麻资料卡\n"
+            "/th4 [昵称] -i / th3 [昵称] -i：四麻 / 三麻资料卡；-o 查公开观战\n"
             "/th [昵称] -l 100 -r 凤：最近 X 场摘要，-i 发送图片\n"
-            "/thlife [昵称] -l 100：顺位与 R 值走势图\n"
+            "/thlife [昵称] -l 100：段位积分、顺位与 R 值走势\n"
+            "/thheat / thstat / thsession：时间热力、场数、连续对局\n"
+            "/thcompare [昵称] -l 100：前后半段对比\n"
+            "/thvs <对手昵称>：同桌战绩\n"
+            "/thstyle [昵称] -r 凤南：凤凰桌牌风雷达\n"
             "/thdetail [昵称] -l 100：战绩汇总图\n"
             "/thlast [昵称] -l 5 [-i]：最近对局；默认一场\n"
-            "/thrank [sanma]：本群监控名单按段位、积分排行\n"
-            "绑定后省略昵称查本人；三麻可用 mode=3；-l 最多500场。\n"
-            "房间 -r 般/上/特/凤（默认南），加东查东风；支持 start/end、-m/-y。\n"
+            "/thrank [sanma]：本群已绑定天凤的成员按段位、积分排行\n"
+            "绑定后可省略昵称；三麻可用 mode=3。\n"
+            "省略 -r 跟随该模式最近一场；可选 -r 般/上/特/凤，加东查东风。\n"
+            "支持 start/end、-m/-y，thsession 可加 gap=60。\n"
             "详细和/铳统计单列凤凰桌数据，不等同于最近 N 场。\n"
             "使用昵称，不要提供天凤私密登录 ID。\n"
             "/thwatch on <天凤昵称>：添加本群监控（仅负责人）\n"
@@ -109,7 +115,8 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msmortal [玩家] [-l 1–100]：批跑，默认 10 场，最多 100 场\n"
             "/mortal batch [1–100]：本人批跑，默认 10 场\n"
             "/mortal status <任务编号>：进度\n/mortal report <任务编号>：统计图片\n"
-            "/mortal pause <任务编号>：暂停\n/mortal resume <任务编号>：继续\n"
+            "/mortal pause <任务编号>：暂停并让出队列\n/mortal resume <任务编号>：继续\n"
+            "/msmortal delete <任务编号>：删除任务和本机报告（也可用 /mortal delete）\n"
             "/mortal export <任务编号> csv：导出（也支持 xlsx）\n"
             "/mortal links <链接1> <链接2>：多链接任务\n"
             "/mortal import <任务编号> <场次编号> <报告链接>：导入报告\n"
