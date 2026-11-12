@@ -1,4 +1,8 @@
 import asyncio
+import base64
+import json
+import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -6,6 +10,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from pupulinbot.live import LiveServiceError
+from pupulinbot.majsoul_replay import (
+    LOBBY_URL,
+    RECORD_RPC,
+    MajsoulConnectionLost,
+    ReplayBrowserUnavailable,
+    click_lobby,
+    official_tab,
+    replay_response,
+)
 from pupulinbot.models import Player
 from pupulinbot.ms_commands import MahjongQueries
 from pupulinbot.spectator import BrowserSpectatorClient, parse_head
@@ -155,8 +168,6 @@ def test_wire_decoder_reads_official_fields_and_rejects_corrupt_packets():
 
 
 def test_real_javascript_bridge_keeps_official_and_spectator_responses_separate():
-    import shutil
-    import subprocess
     from pathlib import Path
 
     node = shutil.which("node")
@@ -173,3 +184,145 @@ def test_real_javascript_bridge_keeps_official_and_spectator_responses_separate(
         timeout=15,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+async def test_record_browser_is_opt_in_and_reuses_the_running_chrome(monkeypatch):
+    url = f"https://game.maj-soul.com/1/?paipu={UUID}_a123"
+    fetch = AsyncMock(return_value={"uuid": UUID})
+    monkeypatch.setattr("pupulinbot.spectator.fetch_replay_head", fetch)
+    disabled = BrowserSpectatorClient("unused")
+    disabled.start = AsyncMock()
+    assert await disabled.record_head(url, UUID) is None
+    disabled.start.assert_not_awaited()
+    fetch.assert_not_awaited()
+
+    client = BrowserSpectatorClient("unused", records_enabled=True)
+    client.start = AsyncMock()
+    assert await client.current_game(1) is None
+    assert await client.record_head(url, UUID) == {"uuid": UUID}
+    client.start.assert_not_awaited()
+
+    fetch.side_effect = [ReplayBrowserUnavailable(), {"uuid": UUID}]
+    assert await client.record_head(url, UUID) == {"uuid": UUID}
+    client.start.assert_awaited_once()
+
+
+async def test_record_read_reconnects_once_on_disconnect_but_not_on_a_missing_head(monkeypatch):
+    fetch = AsyncMock(side_effect=[MajsoulConnectionLost(), {"uuid": UUID}, None])
+    monkeypatch.setattr("pupulinbot.spectator.fetch_replay_head", fetch)
+    client = BrowserSpectatorClient("unused", records_enabled=True)
+    client.record_lobby.close = AsyncMock()
+    client.start = AsyncMock()
+    url = f"https://game.maj-soul.com/1/?paipu={UUID}"
+    assert await client.record_head(url, UUID) == {"uuid": UUID}
+    assert fetch.await_count == 2
+    assert await client.record_head(url, UUID) is None
+    assert fetch.await_count == 3
+    client.start.assert_not_awaited()
+
+
+async def test_lobby_click_sends_browser_input_only_for_a_valid_point(monkeypatch):
+    send = AsyncMock(
+        side_effect=[{"result": {"value": None}}, {"result": {"value": {"x": 8, "y": 4}}}, {}, {}]
+    )
+    monkeypatch.setattr("pupulinbot.majsoul_replay.command", send)
+    page = object()
+    assert not await click_lobby(page)
+    assert send.await_count == 1
+    assert await click_lobby(page)
+    clicks = send.await_args_list[2:]
+    assert [call.args[1] for call in clicks] == ["Input.dispatchMouseEvent"] * 2
+    assert [call.kwargs["type"] for call in clicks] == ["mousePressed", "mouseReleased"]
+    assert [(call.kwargs["x"], call.kwargs["y"]) for call in clicks] == [(8, 4)] * 2
+
+
+async def test_official_tab_reuses_game_page_and_closes_duplicate_pages(monkeypatch):
+    targets = [
+        {"type": "page", "targetId": "A", "url": "about:blank"},
+        {"type": "page", "targetId": "B", "url": LOBBY_URL + "?paipu=game"},
+        {"type": "page", "targetId": "C", "url": LOBBY_URL},
+        {"type": "page", "targetId": "D", "url": "https://example.com/"},
+    ]
+    send = AsyncMock(
+        side_effect=[
+            {"targetInfos": targets},
+            {"success": True},
+            {"success": True},
+            {"targetInfos": [targets[1], targets[3]]},
+        ]
+    )
+    monkeypatch.setattr("pupulinbot.majsoul_replay.command", send)
+    browser = object()
+    assert await official_tab(browser) == "B"
+    assert [call.args[1] for call in send.await_args_list] == [
+        "Target.getTargets",
+        "Target.closeTarget",
+        "Target.closeTarget",
+        "Target.getTargets",
+    ]
+    assert [call.kwargs["targetId"] for call in send.await_args_list[1:3]] == ["C", "A"]
+
+
+async def test_official_tab_waits_for_old_tab_to_close_before_returning_new_tab(monkeypatch):
+    old = {"type": "page", "targetId": "A", "url": LOBBY_URL}
+    new = {"type": "page", "targetId": "B", "url": "about:blank"}
+    send = AsyncMock(
+        side_effect=[
+            {"targetInfos": [old]},
+            {"targetId": "B"},
+            {"success": True},
+            {"targetInfos": [new]},
+        ]
+    )
+    monkeypatch.setattr("pupulinbot.majsoul_replay.command", send)
+    assert await official_tab(object(), renew=True) == "B"
+    assert send.await_args_list[1].kwargs == {"url": "about:blank"}
+    assert send.await_args_list[2].kwargs == {"targetId": "A"}
+
+
+async def test_replay_response_correlates_uuid_and_socket_before_reading_head():
+    def blob(key, data):
+        assert len(data) < 128
+        return bytes([key * 8 + 2, len(data)]) + data
+
+    def event(direction, socket, packet):
+        return json.dumps(
+            {
+                "method": f"Network.webSocketFrame{direction}",
+                "params": {
+                    "requestId": socket,
+                    "response": {"opcode": 2, "payloadData": base64.b64encode(packet).decode()},
+                },
+            }
+        )
+
+    request = blob(1, RECORD_RPC) + blob(2, blob(1, UUID.encode()))
+    seat = bytes([8, 42]) + blob(3, "东".encode())
+    head = blob(1, UUID.encode()) + bytes([24, 100]) + blob(11, seat) + blob(12, blob(1, b""))
+    reply = blob(2, blob(3, head) + blob(4, b"unparsed replay body"))
+    sent = b"\x02\x05\x00" + request
+    received = b"\x03\x05\x00" + reply
+
+    class Page:
+        send = AsyncMock()
+        recv = AsyncMock(return_value='{"id":1,"result":{}}')
+
+        async def __aiter__(self):
+            yield event("Received", "a", received)
+            yield event("Sent", "a", sent)
+            yield event("Received", "b", received)
+            yield event("Received", "a", b"\x03\x06\x00")
+            yield event("Received", "a", received)
+
+    page = Page()
+    url = f"https://game.maj-soul.com/1/?paipu={UUID}_a123"
+    assert await replay_response(page, url, UUID) == {
+        "uuid": UUID,
+        "end_time": 100,
+        "accounts": [{"account_id": 42, "seat": 0, "nickname": "东"}],
+        "result_seats": [0],
+    }
+    assert [json.loads(call.args[0])["method"] for call in page.send.await_args_list] == [
+        "Network.enable",
+        "Page.navigate",
+    ]

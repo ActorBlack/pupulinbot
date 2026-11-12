@@ -53,7 +53,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
         (
             "战绩图表",
             "/mslife [玩家] -l 100：段位积分走势\n"
-            "/msstyle [玩家] -l 100：六维牌风雷达与指标对照\n"
+            "/msstyle [玩家] [-l 场数]：六维牌风雷达，默认最近 200 场\n"
             "/mscompare [玩家] -l 100：前后半段对比\n"
             "/msvs <对手> -l 200：自己与对手的同桌统计\n"
             "/msheat [玩家]：对局时间热力图\n/msstat [玩家]：对局数量统计\n"

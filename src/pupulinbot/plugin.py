@@ -3,7 +3,6 @@ import base64
 import logging
 import re
 from collections import deque
-from datetime import datetime
 from random import choices, randint
 
 import httpx
@@ -22,7 +21,13 @@ from nonebot.typing import T_State
 
 from .batch_chart import render_batch_chart
 from .batch_limits import MAX_BATCH_COUNT, batch_count
-from .batch_review import STATUS_LABELS, BatchReviews, summaries, upload_report
+from .batch_review import (
+    STATUS_LABELS,
+    VERIFICATION_FAILURE_STATUSES,
+    BatchReviews,
+    summaries,
+    upload_report,
+)
 from .config import settings
 from .db import Database
 from .formatting import format_stats
@@ -47,7 +52,7 @@ from .online_pool import OnlinePool
 from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
-from .qq_delivery import send_ranking_forward, send_verified_image
+from .qq_delivery import send_ranking_images, send_verified_image
 from .qq_members import GroupMembersError, group_member_ids
 from .record_names import RecordNames
 from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
@@ -203,12 +208,15 @@ paipuya = PaipuyaClient(settings.paipuya_base_url, settings.paipuya_timeout, acc
 sanma = PaipuyaClient(
     settings.paipuya_sanma_base_url, settings.paipuya_timeout, "三麻", access=paipuya_access
 )
+majsoul_browser = BrowserSpectatorClient(
+    settings.spectator_browser_profile,
+    enabled=settings.spectator_browser and not settings.live_api_url,
+    records_enabled=settings.majsoul_record_browser,
+)
 live = (
     LiveServiceClient(settings.live_api_url, settings.live_api_token)
     if settings.live_api_url
-    else BrowserSpectatorClient(
-        settings.spectator_browser_profile, enabled=settings.spectator_browser
-    )
+    else majsoul_browser
 )
 reviews = ReviewQueue(
     MortalClient(settings.mortal_api_url, settings.mortal_api_token, settings.mortal_timeout),
@@ -256,16 +264,8 @@ def mention_requester(owner, result):
 async def notify_batch(job):
     status = job.get("status")
     if status == "retry_wait":
-        if job.get("retry_phase") == "verification":
-            scheduler.add_job(
-                retry_mortal_jobs,
-                "date",
-                run_date=datetime.fromisoformat(job["next_retry_at"]),
-                id=f"pupulin_mortal_retry_{job['id']}",
-                replace_existing=True,
-            )
         return
-    verification_paused = status == "verification_paused"
+    verification_paused = status in VERIFICATION_FAILURE_STATUSES or status == "verification_paused"
     if not verification_paused and not await mortal_allowed(job["group_id"], job.get("owner")):
         return
     bot = next(iter(get_driver().bots.values()), None)
@@ -313,7 +313,10 @@ batches = BatchReviews(
     notify_batch,
     superusers=superusers,
     name_resolver=RecordNames(
-        db, archive_directory=settings.batch_directory, clients={4: paipuya, 3: sanma}
+        db,
+        archive_directory=settings.batch_directory,
+        clients={4: paipuya, 3: sanma},
+        majsoul_browser=majsoul_browser if settings.majsoul_record_browser else None,
     ),
 )
 
@@ -321,6 +324,22 @@ batches = BatchReviews(
 @scheduler.scheduled_job("interval", seconds=15, id="pupulin_mortal_retry", max_instances=1)
 async def retry_mortal_jobs():
     await batches.retry_due(allowed=mortal_allowed)
+
+
+if settings.majsoul_record_browser and settings.majsoul_record_keepalive:
+
+    @scheduler.scheduled_job(
+        "interval",
+        minutes=30,
+        id="pupulin_majsoul_record_keepalive",
+        max_instances=1,
+        coalesce=True,
+    )
+    async def keep_majsoul_record_session():
+        if await majsoul_browser.keep_record_session():
+            logger.info("雀魂官方牌谱会话：大厅保活点击完成")
+        else:
+            logger.warning("雀魂官方牌谱会话：大厅暂不可用，取名时将按需重连")
 
 
 async def build_monitor_notification(sub, game, event, fallback):
@@ -380,9 +399,9 @@ async def startup() -> None:
     await db.migrate_group_monitor_list()
     await tenhou_store.initialize()
     reviews.start()
-    if isinstance(live, BrowserSpectatorClient) and live.enabled:
+    if majsoul_browser.enabled:
         try:
-            await live.start()
+            await majsoul_browser.start()
         except Exception:
             logger.warning("雀魂观战浏览器启动失败，结算监控继续运行")
 
@@ -398,8 +417,7 @@ async def shutdown() -> None:
     await sanma.close()
     await tenhou_rounds.close()
     await tenhou_client.close()
-    if isinstance(live, BrowserSpectatorClient):
-        await live.close()
+    await majsoul_browser.close()
 
 
 @bind_cmd.handle()
@@ -492,7 +510,7 @@ async def group_rank(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
     result = await group_ranking(client, bindings)
     if isinstance(result, str):
         await rank_cmd.finish(result)
-    await rank_cmd.finish(await send_ranking_forward(bot, event.group_id, "雀魂群排行", result))
+    await rank_cmd.finish(await send_ranking_images(bot, event.group_id, result))
 
 
 watch_cmd = on_command("mswatch", priority=10, block=True)

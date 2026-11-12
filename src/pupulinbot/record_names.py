@@ -30,10 +30,57 @@ def tenhou_names(content):
     return [unquote(node.get(f"n{i}", ""), errors="strict") for i in range(4)]
 
 
+def majsoul_head_seats(head, uuid):
+    if (
+        not isinstance(head, dict)
+        or head.get("uuid") != uuid
+        or type(head.get("end_time")) is not int
+        or head["end_time"] <= 0
+    ):
+        return []
+    accounts = head.get("accounts")
+    if not isinstance(accounts, list) or len(accounts) != 4:
+        return []
+    names = {}
+    account_ids = set()
+    for player in accounts:
+        if not isinstance(player, dict):
+            return []
+        seat = player.get("seat")
+        name = player.get("nickname")
+        account_id = player.get("account_id")
+        if (
+            type(seat) is not int
+            or seat not in range(4)
+            or seat in names
+            or not isinstance(name, str)
+            or not name.strip()
+            or type(account_id) is not int
+            or account_id <= 0
+            or account_id in account_ids
+        ):
+            return []
+        names[seat] = name.strip()
+        account_ids.add(account_id)
+    order = head.get("result_seats")
+    ranks = {}
+    if (
+        isinstance(order, list)
+        and len(order) == 4
+        and all(type(seat) is int for seat in order)
+        and set(order) == names.keys()
+    ):
+        ranks = {seat: rank for rank, seat in enumerate(order, 1)}
+    return [dict(name=names[seat], rank=ranks.get(seat)) for seat in range(4)]
+
+
 class RecordNames:
-    def __init__(self, db=None, *, transport=None, archive_directory=None, clients=None):
+    def __init__(
+        self, db=None, *, transport=None, archive_directory=None, clients=None, majsoul_browser=None
+    ):
         self.db, self.transport = db, transport
         self.clients = clients or {}
+        self.majsoul_browser = majsoul_browser
         self.archive_directory = Path(archive_directory) if archive_directory else None
         self.cache, self.pending = {}, {}
         self.results, self.result_pending = {}, {}
@@ -164,11 +211,24 @@ class RecordNames:
         return await self._majsoul(log)
 
     async def _majsoul(self, log):
+        key = log.source, log.game_id
+        self.checks.pop(key, None)
+        if self.majsoul_browser is not None:
+            head = await self.majsoul_browser.record_head(log.url, log.game_id)
+            result = majsoul_head_seats(head, log.game_id)
+            if result:
+                self._remember_results(log, result)
+                self.checks[key] = {
+                    "source": "majsoul_official",
+                    "uuid": log.game_id,
+                    "status": "found",
+                    "checked_at": datetime.now(UTC).isoformat(),
+                }
+                return [player["name"] for player in result]
+
         client = self.clients.get(4)
         if client is None:
             raise ReviewError("未配置牌谱屋客户端，昵称尚未核验")
-        key = log.source, log.game_id
-        self.checks.pop(key, None)
         value = parse_qs(urlsplit(log.url).query).get("paipu", [""])[0]
         perspective = re.search(r"_a([0-9]+)(?:_[0-9]+)?$", value)
         date = re.match(r"([0-9]{6})-", log.game_id)

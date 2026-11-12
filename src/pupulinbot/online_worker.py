@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 PREFIX = "PUPULIN_ONLINE "
-TURNSTILE_TIMEOUT = 12
+TURNSTILE_TIMEOUT = 30
 
 
 def emit(**event):

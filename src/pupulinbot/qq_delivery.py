@@ -1,9 +1,30 @@
 """Deliver image messages through OneBot."""
 
 import asyncio
+import logging
 
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from nonebot.exception import AdapterException
+
+logger = logging.getLogger(__name__)
+
+
+async def send_ranking_images(bot, group_id, pages):
+    """Send existing ranking pages as ordinary QQ images in page order."""
+    for index, page in enumerate(pages, 1):
+        try:
+            await send_verified_image(bot, group_id, Message(MessageSegment.image(page)))
+        except (AdapterException, RuntimeError, TimeoutError) as exc:
+            logger.warning(
+                "排行图片未确认：group=%s page=%s/%s error=%s",
+                group_id,
+                index,
+                len(pages),
+                type(exc).__name__,
+            )
+            if index > 1:
+                return f"已发送排行前 {index - 1} 页，第 {index} 页未确认送达。"
+            return "排行图片未确认送达，请稍后查看。"
 
 
 async def send_ranking_forward(bot, group_id, title, pages):

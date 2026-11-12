@@ -1,4 +1,4 @@
-"""Majsoul public-table monitoring via an isolated official browser session."""
+"""Read-only Majsoul queries through an isolated official browser session."""
 
 import asyncio
 import json
@@ -11,6 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from .live import LiveGame, LiveServiceError
+from .majsoul_replay import (
+    LobbyKeepalive,
+    MajsoulConnectionLost,
+    ReplayBrowserUnavailable,
+    fetch_replay_head,
+)
 from .query_cache import QueryCache
 
 FILTERS = (208, 209, 211, 212, 215, 216, 221, 222, 223, 224, 225, 226)
@@ -68,15 +74,19 @@ def parse_head(head, *, now=None):
 
 
 class BrowserSpectatorClient:
-    def __init__(self, profile, *, enabled=False):
+    def __init__(self, profile, *, enabled=False, records_enabled=False):
         self.profile, self.enabled = Path(profile), enabled
+        self.records_enabled = records_enabled
         self.process = None
         self.cache = QueryCache(capacity=1)
         self.lock = asyncio.Lock()
+        self.record_lock = asyncio.Lock()
+        self.record_lobby = LobbyKeepalive(self.profile)
         self.last_error = None
         self.last_success = None
         self.opened = False
         self.last_failure = 0.0
+        self.record_session_retry_at = 0.0
 
     def status(self):
         if not self.enabled:
@@ -95,14 +105,17 @@ class BrowserSpectatorClient:
 
     async def start(self):
         async with self.lock:
-            if not self.enabled or (self.process and self.process.returncode is None):
+            if not (self.enabled or self.records_enabled) or (
+                self.process and self.process.returncode is None
+            ):
                 return
+            command = [sys.executable, "-u", "-m", "pupulinbot.spectator_worker", str(self.profile)]
+            if not self.enabled:
+                command.append("--records-only")
+            if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+                command = ["xvfb-run", "-a", *command]
             self.process = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-u",
-                "-m",
-                "pupulinbot.spectator_worker",
-                str(self.profile),
+                *command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
@@ -122,6 +135,59 @@ class BrowserSpectatorClient:
                 await self._stop()
                 raise
 
+    async def _request(self, payload, wait_seconds):
+        if not self.process or self.process.returncode is not None:
+            raise LiveServiceError("雀魂浏览器已关闭")
+        try:
+            async with asyncio.timeout(wait_seconds):
+                self.process.stdin.write((json.dumps(payload) + "\n").encode())
+                await self.process.stdin.drain()
+                response = await self._read()
+                if not isinstance(response, dict):
+                    raise ValueError("invalid browser response")
+                return response
+        except (asyncio.CancelledError, TimeoutError, BrokenPipeError, ConnectionError):
+            await self._stop()
+            raise
+
+    async def record_head(self, url, uuid):
+        if not self.records_enabled or time.monotonic() < self.record_session_retry_at:
+            return None
+        try:
+            async with asyncio.timeout(165), self.record_lock:
+                if time.monotonic() < self.record_session_retry_at:
+                    return None
+                # The replay replaces the lobby before signing in.
+                await self.record_lobby.close()
+                try:
+                    return await fetch_replay_head(self.profile, url, uuid)
+                except ReplayBrowserUnavailable:
+                    await self.start()
+                    return await fetch_replay_head(self.profile, url, uuid)
+                except MajsoulConnectionLost:
+                    # Reloading the replay makes the official client reconnect.
+                    return await fetch_replay_head(self.profile, url, uuid)
+        except (
+            ReplayBrowserUnavailable,
+            MajsoulConnectionLost,
+            LiveServiceError,
+            OSError,
+            TimeoutError,
+            ValueError,
+        ):
+            self.record_session_retry_at = time.monotonic() + 30
+            return None
+
+    async def keep_record_session(self):
+        if not self.records_enabled:
+            return False
+        async with self.record_lock:
+            try:
+                return await self.record_lobby.click()
+            except ReplayBrowserUnavailable:
+                # The next record lookup can launch Chrome if it was closed.
+                return False
+
     async def _load(self):
         if self.last_error and time.monotonic() - self.last_failure < 20:
             raise LiveServiceError(self.last_error)
@@ -129,12 +195,7 @@ class BrowserSpectatorClient:
             raise LiveServiceError("请在独立雀魂观战窗口登录")
         async with self.lock:
             try:
-                if not self.process or self.process.returncode is not None:
-                    raise LiveServiceError("雀魂观战浏览器已关闭")
-                self.process.stdin.write((json.dumps({"filters": FILTERS}) + "\n").encode())
-                await self.process.stdin.drain()
-                async with asyncio.timeout(55):
-                    result = await self._read()
+                result = await self._request({"filters": FILTERS}, 55)
                 if result.get("error"):
                     code = result.get("code")
                     message = "请在独立雀魂观战窗口完成登录"
@@ -156,7 +217,6 @@ class BrowserSpectatorClient:
                 self.last_success, self.last_error = datetime.now(UTC), None
                 return games
             except (TimeoutError, BrokenPipeError, ConnectionError):
-                await self._stop()
                 self.last_error = "雀魂观战连接中断，请重启观战窗口"
                 raise LiveServiceError(self.last_error) from None
             except (KeyError, TypeError, ValueError):
@@ -188,5 +248,6 @@ class BrowserSpectatorClient:
 
     async def close(self):
         await self.cache.close()
+        await self.record_lobby.close()
         async with self.lock:
             await self._stop()

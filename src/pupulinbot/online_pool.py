@@ -5,7 +5,7 @@ import json
 import logging
 from pathlib import Path
 
-from .batch_review import VERIFICATION_RETRY_STATUSES, finish_file_write
+from .batch_review import finish_file_write
 from .online_review import OnlinePaused, OnlineReviews, paused_journal
 from .review_cache import ReviewCache
 
@@ -187,7 +187,7 @@ class OnlinePool:
                     logger.warning("Mortal 报告无法写入独立缓存", exc_info=True)
             return result
         except Exception as exc:
-            if not isinstance(exc, OnlinePaused) or exc.status not in VERIFICATION_RETRY_STATUSES:
+            if not isinstance(exc, OnlinePaused) or exc.status != "verification_timeout":
                 self.halt()
             raise
 

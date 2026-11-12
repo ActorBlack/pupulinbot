@@ -486,16 +486,15 @@ class BrowserWorker:
                     )
                     return
                 if isinstance(exc, VerificationTimeout):
-                    # The batch scheduler owns the backoff between full verification attempts.
                     emit(
                         status="verification_timeout",
-                        message="Mortal 网页验证超时，本场尚未提交。",
+                        message=f"Mortal 网页验证等待超过 {TURNSTILE_TIMEOUT} 秒，本场尚未提交。",
                     )
                     return
                 if isinstance(exc, VerificationRejected):
                     emit(
                         status="verification_rejected",
-                        message="Mortal 网页验证失败，本场尚未提交。",
+                        message="Mortal 网页明确拒绝验证，本场尚未提交。",
                     )
                     return
                 text = str(exc).lower()

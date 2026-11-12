@@ -160,7 +160,7 @@ def test_verification_failure_returns_to_batch_scheduler_without_submitting(
     ):
         worker.run(request())
     analyze.assert_called_once()
-    assert analyze.call_args.args[1]["turnstile_timeout"] == 12
+    assert analyze.call_args.args[1]["turnstile_timeout"] == 30
     assert [call.kwargs["status"] for call in emit.call_args_list] == [status]
     assert not worker.submitted and not worker.journal_path.exists()
 

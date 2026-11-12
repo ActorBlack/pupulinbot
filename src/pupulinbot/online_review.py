@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from .batch_review import (
-    VERIFICATION_RETRY_STATUSES,
+    VERIFICATION_FAILURE_STATUSES,
     fetch_report,
     finish_file_write,
     report_metrics,
@@ -19,6 +19,7 @@ from .online_worker import TURNSTILE_TIMEOUT, progress_report_url
 from .review import ReviewError
 
 logger = logging.getLogger(__name__)
+VERIFICATION_BROWSER_GRACE = 15
 
 
 def paused_journal(profile, key):
@@ -146,7 +147,8 @@ class OnlineReviews:
             async with (
                 asyncio.timeout(
                     self.timeout
-                    + (self.options.get("retries", 2) + 1) * (TURNSTILE_TIMEOUT + 60)
+                    + (self.options.get("retries", 2) + 1)
+                    * (TURNSTILE_TIMEOUT + VERIFICATION_BROWSER_GRACE + 60)
                     + 120
                 ),
                 asyncio.timeout(None) as verification,
@@ -158,10 +160,12 @@ class OnlineReviews:
                     status = event.get("status")
                     if status == "verification_wait":
                         self.progress = "等待 Mortal 网页验证，尚未提交"
-                        # A controlled worker cannot submit until this process grants permission.
+                        # Allow browser interaction plus the worker's full token wait.
                         if self.options.get("controlled_gate") and not request["submitted"]:
                             verification.reschedule(
-                                asyncio.get_running_loop().time() + TURNSTILE_TIMEOUT
+                                asyncio.get_running_loop().time()
+                                + TURNSTILE_TIMEOUT
+                                + VERIFICATION_BROWSER_GRACE
                             )
                         continue
                     verification.reschedule(None)
@@ -187,7 +191,7 @@ class OnlineReviews:
                         continue
                     if status in {"captcha_rejected", "server_timeout"}:
                         self.active_submitted_key = None
-                    if status in VERIFICATION_RETRY_STATUSES:
+                    if status in VERIFICATION_FAILURE_STATUSES:
                         if request["submitted"] or self.active_submitted_key is not None:
                             raise OnlinePaused(
                                 "uncertain", "本场已有提交记录，稍后只找回报告，不重复提交"
@@ -209,10 +213,11 @@ class OnlineReviews:
         except TimeoutError as exc:
             await self._terminate()
             if verification.expired():
-                logger.info("Mortal 网页验证超过 %s 秒，关闭 Chrome：%s", TURNSTILE_TIMEOUT, key)
+                limit = TURNSTILE_TIMEOUT + VERIFICATION_BROWSER_GRACE
+                logger.info("Mortal 验证流程超过 %s 秒，关闭 Chrome：%s", limit, key)
                 raise OnlinePaused(
                     "verification_timeout",
-                    f"Mortal 网页验证超过 {TURNSTILE_TIMEOUT} 秒，尚未提交。",
+                    f"Mortal 验证流程超过 {limit} 秒，尚未提交。",
                 ) from exc
             raise OnlinePaused("uncertain", "浏览器响应超时，任务已暂停；不会自动重复提交") from exc
         raise ReviewError("浏览器进程已退出，请重启后继续")

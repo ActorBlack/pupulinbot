@@ -99,11 +99,14 @@ def test_recent_summary_uses_sample_style_and_rejects_mismatched_count():
 async def test_style_query_loads_exact_sample_not_lifetime_and_propagates_filters():
     sample = stats(100)
     sample.raw.update(ORACLE[-1]["metrics"])
+    sample.raw["level"] = {"id": 10403}
+    current = {"id": 10502, "score": 3900, "delta": 15}
     client = SimpleNamespace(
         modes=[11, 12],
         resolve=AsyncMock(return_value=Player(42, "x")),
         history=AsyncMock(return_value=(games(), False)),
         range_stats=AsyncMock(return_value=sample),
+        metadata=AsyncMock(return_value=SimpleNamespace(raw={"level": current})),
         stats=AsyncMock(),
     )
     service = MahjongQueries(None, client, client)
@@ -111,6 +114,8 @@ async def test_style_query_loads_exact_sample_not_lifetime_and_propagates_filter
         assert await service.query("msstyle", "x last=100 room=玉南", 1, 2) == b"png"
     assert render.call_args.args[1] is sample
     assert render.call_args.args[3].modes == [12]
+    assert render.call_args.kwargs["current_level"] == current
+    client.metadata.assert_awaited_once_with(42)
     assert client.range_stats.call_args.kwargs["modes"] == [12]
     client.stats.assert_not_called()
     sample.games = 101
@@ -146,7 +151,7 @@ async def test_style_without_room_uses_latest_four_player_room_and_its_mean():
         assert await service.query("msstyle", "x", 1, 2) == b"png"
     assert client.history.await_args_list == [
         call(42, 1, modes=None),
-        call(42, 100, start=None, end=None, modes=[16]),
+        call(42, 200, start=None, end=None, modes=[16]),
     ]
     assert render.call_args.args[3].modes == [16]
     assert client.range_stats.call_args.kwargs["modes"] == [16]
@@ -157,39 +162,145 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
 
     from PIL import Image
 
+    from pupulinbot.ms_level import rank_identity
     from pupulinbot.ms_style_chart import SIZE, render_style
+    from pupulinbot.ms_style_radar import comparison_reference
 
-    for value in (None, SimpleNamespace(raw=ORACLE[-1]["metrics"], games=100)):
+    ref = comparison_reference("12", rank_identity(10502))
+    complete = SimpleNamespace(
+        raw={**ORACLE[-1]["metrics"], **ref.metrics, "_hand_count": 1024}, games=100
+    )
+    for value in (None, complete):
         image = Image.open(
             io.BytesIO(
-                render_style(Player(42, "超长昵称" * 20), value, games(), parse_options("last=100"))
+                render_style(
+                    Player(42, "超长昵称" * 20),
+                    value,
+                    games(),
+                    parse_options("last=100"),
+                    current_level={"id": 10502, "score": 3900, "delta": 15},
+                )
             )
         )
         assert image.size == SIZE and image.mode == "RGB"
 
 
-def test_radar_uses_only_the_selected_room_mean_and_leaves_missing_axes_blank():
-    from pupulinbot.ms_options import MODE_NAMES, ROOMS
-    from pupulinbot.ms_style_chart import AXES, axis_score, comparison_reference
-    from pupulinbot.ms_tags import reference_for
+def test_radar_centers_exact_current_grade_in_each_room():
+    from pupulinbot.ms_level import rank_identity, rank_progress
+    from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference
 
-    room_means = []
-    for room in (str(mode) for pair in ROOMS[4].values() for mode in pair):
-        label, base, ranks = comparison_reference(room)
-        assert label == f"{MODE_NAMES[room]}均值"
-        assert sum(ranks) == pytest.approx(1)
-        assert [axis_score(group, base, base) for _, group in AXES] == [50] * 6
-        room_means.append(base["和牌率"])
-    assert len(set(room_means)) == 6
+    for room, level in (
+        ("8", 10403),
+        ("9", 10403),
+        ("11", 10502),
+        ("12", 10502),
+        ("15", 10503),
+        ("16", 10503),
+    ):
+        ref = comparison_reference(room, rank_identity(level))
+        assert sum(ref.rank_rates) == pytest.approx(1)
+        for axis in AXES:
+            assert ref.scales[axis.metric.key] > 0
+            assert axis_score(axis, ref.metrics, ref, 1000) == 50
 
-    _, base, _ = comparison_reference("12")
-    assert base["和牌率"] == pytest.approx(0.216924, abs=0.000001)
-    cohort = reference_for("12")["levels"]["10502"]["extended"]
-    assert base["和牌率"] != pytest.approx(cohort["和牌率"])
-    defense = AXES[1][1]
-    assert axis_score(defense, {**base, "放铳率": base["放铳率"] - 0.01}, base) > 50
-    assert axis_score(defense, {**base, "平均铳点": None}, base) is None
-    assert comparison_reference("21") == ("三麻金东暂无均值", {}, [])
+    promoted = rank_progress({"id": 10501, "score": 3980, "delta": 50})
+    saint2 = comparison_reference("12", promoted)
+    master2 = comparison_reference("12", rank_identity(10402))
+    assert saint2.metrics["放铳率"] < master2.metrics["放铳率"]
+    assert saint2.rank_rates != master2.rank_rates
+    assert comparison_reference("12", None) is None
+    assert comparison_reference("21", promoted) is None
+    assert comparison_reference("12", rank_identity(10712)) is None
+    assert comparison_reference("16", rank_identity(10712)) is not None
+
+
+def test_radar_bonus_uses_unrounded_extremes_and_caps_at_150():
+    from pupulinbot.ms_style_chart import radar_bonus_score
+
+    assert radar_bonus_score(None) is None
+    for deviation, expected in (
+        (-5, None),
+        (0, None),
+        (2.9, None),
+        (3, None),
+        (4, 125),
+        (5, 150),
+        (9, 150),
+    ):
+        score = 50 * (1 + math.erf(deviation / math.sqrt(2)))
+        assert radar_bonus_score(score) == expected
+
+
+def test_radar_combines_opportunities_and_propagates_cross_axis_changes():
+    from pupulinbot.ms_style_radar import composite_metrics
+
+    raw = {
+        "和牌率": 0.25,
+        "放铳率": 0.10,
+        "流局率": 0.15,
+        "流听率": 0.40,
+        "平均打点": 6400,
+        "平均铳点": 6000,
+        "副露率": 0.30,
+        "副露后和牌率": 0.40,
+        "副露后放铳率": 0.20,
+        "立直率": 0.15,
+        "立直收支": 2800,
+        "和了巡数": 12,
+        "立直巡目": 9,
+    }
+    values = composite_metrics(raw)
+    assert values["进攻触达率"] == pytest.approx(0.31)
+    assert values["铳点损失"] == pytest.approx(600)
+    assert values["副露净结果率"] == pytest.approx(0.06)
+    assert values["立直局均收支"] == pytest.approx(420)
+    assert values["和立牌平均巡目"] == pytest.approx((0.25 * 12 + 0.15 * 9) / 0.40)
+    assert values["净打点效率"] == pytest.approx(1000)
+
+    heavier = composite_metrics({**raw, "平均铳点": 8000})
+    assert heavier["铳点损失"] == pytest.approx(800)
+    assert heavier["净打点效率"] == pytest.approx(800)
+    more_riichi = composite_metrics({**raw, "立直率": 0.25})
+    assert more_riichi["立直局均收支"] == pytest.approx(700)
+    assert more_riichi["和立牌平均巡目"] == pytest.approx(10.5)
+    assert composite_metrics({**raw, "平均铳点": None})["铳点损失"] is None
+    assert composite_metrics({**raw, "平均铳点": None, "放铳率": 0})["铳点损失"] == 0
+    assert composite_metrics({**raw, "副露后和牌率": 0.9})["副露净结果率"] is None
+
+
+def test_radar_shrinks_event_rates_and_amounts_by_observable_sampling_variance():
+    from pupulinbot.ms_level import rank_identity
+    from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference
+
+    ref = comparison_reference("12", rank_identity(10502))
+    attack, defense, call, _, speed, points = AXES
+    attack_mean = ref.metrics[attack.metric.key]
+    call_mean = ref.metrics[call.metric.key]
+    call_second_moment = ref.metrics["副露和牌贡献率"] + ref.metrics["副露放铳贡献率"]
+    loss_mean = ref.metrics[defense.metric.key]
+    deal_rate = ref.metrics["放铳率"]
+    for axis, variance in (
+        (attack, attack_mean * (1 - attack_mean)),
+        (call, call_second_moment - call_mean**2),
+        (defense, loss_mean**2 * (1 - deal_rate) / deal_rate),
+    ):
+        key = axis.metric.key
+        mean, scale = ref.metrics[key], ref.scales[key]
+        actual = {key: mean + axis.direction * scale}
+        assert axis_score(axis, actual, ref, 99) is None
+        small = axis_score(axis, actual, ref, 100)
+        large = axis_score(axis, actual, ref, 1000)
+        assert 50 < small < large < 84.14
+        noise = variance * (1 / 1000 + 1 / ref.hands)
+        expected = 50 * (1 + math.erf((scale**2 / (scale**2 + noise)) / math.sqrt(2)))
+        assert large == pytest.approx(expected)
+
+    assert axis_score(defense, {}, ref, 1000) is None
+    assert axis_score(points, {}, ref, 1000) is None
+    key = speed.metric.key
+    actual = {**ref.metrics, key: ref.metrics[key] - ref.scales[key]}
+    assert axis_score(speed, actual, ref, 1000) == pytest.approx(84.13447)
+    assert axis_score(speed, {**actual, "和牌率": 0.01, "立直率": 0.01}, ref, 1000) is None
 
 
 @pytest.mark.asyncio

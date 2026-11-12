@@ -44,6 +44,8 @@ class Settings(BaseSettings):
     batch_directory: Path = Path("data/batches")
     spectator_browser: bool = False
     spectator_browser_profile: Path = Path("data/majsoul-spectator")
+    majsoul_record_browser: bool = False
+    majsoul_record_keepalive: bool = False
     live_api_url: str | None = None
     live_api_token: str | None = None
     admin_users: set[str] = Field(default_factory=set)

@@ -132,7 +132,7 @@ class MahjongQueries:
         supports_image = command in {"ms3", "ms4", "mslast", "mscompare", "msstyle", "msvs"}
         if options.image and not supports_image:
             raise ValueError("-i 用于 ms4/ms3 面板或 mslast 牌谱图片；图表命令直接发送图片")
-        if command in {"ms", "mscompare", "msstyle"} and not options.last_explicit:
+        if command in {"ms", "mscompare"} and not options.last_explicit:
             options.last = 100
         if command == "mslast":
             if not options.last_explicit:
@@ -193,8 +193,13 @@ class MahjongQueries:
                     + format_records(games, player.account_id)
                 )
             if command == "msstyle":
-                stats = await self.sample_stats(player, games, options, client)
-                return await asyncio.to_thread(render_style, player, stats, games, options)
+                stats, identity = await asyncio.gather(
+                    self.sample_stats(player, games, options, client),
+                    self.rank_metadata(player, client),
+                )
+                return await asyncio.to_thread(
+                    render_style, player, stats, games, options, current_level=identity.get("level")
+                )
             if command == "mscompare":
                 return await asyncio.to_thread(render_comparison, player, games, truncated, options)
             return await asyncio.to_thread(
@@ -240,14 +245,7 @@ class MahjongQueries:
                 stats.raw = dict(value.raw)
                 # Current/highest ranks describe the latest mode-wide identity;
                 # all rates, counts and scores below remain the selected sample.
-                identity = {}
-                if callable(getattr(client, "metadata", None)):
-                    try:
-                        async with asyncio.timeout(15):
-                            latest = await client.metadata(player.account_id)
-                            identity = latest.raw if isinstance(latest.raw, dict) else {}
-                    except (PaipuyaError, TimeoutError):
-                        pass
+                identity = await self.rank_metadata(player, client)
                 for key in ("level", "max_level"):
                     stats.raw[key] = identity.get(key)
         except TimeoutError as exc:
@@ -270,6 +268,16 @@ class MahjongQueries:
                 style_lines(stats, mode=options.mode, games=games, account_id=player.account_id)
             )
         )
+
+    async def rank_metadata(self, player, client):
+        if callable(getattr(client, "metadata", None)):
+            try:
+                async with asyncio.timeout(15):
+                    latest = await client.metadata(player.account_id)
+                    return latest.raw if isinstance(latest.raw, dict) else {}
+            except (PaipuyaError, TimeoutError):
+                pass
+        return {}
 
     async def sample_stats(self, player, games, options, client):
         finished = [g for g in games if g.ended_at and g.seat(player.account_id)]

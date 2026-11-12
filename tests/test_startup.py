@@ -143,13 +143,17 @@ async def verify_group_policy():
             await notify_batch({**job, 'status':'retry_wait', 'retry_phase':'verification',
                                 'next_retry_at':'2026-11-12T00:00:00+00:00'})
             fake.send_group_msg.assert_not_awaited()
-            assert schedule.call_args.args[1] == 'date'
-            assert schedule.call_args.kwargs['run_date'].isoformat() == '2026-11-12T00:00:00+00:00'
-        await notify_batch({**job, 'status':'verification_paused', 'owner':'123456',
-                            'message':'mortal resume abc'})
-        fake.send_group_msg.assert_awaited_once()
-        assert fake.send_group_msg.call_args.kwargs['group_id'] == 1131357545
-        assert 'mortal resume abc' in fake.send_group_msg.call_args.kwargs['message']
+            schedule.assert_not_called()
+        for status, label in (('verification_paused', '验证反复失败'),
+                              ('verification_timeout', '验证超时'),
+                              ('verification_rejected', '拒绝验证')):
+            fake.send_group_msg.reset_mock()
+            await notify_batch({**job, 'status':status, 'owner':'123456',
+                                'message':'mortal resume abc'})
+            fake.send_group_msg.assert_awaited_once()
+            sent = fake.send_group_msg.call_args.kwargs
+            assert sent['group_id'] == 1131357545
+            assert label in sent['message'] and 'mortal resume abc' in sent['message']
         fake.send_group_msg.reset_mock()
         with patch('pupulinbot.plugin.render_batch_chart', side_effect=RuntimeError('render')):
             await notify_batch(done)

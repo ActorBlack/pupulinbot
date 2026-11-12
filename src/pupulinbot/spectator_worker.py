@@ -30,6 +30,7 @@ def main():
     profile.mkdir(parents=True, exist_ok=True, mode=0o700)
     profile.chmod(0o700)
     driver = None
+    records_only = "--records-only" in sys.argv
     try:
         driver = Driver(
             browser="chrome",
@@ -40,17 +41,19 @@ def main():
             enable_ws=True,
             page_load_strategy="eager",
             user_data_dir=str(profile),
+            chromium_arg="remote-debugging-port=0",
         )
         driver.set_page_load_timeout(40)
         driver.set_script_timeout(10)
-        driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {"source": Path(__file__).with_name("spectator_bridge.js").read_text()},
-        )
-        # Old Unity service-worker caches can stall navigation after upgrades.
-        driver.execute_cdp_cmd("Network.enable", {})
-        driver.execute_cdp_cmd("Network.setBypassServiceWorker", {"bypass": True})
-        driver.get(URL)
+        if not records_only:
+            driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {"source": Path(__file__).with_name("spectator_bridge.js").read_text()},
+            )
+            # Old Unity service-worker caches can stall navigation after upgrades.
+            driver.execute_cdp_cmd("Network.enable", {})
+            driver.execute_cdp_cmd("Network.setBypassServiceWorker", {"bypass": True})
+            driver.get(URL)
         emit({"status": "opened"})
         last_request = 0.0
         for line in sys.stdin:

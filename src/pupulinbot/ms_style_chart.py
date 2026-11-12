@@ -1,11 +1,8 @@
-"""Four-player style radar backed by the exact sample and saved room means."""
+"""Four-player style radar for the selected sample and current grade."""
 
 import io
-import json
 import math
-from functools import lru_cache
-from pathlib import Path
-from typing import NamedTuple
+from statistics import NormalDist
 
 from PIL import Image, ImageDraw
 
@@ -13,99 +10,28 @@ from .ms_level import point_text, rank_identity, rank_label, rank_progress
 from .ms_options import MODE_NAMES, TZ
 from .ms_sample import number, sample_summary
 from .ms_style import analyze_style
-from .ms_trait_tags import efficiency_metrics
+from .ms_style_radar import AXES, axis_score, comparison_reference, composite_metrics, metric_value
 from .typography import profile_face as face
 
 SIZE = (1600, 1270)
 INK, MUTED, BLUE = "#172b45", "#536780", "#326fce"
 GRID, NEUTRAL = "#dce5ef", "#a6b5c8"
+BONUS_INK, BONUS_LINE = "#936000", "#be8317"
+BONUS_FILL, BONUS_BACKGROUND = "#faebc6", "#fff8e9"
+NORMAL = NormalDist()
+BONUS_THRESHOLD = NORMAL.cdf(3)
+BONUS_CAP_THRESHOLD = NORMAL.cdf(5)
 
 
-class Metric(NamedTuple):
-    key: str
-    label: str
-    kind: str
-    scale: float
-    direction: int = 1
-
-
-AXES = (
-    (
-        "进攻",
-        (Metric("和牌率", "和牌率", "%", 0.05), Metric("自摸率", "自摸占比", "%", 0.12)),
-    ),
-    (
-        "防守",
-        (
-            Metric("放铳率", "放铳率", "%", 0.04, -1),
-            Metric("平均铳点", "平均铳点", "点", 1200, -1),
-        ),
-    ),
-    (
-        "副露",
-        (
-            Metric("副露率", "副露率", "%", 0.12),
-            Metric("副露后和牌率", "副露后和牌", "%", 0.10),
-            Metric("副露后放铳率", "副露后放铳", "%", 0.06, -1),
-        ),
-    ),
-    (
-        "立直",
-        (
-            Metric("立直率", "立直率", "%", 0.07),
-            Metric("先制率", "先制立直", "%", 0.12),
-            Metric("立直后和牌率", "立直后和牌", "%", 0.12),
-        ),
-    ),
-    (
-        "速度",
-        (
-            Metric("和了巡数", "和牌巡数", "巡", 1.5, -1),
-            Metric("立直巡目", "立直巡目", "巡", 1.5, -1),
-        ),
-    ),
-    (
-        "打点",
-        (
-            Metric("平均打点", "平均打点", "点", 1200),
-            Metric("净打点效率", "净打点效率", "点", 500),
-        ),
-    ),
-)
-
-
-def metric_value(raw, metric):
-    value = number(raw.get(metric.key))
-    if value is None or (metric.kind == "%" and not 0 <= value <= 1):
+def radar_bonus_score(score):
+    """Map the upper tail of an unrounded radar score to a display-only extension."""
+    if score is None or score / 100 <= BONUS_THRESHOLD:
         return None
-    if metric.key != "净打点效率" and value < 0:
-        return None
-    return value
-
-
-@lru_cache(maxsize=1)
-def _room_means():
-    path = Path(__file__).with_name("assets") / "ms_style_room_means.json"
-    return json.loads(path.read_text(encoding="utf-8"))["rooms"]
-
-
-def comparison_reference(room):
-    reference = _room_means().get(room)
-    name = MODE_NAMES.get(room, "所选房间")
-    if reference is None:
-        return f"{name}暂无均值", {}, []
-    return f"{name}均值", reference["metrics"], reference["rank_rates"]
-
-
-def axis_score(group, actual, baseline):
-    changes = []
-    for metric in group:
-        value, reference = metric_value(actual, metric), metric_value(baseline, metric)
-        if value is None or reference is None:
-            return None
-        difference = metric.direction * (value - reference) / metric.scale
-        changes.append(max(-1, min(1, difference)))
-    return round(50 + 50 * sum(changes) / len(changes))
+    if score / 100 >= BONUS_CAP_THRESHOLD:
+        return 150
+    deviation = NORMAL.inv_cdf(score / 100)
+    bonus = round(100 + 25 * (deviation - 3))
+    return bonus if bonus > 100 else None
 
 
 def display(value, kind):
@@ -126,7 +52,7 @@ def difference(value, base, kind):
     return f"{delta:+,.{precision}f}" if round(delta, precision) else f"{0:.{precision}f}"
 
 
-def render_style(player, stats, games, options):
+def render_style(player, stats, games, options, *, current_level=None):
     finished = sorted(
         (g for g in games if g.ended_at and g.seat(player.account_id)), key=lambda g: g.started_at
     )
@@ -136,20 +62,27 @@ def render_style(player, stats, games, options):
     style = analyze_style(stats, options.mode)
     raw = getattr(stats, "raw", {}) or {}
     actual = {**raw, **style.metrics}
-    if "净打点效率" not in actual:
-        actual.update(efficiency_metrics(actual))
-    level = raw.get("level") or (
-        finished[-1].seat(player.account_id).get("level") if finished else None
-    )
-    progress = rank_progress(level)
-    rank = progress or rank_identity(level)
+    actual.update(composite_metrics(actual))
+    progress = rank_progress(current_level)
+    rank = progress or rank_identity(current_level)
     rooms = {str(g.mode) for g in finished}
     selected = {str(mode) for mode in (options.modes or ())}
     scope = selected or rooms
     room = next(iter(scope)) if len(scope) == 1 and rooms <= scope else ""
     room_name = MODE_NAMES.get(room, "")
-    reference_label, baseline, reference_ranks = comparison_reference(room)
-    scores = [axis_score(group, actual, baseline) for _, group in AXES]
+    reference = comparison_reference(room, rank)
+    baseline = reference.metrics if reference else {}
+    reference_ranks = reference.rank_rates if reference else []
+    reference_label = f"{room_name}{rank_label(rank)}均值 = 50" if reference else "暂无同段位均值"
+    hands = number(raw.get("_hand_count"))
+    if hands is not None and (not hands.is_integer() or hands < count):
+        hands = None
+    scores = [axis_score(axis, actual, reference, hands) for axis in AXES]
+    bonuses = [radar_bonus_score(score) for score in scores]
+    display_scores = [
+        bonus if bonus is not None else score for score, bonus in zip(scores, bonuses, strict=True)
+    ]
+    has_bonus = any(bonuses)
     summary = sample_summary(finished, player.account_id, options.mode)
     image = Image.new("RGB", SIZE, "#eef3f8")
     draw = ImageDraw.Draw(image, "RGBA")
@@ -187,8 +120,8 @@ def render_style(player, stats, games, options):
     card((36, 185, 690, 913))
     card((710, 185, 1564, 913))
     text(64, 211, "牌风雷达", 31, style="bold")
-    text(64, 259, f"{reference_label} = 50" if baseline else reference_label, 20, MUTED)
-    cx, cy, radius = 362, 566, 205
+    text(64, 259, reference_label, 20, MUTED)
+    cx, cy, radius = (362, 558, 180) if has_bonus else (362, 566, 205)
     angles = [math.tau * i / len(AXES) - math.pi / 2 for i in range(len(AXES))]
 
     def vertex(angle, score):
@@ -201,7 +134,7 @@ def render_style(player, stats, games, options):
         text(cx + 7, cy - radius * tick / 100 + 4, tick, 13, MUTED)
     for angle in angles:
         draw.line([(cx, cy), vertex(angle, 100)], fill=GRID, width=2)
-    if baseline:
+    if reference:
         middle = [vertex(angle, 50) for angle in angles]
         for a, b in zip(middle, middle[1:] + middle[:1], strict=True):
             for step in range(0, 12, 2):
@@ -212,36 +145,70 @@ def render_style(player, stats, games, options):
                 draw.line(segment, fill=NEUTRAL, width=3)
     points = [
         vertex(angle, score) if score is not None else None
-        for angle, score in zip(angles, scores, strict=True)
+        for angle, score in zip(angles, display_scores, strict=True)
     ]
     if all(point is not None for point in points):
         draw.polygon(points, fill=(50, 111, 206, 46))
-    for a, b in zip(points, points[1:] + points[:1], strict=True):
-        if a is not None and b is not None:
-            draw.line((a, b), fill=BLUE, width=5)
-    for angle, (name, _), score, point in zip(angles, AXES, scores, points, strict=True):
+        if has_bonus:
+            outer_fill = Image.new("L", SIZE)
+            fill_draw = ImageDraw.Draw(outer_fill)
+            fill_draw.polygon(points, fill=114)
+            fill_draw.polygon([vertex(angle, 100) for angle in angles], fill=0)
+            image.paste("#f7ce7b", (0, 0, *SIZE), outer_fill)
+    for i, a in enumerate(points):
+        j = (i + 1) % len(points)
+        b = points[j]
+        if a is None or b is None:
+            continue
+        a_color = BONUS_LINE if bonuses[i] is not None else BLUE
+        b_color = BONUS_LINE if bonuses[j] is not None else BLUE
+        if a_color == b_color:
+            draw.line((a, b), fill=a_color, width=5)
+        else:
+            # In the wedge between these axes, the 100 ring is the line whose
+            # two radial coordinates sum to 100.
+            a_score, b_score = display_scores[i], display_scores[j]
+            fraction = (100 - a_score) / (b_score - a_score)
+            crossing = tuple(x + (y - x) * fraction for x, y in zip(a, b, strict=True))
+            draw.line((a, crossing), fill=a_color, width=5)
+            draw.line((crossing, b), fill=b_color, width=5)
+    for angle, axis, score, point, bonus in zip(
+        angles, AXES, display_scores, points, bonuses, strict=True
+    ):
         if point is not None:
             x, y = point
-            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=BLUE, outline="white", width=2)
+            fill = BONUS_LINE if bonus is not None else BLUE
+            draw.ellipse((x - 6, y - 6, x + 6, y + 6), fill=fill, outline="white", width=2)
+        if bonus is not None:
+            x, y = vertex(angle, bonus)
+            horizontal = math.cos(angle)
+            if abs(horizontal) < 0.01:
+                label_x = x
+                label_y = y - 54 if math.sin(angle) < 0 else y + 8
+            else:
+                label_x = x + math.copysign(44, horizontal)
+                label_y = y - 24
+            text(label_x, label_y, axis.name, 24, BONUS_INK, "bold", "mt")
+            text(label_x, label_y + 25, bonus, 28, BONUS_INK, "number", "mt")
+            continue
         x, y = vertex(angle, 125)
-        text(x, y - 18, name, 24, style="bold", anchor="mt")
+        text(x, y - 18, axis.name, 24, style="bold", anchor="mt")
         text(
             x,
             y + 12,
-            "—" if score is None else score,
+            "—" if score is None else round(score),
             24,
             BLUE if score is not None else MUTED,
             "number",
             "mt",
         )
-    draw.line((68, 888, 104, 888), fill=BLUE, width=5)
-    text(118, 878, "本人", 20)
-    if baseline:
+    legend_y = 895 if has_bonus else 888
+    draw.line((68, legend_y, 104, legend_y), fill=BLUE, width=5)
+    text(118, legend_y - 10, "本人", 20)
+    if reference:
         for x in range(233, 269, 12):
-            draw.line((x, 888, x + 7, 888), fill=NEUTRAL, width=3)
-        text(283, 878, "均值", 20, MUTED)
-    if baseline and any(score is None for score in scores):
-        text(663, 878, "缺数据的维度留空", 17, MUTED, anchor="rt")
+            draw.line((x, legend_y, x + 7, legend_y), fill=NEUTRAL, width=3)
+        text(283, legend_y - 10, "同段均值", 20, MUTED)
 
     text(736, 211, "各维度指标", 31, style="bold")
     text(1536, 222, "pp 为百分点", 18, MUTED, anchor="rt")
@@ -251,35 +218,47 @@ def render_style(player, stats, games, options):
         ("维度", group_x, "lm"),
         ("指标", metric_x, "lm"),
         ("本人", own_x, "rm"),
-        ("均值", mean_x, "rm"),
+        ("同段均值", mean_x, "rm"),
         ("差值", delta_x, "rm"),
     ):
         text(x, 289, label, 20, BLUE if label == "本人" else MUTED, "bold", anchor)
 
     insights = []
     top = 322
-    for i, ((name, group), score) in enumerate(zip(AXES, scores, strict=True)):
-        height = 36 * len(group) + 10
+    for i, (axis, score, bonus) in enumerate(zip(AXES, scores, bonuses, strict=True)):
+        group = (axis.metric, *axis.inputs)
+        height = 25 * len(group) + 10
         center = top + height // 2
-        if i % 2 == 0:
+        accent = BONUS_INK if bonus is not None else BLUE
+        label_color = BONUS_INK if bonus is not None else INK
+        mean_color = "#8e7648" if bonus is not None else MUTED
+        if bonus is not None:
+            card((734, top, 1540, top + height - 2), BONUS_BACKGROUND, 10)
+        elif i % 2 == 0:
             card((734, top, 1540, top + height - 2), "#f5f8fc", 10)
-        text(group_x, center, name, 22, style="bold", anchor="lm")
+        text(group_x, center, axis.name, 22, label_color, "bold", "lm")
         if score is not None:
-            card((808, center - 14, 855, center + 14), "#e7effd", 8)
-            text(832, center, score, 18, BLUE, "number", "mm")
-        candidates = []
+            score_fill = BONUS_FILL if bonus is not None else "#e7effd"
+            card((808, center - 14, 855, center + 14), score_fill, 8)
+            text(
+                832,
+                center,
+                bonus if bonus is not None else round(score),
+                18,
+                accent,
+                "number",
+                "mm",
+            )
         for j, metric in enumerate(group):
-            y = top + 23 + j * 36
+            y = top + 18 + j * 25
             own, base = metric_value(actual, metric), metric_value(baseline, metric)
-            text(metric_x, y, metric.label, 21, anchor="lm")
-            text(own_x, y, display(own, metric.kind), 23, BLUE, "number", "rm")
-            text(mean_x, y, display(base, metric.kind), 21, MUTED, "number", "rm")
-            text(delta_x, y, difference(own, base, metric.kind), 21, INK, "number", "rm")
-            if own is not None and base is not None:
-                candidates.append((abs(own - base) / metric.scale, metric, own, base))
-        if candidates:
-            spread, metric, own, base = max(candidates, key=lambda value: value[0])
-            insights.append((spread, name, metric, own, base))
+            font_style = "bold" if j == 0 else "regular"
+            text(metric_x, y, metric.label, 19, label_color, font_style, "lm")
+            text(own_x, y, display(own, metric.kind), 21, accent, "number", "rm")
+            text(mean_x, y, display(base, metric.kind), 20, mean_color, "number", "rm")
+            text(delta_x, y, difference(own, base, metric.kind), 20, label_color, "number", "rm")
+            if j == 0 and score is not None:
+                insights.append((abs(score - 50), axis.name, metric, own, base, bonus))
         top += height
 
     card((36, 933, 690, 1224))
@@ -292,7 +271,7 @@ def render_style(player, stats, games, options):
             average += f"（已知 {known} 场）"
         text(471, 963, average, 19, MUTED, anchor="rt")
     text(565, 963, "本人", 17, BLUE, anchor="rt")
-    text(661, 963, "均值", 17, MUTED, anchor="rt")
+    text(661, 963, "同段均值", 17, MUTED, anchor="rt")
     ranks = [n / known for n in summary["rank_counts"]] if known else [None] * 4
     for i, own in enumerate(ranks):
         base = number(reference_ranks[i]) if i < len(reference_ranks) else None
@@ -307,24 +286,23 @@ def render_style(player, stats, games, options):
         text(661, y + 4, display(base, "%"), 19, MUTED, "number", "rt")
 
     text(736, 954, "牌风看点", 27, style="bold")
-    standout = sorted((v for v in insights if v[0] >= 0.05), key=lambda v: v[0], reverse=True)[:3]
-    for i, (_, name, metric, own, base) in enumerate(standout):
+    standout = sorted((v for v in insights if v[0] >= 25), key=lambda v: v[0], reverse=True)[:3]
+    for i, (_, name, metric, own, base, bonus) in enumerate(standout):
         y = 1001 + i * 49
-        card((736, y, 805, y + 33), "#e8f0fc", 8)
-        text(771, y + 7, name, 18, BLUE, "bold", "mt")
+        accent, fill = (BONUS_INK, BONUS_FILL) if bonus is not None else (BLUE, "#e8f0fc")
+        card((736, y, 805, y + 33), fill, 8)
+        text(771, y + 7, name, 18, accent, "bold", "mt")
         note = (
             f"{metric.label} {display(own, metric.kind)}，"
-            f"较均值 {difference(own, base, metric.kind)}"
+            f"较同段 {difference(own, base, metric.kind)}"
         )
-        text(823, y + 5, note, 21, width=700)
+        text(823, y + 5, note, 21, BONUS_INK if bonus is not None else INK, width=700)
     if not standout:
-        note = "暂无可比牌风指标" if not insights else "各项指标与房间均值接近"
+        note = "暂无可比牌风指标" if not insights else "暂无明显偏离"
         text(736, 1010, note, 21, MUTED)
-    extras = (("默和", "默听率"), ("流局听牌", "流听率"), ("追立", "追立率"))
+    extras = (("自摸", "自摸率"), ("默和", "默听率"), ("先制", "先制率"))
     extra_line = "　".join(
-        f"{label} {display(style.metrics[key], '%')}"
-        for label, key in extras
-        if key in style.metrics
+        f"{label} {display(number(actual[key]), '%')}" for label, key in extras if key in actual
     )
     if extra_line:
         text(736, 1179, extra_line, 19, MUTED, width=794)
