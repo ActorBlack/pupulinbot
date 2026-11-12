@@ -4,8 +4,11 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import aiosqlite
+
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bindings(
@@ -14,6 +17,9 @@ CREATE TABLE IF NOT EXISTS bindings(
 );
 CREATE TABLE IF NOT EXISTS vip2_members(
   qq_id TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS daily_identities(
+  qq_id TEXT PRIMARY KEY, assigned_on TEXT NOT NULL, identity TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS subscriptions(
   group_id TEXT NOT NULL, qq_id TEXT NOT NULL,
@@ -174,6 +180,25 @@ class Database:
                 (qq_id, account_id, nickname),
             )
             await db.commit()
+
+    async def assign_daily_identity(self, qq_id: str, candidate: str) -> tuple[str, bool]:
+        async with self.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            today = datetime.now(BEIJING_TZ).date().isoformat()
+            async with db.execute(
+                "SELECT identity, assigned_on FROM daily_identities WHERE qq_id=?", (qq_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row is not None and row["assigned_on"] == today:
+                return row["identity"], False
+            await db.execute(
+                """INSERT INTO daily_identities (qq_id, assigned_on, identity) VALUES (?, ?, ?)
+                ON CONFLICT(qq_id) DO UPDATE SET assigned_on=excluded.assigned_on,
+                    identity=excluded.identity""",
+                (qq_id, today, candidate),
+            )
+            await db.commit()
+            return candidate, True
 
     async def bind_if_absent(self, qq_id: str, account_id: int, nickname: str) -> bool:
         async with self.connect() as db:

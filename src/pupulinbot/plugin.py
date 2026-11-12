@@ -4,7 +4,7 @@ import logging
 import re
 from collections import deque
 from datetime import datetime
-from random import randint
+from random import choices, randint
 
 import httpx
 from nonebot import get_driver, on_command, require
@@ -66,6 +66,11 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 superusers = frozenset(get_driver().config.superusers)
 MORTAL_PAUSE_ALERT_GROUP = 1131357545
 PHRASE_REWRITE_GROUPS = frozenset({REPEAT_STOP_GROUP, 996147537})
+DAILY_IDENTITY_REPLIES = {
+    "落黑": "今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！",
+    "落白": "今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！",
+    "路人": "今天你是路人，你可以选择吃瓜，或者拱火，或者劝阿落好好学习/认真麻酱。",
+}
 logger = logging.getLogger(__name__)
 repeat_stop = RepeatStop()
 replied_message_ids: deque[tuple[int, int]] = deque(maxlen=64)
@@ -90,13 +95,21 @@ async def handle_group_reactions(bot: Bot, event: Event):
         message = Message(MessageSegment.text(prefix + "🐷" * count))
     elif text == "alsz":
         roll = randint(1, 100)
-        if roll <= 45:
+        if roll <= 5:
             reply = "阿落是小🐷"
         elif roll <= 90:
             reply = "阿落不是小🐷"
         else:
             reply = "泥才是小🐷"
         message = Message(MessageSegment.text(reply))
+    elif (
+        original
+        and original[0].type == "at"
+        and str(original[0].data.get("qq")) == str(event.self_id)
+        and all(segment.type == "text" for segment in original[1:])
+        and original.extract_plain_text().strip() == "今日身份"
+    ):
+        message = None
     elif event.group_id in PHRASE_REWRITE_GROUPS:
         message = original.copy()
         message.reduce()
@@ -111,6 +124,13 @@ async def handle_group_reactions(bot: Bot, event: Event):
         return
     replied_message_ids.append(key)
     try:
+        if message is None:
+            candidate = choices(("落黑", "落白", "路人"), weights=(30, 30, 40))[0]
+            identity, assigned = await db.assign_daily_identity(str(event.user_id), candidate)
+            reply = (
+                DAILY_IDENTITY_REPLIES[identity] if assigned else f"忘记今天你是{identity}了吗？"
+            )
+            message = Message(MessageSegment.text(reply))
         await bot.send_group_msg(group_id=event.group_id, message=message)
     except Exception:
         logger.exception("发送群消息自动回复失败")

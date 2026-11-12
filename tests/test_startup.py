@@ -380,7 +380,7 @@ async def verify_group_text_replies():
             message=Message('fssz'),
         )
 
-    rolls = [1, 6, 1, 17, 32, 45, 46, 90, 91]
+    rolls = [1, 6, 1, 17, 32, 5, 6, 90, 91]
     with patch.object(bot, 'send_group_msg', new=send), \\
          patch('pupulinbot.plugin.randint', side_effect=rolls) as choose:
         for message_id, value in enumerate((
@@ -444,6 +444,74 @@ async def verify_group_text_replies():
         call(group_id=1131357545, message=Message('泥才是小🐷')),
     ]
 asyncio.run(verify_group_text_replies())
+
+async def verify_daily_identity():
+    from datetime import UTC, datetime
+    from unittest.mock import AsyncMock, call, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+    from pupulinbot.db import Database
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+    now = datetime(2026, 11, 12, 15, 59, 59, tzinfo=UTC)
+    command = MessageSegment.at(100) + ' 今日身份'
+
+    def event(message_id, message=command, *, user=42, group=1131357545):
+        return GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=message_id,
+            group_id=group, user_id=user, self_id=100, original_message=message,
+            message=Message('今日身份'),
+        )
+
+    async def dispatch(update):
+        assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+
+    candidates = [['落黑'], ['路人'], ['落白'], ['路人'], ['落白']]
+    with patch.object(bot, 'send_group_msg', new=send), \\
+         patch('pupulinbot.plugin.choices', side_effect=candidates) as choose, \\
+         patch('pupulinbot.db.datetime') as clock:
+        clock.now.side_effect = lambda tz: now.astimezone(tz)
+        for message_id, message in enumerate((
+            Message('今日身份'),
+            Message('@bot 今日身份'),
+            MessageSegment.at(101) + ' 今日身份',
+            MessageSegment.at('all') + ' 今日身份',
+            command + ' 其他文字',
+            command + MessageSegment.face(3),
+        ), 60):
+            await dispatch(event(message_id, message))
+        await dispatch(event(66, user=100))
+        send.assert_not_awaited()
+        choose.assert_not_called()
+        await dispatch(event(67))
+        await dispatch(event(67))
+        reopened = Database(db.path)
+        with patch('pupulinbot.plugin.db', reopened):
+            await dispatch(event(68, group=706530575))
+            await dispatch(event(69, user=43))
+            await dispatch(event(70, user=44))
+            now = datetime(2026, 11, 12, 16, 0, tzinfo=UTC)
+            await dispatch(event(71))
+        results = await asyncio.gather(
+            db.assign_daily_identity('49', '落黑'),
+            reopened.assign_daily_identity('49', '落白'),
+        )
+        assert results[0][0] == results[1][0]
+        assert sum(assigned for _, assigned in results) == 1
+
+    assert choose.call_args_list == [call(('落黑', '落白', '路人'), weights=(30, 30, 40))] * 5
+    replies = [
+        (item.kwargs['group_id'], str(item.kwargs['message'])) for item in send.await_args_list
+    ]
+    assert replies == [
+        (1131357545, '今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！'),
+        (706530575, '忘记今天你是落黑了吗？'),
+        (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
+        (1131357545, '今天你是路人，你可以选择吃瓜，或者拱火，或者劝阿落好好学习/认真麻酱。'),
+        (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
+    ]
+asyncio.run(verify_daily_identity())
 
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS
