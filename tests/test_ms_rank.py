@@ -90,7 +90,7 @@ async def test_standings_apply_promotion_and_skip_unavailable_rank():
 
 @pytest.mark.asyncio
 async def test_rank_reply_paginates_without_dropping_players(monkeypatch):
-    import pupulinbot.ms_rank as module
+    import pupulinbot.rank_card as module
 
     bindings = [{"account_id": i, "nickname": f"玩家{i}"} for i in range(21)]
     client = SimpleNamespace(
@@ -103,7 +103,8 @@ async def test_rank_reply_paginates_without_dropping_players(monkeypatch):
     )
     render = []
 
-    def capture(mode, rows, *, page):
+    def capture(mode, rows, *, page, tenhou):
+        assert not tenhou
         render.append((page, [row[0] for row in rows]))
         return b"png"
 
@@ -142,7 +143,7 @@ async def test_rank_reply_renders_fixed_columns_for_real_mixed_width_names(monke
         return original_paste(image, source, box, mask)
 
     monkeypatch.setattr(Image.Image, "paste", capture_paste)
-    result = await group_ranking(SimpleNamespace(mode="四麻"), [])
+    (result,) = await group_ranking(SimpleNamespace(mode="四麻"), [])
     image = Image.open(io.BytesIO(result))
     assert image.format == "PNG" and image.size == (680, 594)
     for index, (name, rank, _points, _cap) in enumerate(standings):

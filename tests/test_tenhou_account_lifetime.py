@@ -96,4 +96,5 @@ async def test_ranking_does_not_list_players_only_active_in_previous_life():
     source = SimpleNamespace(user_history=AsyncMock(return_value=data))
     service = TenhouQueries(store, source)
     assert await service.ranking("", {"member"}) == "水表网暂时没有本群玩家的段位数据。"
-    assert "lingran" in await service.ranking("sanma", {"member"})
+    (page,) = await service.ranking("sanma", {"member"})
+    assert page.startswith(b"\x89PNG")

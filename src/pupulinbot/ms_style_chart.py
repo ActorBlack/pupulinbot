@@ -172,7 +172,9 @@ def render_style(player, stats, games, options):
     dates = ""
     if finished:
         lo, hi = (g.started_at.astimezone(TZ) for g in (finished[0], finished[-1]))
-        dates = f"　{lo:%m-%d}" if lo.date() == hi.date() else f"　{lo:%m-%d} 至 {hi:%m-%d}"
+        dates = f"　{lo:%Y-%m-%d}"
+        if lo.date() != hi.date():
+            dates += f" 至 {hi:%Y-%m-%d}"
     text(68, 111, f"{sample_scope}{count:,} 场{dates}", 23, MUTED, width=645)
     if rank:
         rank_title = rank_label(rank, full=True)

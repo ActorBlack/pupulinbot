@@ -428,7 +428,7 @@ Mortal 子命令增加 `batch/table/links/status/report/chart/pause/resume/delet
 | `ms2 @群友 [雀魂昵称或 account ID]` | 查询绑定昵称和 account ID；加昵称或 ID 可代绑，限本人、群管理员或 Bot 管理员，已有绑定不覆盖 |
 | `mslast [玩家] last=10 [-i]` | 最近对局，支持图片和筛选 |
 | `msstats [UID或昵称] [sanma]` | 展示四麻或三麻详细统计 |
-| `msrank [sanma]` | 当前群已绑定雀魂账号的成员按段位、同段位 PT 从高到低排行；每行显示 `昵称 圣2 3785 / 6000`，不加单位 |
+| `msrank [sanma]` | 当前群已绑定雀魂账号的成员按段位、同段位 PT 从高到低排行，以合并消息发送排行图 |
 
 ### 天凤绑定与查询
 
@@ -448,7 +448,7 @@ Mortal 子命令增加 `batch/table/links/status/report/chart/pause/resume/delet
 | `thstyle [昵称] -r 凤南` | 同类凤凰桌百分位雷达；支持凤东与三麻 |
 | `th4 [昵称] -o [-i]` / `th3 [昵称] -o [-i]` | 公开观战链接或对局图 |
 | `thlast [昵称] -l 5 [-i]` | 最近对局及牌谱链接；默认一场，文本最多50场，图片最多20场 |
-| `thrank [sanma]` | 当前群已绑定天凤账号的成员按段位、同段位积分从高到低排行 |
+| `thrank [sanma]` | 当前群已绑定天凤账号的成员按段位、同段位积分从高到低排行，以合并消息发送排行图 |
 
 绑定后可省略昵称；`thlast` 也保留本群只监控一人时省略昵称的行为。
 省略 `-r` 时使用该模式最近一场已收录段位战的房间，`thvs` 以发起者为准。

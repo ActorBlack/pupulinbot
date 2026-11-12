@@ -7,6 +7,7 @@ from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.params import CommandArg
 
+from .qq_delivery import send_ranking_forward
 from .qq_members import GroupMembersError, group_member_ids
 from .tenhou import CN, TenhouError, validate_name
 from .tenhou_queries import TenhouQueries
@@ -159,9 +160,9 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                     "base64://" + base64.b64encode(result).decode("ascii")
                 )
             if isinstance(result, list):
-                for page in result:
-                    await matcher.send(MessageSegment.text(page))
-                await matcher.finish()
+                await matcher.finish(
+                    await send_ranking_forward(bot, event.group_id, "天凤群排行", result)
+                )
             await matcher.finish(result)
 
     for name in QUERY_COMMANDS:

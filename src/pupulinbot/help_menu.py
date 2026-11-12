@@ -47,7 +47,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/msstats [玩家] [sanma]：统计文字\n"
             "/mslast [玩家] -l 10 [-i]：最近对局\n"
             "/ms [玩家] -l 100：最近 X 场文字摘要（默认最近对局房间）\n"
-            "/msrank [sanma]：本群已绑定雀魂的成员按段位、PT 排行\n"
+            "/msrank [sanma]：本群雀魂绑定成员的段位、PT 排行图（合并消息）\n"
             "/msfri <好友码>：好友码转账号\n/mssfri [玩家]：查询好友码",
         ),
         (
@@ -93,7 +93,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/thstyle [昵称] -r 凤南：凤凰桌牌风雷达\n"
             "/thdetail [昵称] -l 100：战绩汇总图\n"
             "/thlast [昵称] -l 5 [-i]：最近对局；默认一场\n"
-            "/thrank [sanma]：本群已绑定天凤的成员按段位、积分排行\n"
+            "/thrank [sanma]：本群天凤绑定成员的段位、积分排行图（合并消息）\n"
             "绑定后可省略昵称；三麻可用 mode=3。\n"
             "省略 -r 跟随该模式最近一场；可选 -r 般/上/特/凤，加东查东风。\n"
             "支持 start/end、-m/-y，thsession 可加 gap=60。\n"

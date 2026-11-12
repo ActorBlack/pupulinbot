@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from .models import GameRecord
 from .ms_sample import number
+from .rank_card import render_rank_pages
 from .rate_tags import rate_tag
 from .tenhou import (
     CN,
@@ -472,13 +473,15 @@ class TenhouQueries:
         ranks.sort(
             key=lambda r: (r[1].get("estimated_grade", -1), r[1].get("pt", -1)), reverse=True
         )
-        title = f"本群天凤{'三麻' if mode == 3 else '四麻'}排行"
-        lines = [f"{name} {rank_text(rank)}" for name, rank in ranks]
-        page_size = 20
-        if len(lines) <= page_size:
-            return "\n".join([title, *lines])
-        total = (len(lines) + page_size - 1) // page_size
-        return [
-            "\n".join([f"{title}（{page} / {total}）", *lines[start : start + page_size]])
-            for page, start in enumerate(range(0, len(lines), page_size), start=1)
+        standings = [
+            (
+                name,
+                grade_name(rank["estimated_grade"]),
+                value(rank.get("pt"), decimals=0),
+                value(rank.get("pt_max"), decimals=0),
+            )
+            for name, rank in ranks
         ]
+        return await asyncio.to_thread(
+            render_rank_pages, "三麻" if mode == 3 else "四麻", standings, tenhou=True
+        )

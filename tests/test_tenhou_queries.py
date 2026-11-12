@@ -239,7 +239,7 @@ async def test_sanma_and_scope_specific_hand_stats_and_optional_failure(store):
 
 
 @pytest.mark.asyncio
-async def test_group_rank_uses_current_group_members_with_bindings(store):
+async def test_group_rank_uses_current_group_members_with_bindings(store, monkeypatch):
     await store.bind("member", "applePie")
     await store.bind("another", "applePie")
     await store.bind("left", "formerMember")
@@ -248,12 +248,24 @@ async def test_group_rank_uses_current_group_members_with_bindings(store):
     source = client()
     service = TenhouQueries(store, source)
     members = {"member", "another", "unbound"}
-    result = await service.query("thrank", "", "user", "group", member_ids=members)
-    assert result.count("applePie ") == 1
-    assert "formerMember" not in result and "watchOnly" not in result
+    text = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, label, *args, **kwargs):
+        text.append((xy, label))
+        return original(draw, xy, label, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    (result,) = await service.query("thrank", "", "user", "group", member_ids=members)
+    assert Image.open(io.BytesIO(result)).size == (680, 274)
+    assert text.count(((48, 219), "applePie")) == 1
+    assert ((48, 60), "本群天凤四麻排行") in text
+    assert ((500, 150), "推算积分") in text
+    assert ((526, 219), "/") in text
     source.user_history.assert_awaited_once_with("applePie")
     source.phoenix_stats.assert_not_awaited()
-    assert "本群天凤三麻排行" in await service.ranking("sanma", members)
+    assert len(await service.ranking("sanma", members)) == 1
+    assert ((48, 60), "本群天凤三麻排行") in text
     assert await service.ranking("", {"unbound"}) == "本群还没有成员绑定天凤账号。"
 
 
@@ -266,9 +278,7 @@ async def test_group_rank_pages_include_all_bound_members(store):
     source.user_history.side_effect = history
     pages = await TenhouQueries(store, source).ranking("", members)
     assert len(pages) == 2
-    assert len(pages[0].splitlines()) == 21
-    assert pages[1].splitlines()[0].endswith("（2 / 2）")
-    assert pages[1].splitlines()[1].startswith("player20 ")
+    assert [Image.open(io.BytesIO(page)).size for page in pages] == [(680, 1490), (680, 274)]
 
 
 @pytest.mark.asyncio

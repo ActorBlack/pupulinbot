@@ -2,9 +2,42 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from nonebot.adapters.onebot.v11 import Message, MessageSegment
+from nonebot.adapters.onebot.v11 import ActionFailed, Message, MessageSegment
 
-from pupulinbot.qq_delivery import send_verified_image
+from pupulinbot.qq_delivery import send_ranking_forward, send_verified_image
+
+
+@pytest.mark.parametrize("pages", [[b"first"], [b"first", b"second"]])
+async def test_ranking_sends_all_image_pages_in_one_forward(pages):
+    bot = SimpleNamespace(self_id="123", call_api=AsyncMock(return_value={"message_id": 9}))
+    assert await send_ranking_forward(bot, 456, "天凤群排行", pages) is None
+    bot.call_api.assert_awaited_once_with(
+        "send_group_forward_msg",
+        group_id=456,
+        source="天凤群排行",
+        _timeout=90,
+        messages=[
+            {
+                "type": "node",
+                "data": {
+                    "name": "天凤群排行",
+                    "uin": "123",
+                    "content": [
+                        {"type": "image", "data": {"file": MessageSegment.image(page).data["file"]}}
+                    ],
+                },
+            }
+            for page in pages
+        ],
+    )
+
+
+async def test_rejected_rank_forward_returns_an_error():
+    bot = SimpleNamespace(self_id="123", call_api=AsyncMock(side_effect=ActionFailed(retcode=100)))
+    assert await send_ranking_forward(bot, 456, "雀魂群排行", [b"first"]) == (
+        "排行的合并消息发送失败，请稍后重试。"
+    )
+    bot.call_api.assert_awaited_once()
 
 
 def bot_with_history(*messages):

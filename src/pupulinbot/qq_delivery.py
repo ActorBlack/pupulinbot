@@ -1,8 +1,33 @@
-"""Verify image notifications before the monitor records them as delivered."""
+"""Deliver image messages through OneBot."""
 
 import asyncio
 
-from nonebot.adapters.onebot.v11 import Message
+from nonebot.adapters.onebot.v11 import Message, MessageSegment
+from nonebot.exception import AdapterException
+
+
+async def send_ranking_forward(bot, group_id, title, pages):
+    nodes = [
+        {
+            "type": "node",
+            "data": {
+                "name": title,
+                "uin": str(bot.self_id),
+                "content": [
+                    {"type": "image", "data": {"file": MessageSegment.image(page).data["file"]}}
+                ],
+            },
+        }
+        for page in pages
+    ]
+    try:
+        result = await bot.call_api(
+            "send_group_forward_msg", group_id=group_id, messages=nodes, source=title, _timeout=90
+        )
+    except AdapterException:
+        result = None
+    if not isinstance(result, dict) or not result.get("message_id"):
+        return "排行的合并消息发送失败，请稍后重试。"
 
 
 async def send_verified_image(bot, group, message: Message):

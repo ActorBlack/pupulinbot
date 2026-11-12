@@ -381,7 +381,7 @@ async def verify_fssz_reply():
         )
 
     with patch.object(bot, 'send_group_msg', new=send), \\
-         patch('pupulinbot.plugin.randint', side_effect=[1, 6]) as choose:
+         patch('pupulinbot.plugin.randint', side_effect=[1, 6, 1, 17, 32]) as choose:
         for message_id, value in enumerate((
             Message('fssz '),
             Message(' fssz'),
@@ -391,24 +391,35 @@ async def verify_fssz_reply():
             Message('fssz') + MessageSegment.face(3),
             MessageSegment.at(100) + Message('fssz'),
             MessageSegment.reply(99) + Message('fssz'),
+            Message('fssz 0'),
+            Message('fssz 33'),
+            Message('fssz -1'),
+            Message('fssz 2.5'),
+            Message('fssz 32 '),
+            Message('fssz 32 extra'),
+            Message('fssz 32') + MessageSegment.face(3),
+            MessageSegment.at(100) + Message('fssz 32'),
         ), 10):
             update = event(message_id, value)
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
         assert await _apply_event_preprocessors(
-            bot, event(18, Message('fssz'), user=100), {}, show_log=False
+            bot, event(30, Message('fssz'), user=100), {}, show_log=False
         )
         send.assert_not_awaited()
         choose.assert_not_called()
-        matching = event(19, Message('fssz'))
+        matching = event(31, Message('fssz'))
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
         assert await _apply_event_preprocessors(bot, matching, {}, show_log=False)
-        assert await _apply_event_preprocessors(
-            bot, event(20, Message('fssz')), {}, show_log=False
-        )
-    assert choose.call_args_list == [call(1, 6), call(1, 6)]
+        for message_id, value in enumerate(('fssz', 'fssz 1', 'fssz 19', 'fssz 32'), 32):
+            update = event(message_id, Message(value))
+            assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+    assert choose.call_args_list == [call(1, 6), call(1, 6), call(1, 1), call(1, 19), call(1, 32)]
     assert send.await_args_list == [
         call(group_id=1131357545, message=Message('发四是巨大🐷')),
         call(group_id=1131357545, message=Message('发四是巨大🐷🐷🐷🐷🐷🐷')),
+        call(group_id=1131357545, message=Message('发四是巨大猪🐷')),
+        call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 17)),
+        call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 32)),
     ]
 asyncio.run(verify_fssz_reply())
 

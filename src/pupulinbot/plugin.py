@@ -47,7 +47,7 @@ from .online_pool import OnlinePool
 from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
-from .qq_delivery import send_verified_image
+from .qq_delivery import send_ranking_forward, send_verified_image
 from .qq_members import GroupMembersError, group_member_ids
 from .record_names import RecordNames
 from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
@@ -80,10 +80,12 @@ async def handle_group_reactions(bot: Bot, event: Event):
     if event.user_id == event.self_id or key in replied_message_ids:
         return
     original = event.original_message
-    if original.extract_plain_text() == "fssz" and all(
-        segment.type == "text" for segment in original
-    ):
-        message = Message(MessageSegment.text("发四是巨大" + "🐷" * randint(1, 6)))
+    fssz = re.fullmatch(r"fssz(?: ([1-9]|[12][0-9]|3[0-2]))?", original.extract_plain_text())
+    if fssz and all(segment.type == "text" for segment in original):
+        limit = fssz[1]
+        prefix = "发四是巨大猪" if limit else "发四是巨大"
+        count = randint(1, int(limit) if limit else 6)
+        message = Message(MessageSegment.text(prefix + "🐷" * count))
     elif event.group_id in PHRASE_REWRITE_GROUPS:
         message = original.copy()
         message.reduce()
@@ -459,10 +461,7 @@ async def group_rank(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
     result = await group_ranking(client, bindings)
     if isinstance(result, str):
         await rank_cmd.finish(result)
-    pages = result if isinstance(result, list) else [result]
-    for page in pages:
-        await rank_cmd.send(MessageSegment.image(page))
-    await rank_cmd.finish()
+    await rank_cmd.finish(await send_ranking_forward(bot, event.group_id, "雀魂群排行", result))
 
 
 watch_cmd = on_command("mswatch", priority=10, block=True)
