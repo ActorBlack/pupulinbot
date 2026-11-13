@@ -12,6 +12,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from .capsolver import (
+    BROWSER,
+    CAPSOLVER,
+    CAPSOLVER_TIMEOUT,
+    PROVIDERS,
+    CapSolverError,
+    solve_review_form,
+)
 from .online_worker import TURNSTILE_TIMEOUT, emit, progress_report_url, trusted_result
 from .review_metadata import report_game_result
 
@@ -30,6 +38,8 @@ def atomic_json(path, data):
 def validate_request(request):
     from .review import ReviewError, parse_review_link
 
+    if request.get("verification", BROWSER) not in PROVIDERS:
+        raise ValueError("未知的 Mortal 验证方式")
     parsed = urlsplit(request["online_url"])
     if parsed.scheme != "https" or parsed.netloc != "mjai.ekyu.moe" or parsed.path != "/":
         raise ValueError("在线入口地址无效")
@@ -173,6 +183,9 @@ class BrowserWorker:
         self.report_reader = ThreadPoolExecutor(max_workers=1)
         self.key = None
         self.submitted = False
+        self.verification = BROWSER
+        self.capsolver_attempted = False
+        self.capsolver_client = None
         owner = self
 
         class Adapter(BrowserAutomator):
@@ -219,6 +232,8 @@ class BrowserWorker:
                 return super()._prepare_review_form(sb)
 
             def _poke_captcha(self, sb):
+                if owner.verification == CAPSOLVER:
+                    return
                 lock_path = owner.options.get("gui_lock_path")
                 if not lock_path:
                     return super()._poke_captcha(sb)
@@ -228,6 +243,27 @@ class BrowserWorker:
                     return super()._poke_captcha(sb)
 
             def _wait_for_turnstile_token(self, sb, log_prefix, timeout):
+                if owner.verification == CAPSOLVER:
+                    from .config import settings
+
+                    key = settings.mortal_capsolver_api_key
+                    if not key or not key.get_secret_value():
+                        raise CapSolverError("CapSolver 尚未配置 API Key")
+                    owner.capsolver_attempted = True
+                    if owner.capsolver_client is None:
+                        import httpx
+
+                        owner.capsolver_client = httpx.Client(
+                            trust_env=False,
+                            follow_redirects=False,
+                            limits=httpx.Limits(
+                                max_connections=1, max_keepalive_connections=1, keepalive_expiry=120
+                            ),
+                        )
+                    solve_review_form(
+                        sb, key.get_secret_value(), timeout=timeout, client=owner.capsolver_client
+                    )
+                    return
                 try:
                     super()._wait_for_turnstile_token(sb, log_prefix, timeout)
                 except RuntimeError as exc:
@@ -247,8 +283,14 @@ class BrowserWorker:
                 if not state.get("token_length"):
                     raise VerificationRejected("Turnstile token missing before submission")
                 if owner.options.get("controlled_gate"):
+                    gate_started = time.monotonic()
                     emit(status="ready_to_submit")
                     permit = json.loads(sys.stdin.readline())
+                    logging.info(
+                        "%s Submission gate wait %.3fs",
+                        owner.key,
+                        time.monotonic() - gate_started,
+                    )
                     if permit != {"action": "permit", "key": owner.key}:
                         raise SubmissionStopped("批跑暂停，未取得提交许可")
                     # A queued permit never substitutes for an actual current token.
@@ -274,23 +316,18 @@ class BrowserWorker:
                 )
 
             def _wait_for_result_or_error(self, sb, log_prefix, timeout):
-                from .native_report import read_native_report
-
-                deadline = time.monotonic() + owner.timeout
-                report_seen_at = None
+                started = time.monotonic()
+                deadline = started + owner.timeout
                 while time.monotonic() < deadline:
                     data = self._extract_killerducky_data(sb)
                     if data and data.get("review"):
+                        logging.info(
+                            "%s Report data ready in %.3fs",
+                            log_prefix,
+                            time.monotonic() - started,
+                        )
                         return
                     state = self._read_review_state(sb)
-                    url = state.get("url", "")
-                    if trusted_result(url):
-                        if report_seen_at is None:
-                            report_seen_at = time.monotonic()
-                        if owner.report_future is None and time.monotonic() - report_seen_at >= 2:
-                            owner.report_future = owner.report_reader.submit(
-                                read_native_report, url, owner.seat, owner.model
-                            )
                     text = state.get("page_text", "")
                     if any(
                         marker in text
@@ -336,6 +373,14 @@ class BrowserWorker:
         if field and self.journal.get(field) != url:
             self.journal[field] = url
             atomic_json(self.journal_path, self.journal)
+        if field == "remote_report_url" and self.report_future is None:
+            from .native_report import read_native_report
+
+            # Fetch as soon as navigation exposes the report, alongside viewer loading.
+            self.report_future = self.report_reader.submit(
+                read_native_report, url, self.seat, self.model
+            )
+            logging.info("%s Started native report download", self.key)
 
     def _record_submission(self):
         self.submitted = True
@@ -412,6 +457,8 @@ class BrowserWorker:
                 emit(status="uncertain", message="已提交场次的浏览器会话已中断，请找回报告并导入")
             return
         self.key, self.submitted = key, False
+        self.verification = request.get("verification", BROWSER)
+        self.capsolver_attempted = False
         self.report_native = self.report_future = None
         task = {
             "uuid": hashlib.sha256(key.encode()).hexdigest()[:24],
@@ -422,7 +469,9 @@ class BrowserWorker:
             "save_screenshot": self.options.get("save_screenshot", False),
             "save_local_paipu": self.options.get("save_html", True),
             "analyze_bad_move_rate": True,
-            "turnstile_timeout": TURNSTILE_TIMEOUT,
+            "turnstile_timeout": (
+                CAPSOLVER_TIMEOUT if self.verification == CAPSOLVER else TURNSTILE_TIMEOUT
+            ),
             "log_prefix": key,
         }
         retries = self.options.get("retries", 2)
@@ -485,6 +534,14 @@ class BrowserWorker:
                         status="uncertain", message="提交后未取得可验证报告；保留会话，不会重复提交"
                     )
                     return
+                if isinstance(exc, CapSolverError) or self.capsolver_attempted:
+                    message = (
+                        str(exc)
+                        if isinstance(exc, CapSolverError)
+                        else "CapSolver 验证后表单未能提交，本场已暂停"
+                    )
+                    emit(status="capsolver_failed", message=message)
+                    return
                 if isinstance(exc, VerificationTimeout):
                     emit(
                         status="verification_timeout",
@@ -513,5 +570,7 @@ class BrowserWorker:
                 )
 
     def close(self):
+        if self.capsolver_client is not None:
+            self.capsolver_client.close()
         self.report_reader.shutdown(wait=False, cancel_futures=True)
         self.context.__exit__(None, None, None)

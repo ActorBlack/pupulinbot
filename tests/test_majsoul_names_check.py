@@ -48,14 +48,14 @@ def official_head(uuid=UUID):
     }
 
 
-async def test_official_header_precedes_paipuya_and_is_shared_by_all_four_seats():
+async def test_official_header_is_shared_fallback_after_paipuya_misses():
     browser = SimpleNamespace(record_head=AsyncMock(return_value=official_head()))
-    paipuya = SimpleNamespace(find_game=AsyncMock())
+    paipuya = SimpleNamespace(find_game=AsyncMock(return_value=None))
     resolver = RecordNames(clients={4: paipuya}, majsoul_browser=browser)
     assert await asyncio.gather(*(resolver(row(i)) for i in range(4))) == [NAMES] * 4
     browser.record_head.assert_awaited_once_with(LINK, UUID)
     assert resolver.name_check(row())["source"] == "majsoul_official"
-    paipuya.find_game.assert_not_awaited()
+    paipuya.find_game.assert_awaited_once_with(UUID)
     assert [await resolver.seat_result(row(i)) for i in range(4)] == [
         dict(name=name, rank=rank) for name, rank in zip(NAMES, [3, 4, 1, 2], strict=True)
     ]
@@ -64,13 +64,26 @@ async def test_official_header_precedes_paipuya_and_is_shared_by_all_four_seats(
 @pytest.mark.parametrize(
     "head", [None, official_head("wrong"), {**official_head(), "accounts": []}]
 )
-async def test_official_unavailable_or_incomplete_falls_back_to_verified_paipuya(head):
+async def test_verified_paipuya_skips_official_browser(head):
     browser = SimpleNamespace(record_head=AsyncMock(return_value=head))
     paipuya = SimpleNamespace(find_game=AsyncMock(return_value=PaipuyaClient._record(record())))
     resolver = RecordNames(clients={4: paipuya}, majsoul_browser=browser)
     assert await resolver(row()) == NAMES
     paipuya.find_game.assert_awaited_once_with(UUID)
     assert resolver.name_check(row())["source"] == "paipuya"
+    browser.record_head.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "failure", [PaipuyaError("timeout"), TimeoutError(), ReviewError("incomplete")]
+)
+async def test_paipuya_failure_uses_official_fallback(failure):
+    browser = SimpleNamespace(record_head=AsyncMock(return_value=official_head()))
+    client = SimpleNamespace(find_game=AsyncMock(side_effect=failure))
+    resolver = RecordNames(clients={4: client}, majsoul_browser=browser)
+    assert await resolver(row()) == NAMES
+    browser.record_head.assert_awaited_once_with(LINK, UUID)
+    assert resolver.name_check(row())["source"] == "majsoul_official"
 
 
 def masked_record():

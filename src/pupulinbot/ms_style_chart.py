@@ -10,7 +10,14 @@ from .ms_level import point_text, rank_identity, rank_label, rank_progress
 from .ms_options import MODE_NAMES, TZ
 from .ms_sample import number, sample_summary
 from .ms_style import analyze_style
-from .ms_style_radar import AXES, axis_score, comparison_reference, composite_metrics, metric_value
+from .ms_style_radar import (
+    AXES,
+    axis_score,
+    comparison_reference,
+    composite_metrics,
+    metric_value,
+    speed_turns,
+)
 from .typography import profile_face as face
 
 SIZE = (1600, 1270)
@@ -80,6 +87,8 @@ def render_style(player, stats, games, options, *, current_level=None):
     room = next(iter(scope)) if len(scope) == 1 and rooms <= scope else ""
     room_name = MODE_NAMES.get(room, "")
     reference = comparison_reference(room, rank)
+    if reference:
+        actual["和立牌平均巡目"] = speed_turns(actual, reference.speed_win_weight)
     baseline = reference.metrics if reference else {}
     reference_ranks = reference.rank_rates if reference else []
     reference_label = f"{room_name}{rank_label(rank)}均值 = 50" if reference else "暂无同段位均值"

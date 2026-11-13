@@ -18,8 +18,15 @@ CREATE TABLE IF NOT EXISTS bindings(
 CREATE TABLE IF NOT EXISTS vip2_members(
   qq_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS capsolver_members(
+  qq_id TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS daily_identities(
   qq_id TEXT PRIMARY KEY, assigned_on TEXT NOT NULL, identity TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS group_reactions(
+  group_id INTEGER NOT NULL, feature TEXT NOT NULL, enabled INTEGER NOT NULL,
+  PRIMARY KEY(group_id, feature)
 );
 CREATE TABLE IF NOT EXISTS subscriptions(
   group_id TEXT NOT NULL, qq_id TEXT NOT NULL,
@@ -73,6 +80,15 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         async with self.connect() as db:
             await db.executescript(SCHEMA)
+            async with db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='disabled_group_reactions'"
+            ) as cursor:
+                has_legacy_reactions = await cursor.fetchone() is not None
+            if has_legacy_reactions:
+                await db.execute(
+                    "INSERT OR IGNORE INTO group_reactions (group_id, feature, enabled) "
+                    "SELECT group_id, feature, 0 FROM disabled_group_reactions"
+                )
             columns = {
                 r["name"]
                 for r in await (await db.execute("PRAGMA table_info(ms_follows)")).fetchall()
@@ -200,6 +216,24 @@ class Database:
             await db.commit()
             return candidate, True
 
+    async def group_reaction_overrides(self) -> dict[tuple[int, str], bool]:
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT group_id, feature, enabled FROM group_reactions"
+            ) as cursor:
+                return {
+                    (row["group_id"], row["feature"]): bool(row["enabled"]) async for row in cursor
+                }
+
+    async def set_group_reaction(self, group_id: int, feature: str, enabled: bool) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                "INSERT INTO group_reactions (group_id, feature, enabled) VALUES (?, ?, ?) "
+                "ON CONFLICT(group_id, feature) DO UPDATE SET enabled=excluded.enabled",
+                (group_id, feature, enabled),
+            )
+            await db.commit()
+
     async def bind_if_absent(self, qq_id: str, account_id: int, nickname: str) -> bool:
         async with self.connect() as db:
             cursor = await db.execute(
@@ -244,6 +278,24 @@ class Database:
         async with self.connect() as db:
             rows = await (
                 await db.execute("SELECT qq_id FROM vip2_members ORDER BY qq_id")
+            ).fetchall()
+            return [row["qq_id"] for row in rows]
+
+    async def set_capsolver_member(self, qq_id: str, enabled: bool) -> bool:
+        async with self.connect() as db:
+            sql = (
+                "INSERT INTO capsolver_members(qq_id) VALUES(?) ON CONFLICT(qq_id) DO NOTHING"
+                if enabled
+                else "DELETE FROM capsolver_members WHERE qq_id=?"
+            )
+            result = await db.execute(sql, (qq_id,))
+            await db.commit()
+            return result.rowcount > 0
+
+    async def capsolver_members(self) -> list[str]:
+        async with self.connect() as db:
+            rows = await (
+                await db.execute("SELECT qq_id FROM capsolver_members ORDER BY qq_id")
             ).fetchall()
             return [row["qq_id"] for row in rows]
 

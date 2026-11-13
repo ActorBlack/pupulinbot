@@ -265,7 +265,6 @@ def test_radar_combines_opportunities_and_propagates_cross_axis_changes():
     assert values["铳点损失"] == pytest.approx(600)
     assert values["副露净结果率"] == pytest.approx(0.06)
     assert values["立直局均收支"] == pytest.approx(420)
-    assert values["和立牌平均巡目"] == pytest.approx((0.25 * 12 + 0.15 * 9) / 0.40)
     assert values["净打点效率"] == pytest.approx(1000)
 
     heavier = composite_metrics({**raw, "平均铳点": 8000})
@@ -273,7 +272,6 @@ def test_radar_combines_opportunities_and_propagates_cross_axis_changes():
     assert heavier["净打点效率"] == pytest.approx(800)
     more_riichi = composite_metrics({**raw, "立直率": 0.25})
     assert more_riichi["立直局均收支"] == pytest.approx(700)
-    assert more_riichi["和立牌平均巡目"] == pytest.approx(10.5)
     assert composite_metrics({**raw, "平均铳点": None})["铳点损失"] is None
     assert composite_metrics({**raw, "平均铳点": None, "放铳率": 0})["铳点损失"] == 0
     assert composite_metrics({**raw, "副露后和牌率": 0.9})["副露净结果率"] is None
@@ -284,7 +282,7 @@ def test_radar_shrinks_event_rates_and_amounts_by_observable_sampling_variance()
     from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference
 
     ref = comparison_reference("12", rank_identity(10502))
-    attack, defense, call, _, speed, points = AXES
+    attack, defense, call, _, _, points = AXES
     attack_mean = ref.metrics[attack.metric.key]
     call_mean = ref.metrics[call.metric.key]
     call_second_moment = ref.metrics["副露和牌贡献率"] + ref.metrics["副露放铳贡献率"]
@@ -308,10 +306,42 @@ def test_radar_shrinks_event_rates_and_amounts_by_observable_sampling_variance()
 
     assert axis_score(defense, {}, ref, 1000) is None
     assert axis_score(points, {}, ref, 1000) is None
+
+
+@pytest.mark.parametrize("room, level", [("9", 10303), ("12", 10503), ("16", 10503)])
+def test_radar_speed_compares_turns_at_fixed_event_mix_and_accounts_for_sample_size(room, level):
+    from pupulinbot.ms_level import rank_identity
+    from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference, speed_turns
+
+    ref = comparison_reference(room, rank_identity(level))
+    speed = next(axis for axis in AXES if axis.name == "速度")
     key = speed.metric.key
-    actual = {**ref.metrics, key: ref.metrics[key] - ref.scales[key]}
-    assert axis_score(speed, actual, ref, 1000) == pytest.approx(84.13447)
+    same_turns = {**ref.metrics, "和牌率": 0.32, "立直率": 0.15}
+    same_turns[key] = speed_turns(same_turns, ref.speed_win_weight)
+    assert axis_score(speed, same_turns, ref, 495) == pytest.approx(50)
+
+    actual = {**same_turns, "立直巡目": same_turns["立直巡目"] - 0.5}
+    actual[key] = speed_turns(actual, ref.speed_win_weight)
+    assert 50 < axis_score(speed, actual, ref, 100) < axis_score(speed, actual, ref, 1000)
+    scale = ref.scales[key]
+    noise = ref.speed_sampling_variance * (1 / 495 + 1 / ref.hands)
+    deviation = (ref.metrics[key] - actual[key]) * scale / (scale**2 + noise)
+    assert axis_score(speed, actual, ref, 495) == pytest.approx(
+        50 * (1 + math.erf(deviation / math.sqrt(2)))
+    )
     assert axis_score(speed, {**actual, "和牌率": 0.01, "立直率": 0.01}, ref, 1000) is None
+    assert axis_score(speed, {**actual, "立直率": 0}, ref, 1000) is None
+
+
+def test_radar_speed_uses_independent_gold_south_sampling():
+    from pupulinbot.ms_level import rank_identity
+    from pupulinbot.ms_style_radar import comparison_reference
+
+    grade = rank_identity(10403)
+    gold, jade, throne = (comparison_reference(room, grade) for room in ("9", "12", "16"))
+    assert gold.speed_sampling_variance > 0
+    assert gold.speed_sampling_variance != pytest.approx(jade.speed_sampling_variance)
+    assert throne.speed_sampling_variance == jade.speed_sampling_variance
 
 
 @pytest.mark.asyncio

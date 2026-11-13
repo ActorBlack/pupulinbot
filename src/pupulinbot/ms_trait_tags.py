@@ -297,7 +297,6 @@ def trait_tags(
         post_win is None
         or win_ref is None
         or post_win < win_ref["mean"] - 0.03
-        or "鸣牌善战" in result["style"]
     ):
         result["style"].remove("鸣牌慎行")
 

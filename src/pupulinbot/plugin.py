@@ -28,6 +28,7 @@ from .batch_review import (
     summaries,
     upload_report,
 )
+from .capsolver import BROWSER, CAPSOLVER
 from .config import settings
 from .db import Database
 from .formatting import format_stats
@@ -52,7 +53,7 @@ from .online_pool import OnlinePool
 from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
 from .promotion import promotion_line
-from .qq_delivery import send_ranking_images, send_verified_image
+from .qq_delivery import send_ranking_forward, send_verified_image
 from .qq_members import GroupMembersError, group_member_ids
 from .record_names import RecordNames
 from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
@@ -70,52 +71,87 @@ from nonebot_plugin_apscheduler import scheduler  # noqa: E402
 
 superusers = frozenset(get_driver().config.superusers)
 MORTAL_PAUSE_ALERT_GROUP = 1131357545
-PHRASE_REWRITE_GROUPS = frozenset({REPEAT_STOP_GROUP, 996147537})
+DEFAULT_GROUP_REACTION_GROUPS = {
+    "jqf": frozenset({REPEAT_STOP_GROUP, 996147537}),
+    "fudu": frozenset({REPEAT_STOP_GROUP}),
+    "alsz": frozenset({REPEAT_STOP_GROUP}),
+    "fssz": frozenset({REPEAT_STOP_GROUP}),
+}
 DAILY_IDENTITY_REPLIES = {
     "落黑": "今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！",
     "落白": "今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！",
     "路人": "今天你是路人，你可以选择吃瓜，或者拱火，或者劝阿落好好学习/认真麻酱。",
 }
 logger = logging.getLogger(__name__)
-repeat_stop = RepeatStop()
+repeat_stops: dict[int, RepeatStop] = {}
+group_reaction_overrides: dict[tuple[int, str], bool] = {}
+group_reaction_write_lock = asyncio.Lock()
 replied_message_ids: deque[tuple[int, int]] = deque(maxlen=64)
+
+
+def group_reaction_enabled(group_id: int, feature: str) -> bool:
+    return group_reaction_overrides.get(
+        (group_id, feature), group_id in DEFAULT_GROUP_REACTION_GROUPS[feature]
+    )
 
 
 @event_preprocessor
 async def handle_group_reactions(bot: Bot, event: Event):
     if not isinstance(event, GroupMessageEvent):
         return
-    await repeat_stop.handle(bot, event)
     key = (event.group_id, event.message_id)
     if event.user_id == event.self_id or key in replied_message_ids:
         return
     original = event.original_message
     is_plain_text = all(segment.type == "text" for segment in original)
     text = original.extract_plain_text() if is_plain_text else ""
+    toggle = re.fullmatch(r"(jqf|fudu|alsz|fssz) (on|off)", text)
+    if toggle:
+        feature, action = toggle.groups()
+        if str(event.user_id) not in superusers:
+            return
+        replied_message_ids.append(key)
+        try:
+            enabled = action == "on"
+            async with group_reaction_write_lock:
+                await db.set_group_reaction(event.group_id, feature, enabled)
+                group_reaction_overrides[event.group_id, feature] = enabled
+                if feature == "fudu" and not enabled:
+                    repeat_stops.pop(event.group_id, None)
+            await bot.send_group_msg(
+                group_id=event.group_id,
+                message=Message(
+                    MessageSegment.text(f"{feature} 已{'开启' if enabled else '关闭'}")
+                ),
+            )
+        except Exception:
+            logger.exception("更新群自动回复开关失败")
+        return
+
+    if group_reaction_enabled(event.group_id, "fudu"):
+        detector = repeat_stops.get(event.group_id)
+        if detector is None:
+            detector = repeat_stops[event.group_id] = RepeatStop(group_id=event.group_id)
+        await detector.handle(bot, event)
+
     fssz = re.fullmatch(r"fssz(?: ([1-9]|[12][0-9]|3[0-2]))?", text)
-    if fssz:
-        limit = fssz[1]
-        prefix = "发四是巨大猪" if limit else "发四是巨大"
-        count = randint(1, int(limit) if limit else 6)
-        message = Message(MessageSegment.text(prefix + "🐷" * count))
-    elif text == "alsz":
-        roll = randint(1, 100)
-        if roll <= 5:
-            reply = "阿落是小🐷"
-        elif roll <= 90:
-            reply = "阿落不是小🐷"
-        else:
-            reply = "泥才是小🐷"
-        message = Message(MessageSegment.text(reply))
-    elif (
+    daily_identity = (
         original
         and original[0].type == "at"
         and str(original[0].data.get("qq")) == str(event.self_id)
         and all(segment.type == "text" for segment in original[1:])
         and original.extract_plain_text().strip() == "今日身份"
+    )
+    if fssz:
+        feature = "fssz"
+    elif text == "alsz":
+        feature = "alsz"
+    elif daily_identity:
+        feature = None
+    elif (
+        group_reaction_enabled(event.group_id, "jqf") and "好厉害" in original.extract_plain_text()
     ):
-        message = None
-    elif event.group_id in PHRASE_REWRITE_GROUPS:
+        feature = "jqf"
         message = original.copy()
         message.reduce()
         changed = False
@@ -127,9 +163,25 @@ async def handle_group_reactions(bot: Bot, event: Event):
             return
     else:
         return
+    if feature and not group_reaction_enabled(event.group_id, feature):
+        return
     replied_message_ids.append(key)
     try:
-        if message is None:
+        if fssz:
+            limit = fssz[1]
+            prefix = "发四是巨大猪" if limit else "发四是巨大"
+            count = randint(1, int(limit) if limit else 6)
+            message = Message(MessageSegment.text(prefix + "🐷" * count))
+        elif feature == "alsz":
+            roll = randint(1, 100)
+            if roll <= 5:
+                reply = "阿落是小🐷"
+            elif roll <= 90:
+                reply = "阿落不是小🐷"
+            else:
+                reply = "泥才是小🐷"
+            message = Message(MessageSegment.text(reply))
+        elif feature is None:
             candidate = choices(("落黑", "落白", "路人"), weights=(30, 30, 40))[0]
             identity, assigned = await db.assign_daily_identity(str(event.user_id), candidate)
             reply = (
@@ -160,6 +212,7 @@ async def restrict_group_commands(event: Event, state: T_State):
         superusers=superusers,
         monitor_owner=settings.monitor_owner,
         vip2=vip2,
+        capsolver_users=batches.capsolver_users,
     )
 
 
@@ -266,8 +319,13 @@ async def notify_batch(job):
     if status == "retry_wait":
         return
     verification_paused = status in VERIFICATION_FAILURE_STATUSES or status == "verification_paused"
-    if not verification_paused and not await mortal_allowed(job["group_id"], job.get("owner")):
+    capsolver = job.get("verification") == CAPSOLVER
+    if capsolver:
+        if not batches.capsolver_allowed(job.get("owner")):
+            return
+    elif not verification_paused and not await mortal_allowed(job["group_id"], job.get("owner")):
         return
+    command = "exmortal" if capsolver else "mortal"
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         return
@@ -289,7 +347,7 @@ async def notify_batch(job):
                     job.get("owner"),
                     MessageSegment.text(
                         f"Mortal 任务 {job['id']}：结果图生成或发送失败，分析结果已保存。\n"
-                        f"发送 mortal report {job['id']} 重试。"
+                        f"发送 {command} report {job['id']} 重试。"
                     ),
                 ),
             )
@@ -300,7 +358,7 @@ async def notify_batch(job):
         f"完成 {done}/{len(job['rows'])} 场。"
     )
     if job.get("message"):
-        text += "\n" + job["message"]
+        text += "\n" + re.sub(r"\bmortal resume ", f"{command} resume ", job["message"])
     group_id = MORTAL_PAUSE_ALERT_GROUP if verification_paused else int(job["group_id"])
     await bot.send_group_msg(group_id=group_id, message=text)
 
@@ -312,6 +370,9 @@ batches = BatchReviews(
     online,
     notify_batch,
     superusers=superusers,
+    capsolver_enabled=bool(
+        settings.mortal_capsolver_api_key and settings.mortal_capsolver_api_key.get_secret_value()
+    ),
     name_resolver=RecordNames(
         db,
         archive_directory=settings.batch_directory,
@@ -387,6 +448,8 @@ install_commands(
 bind_cmd = on_command("msbind", priority=10, block=True)
 unbind_cmd = on_command("msunbind", priority=10, block=True)
 review_cmd = on_command("mortal", aliases={"msreview"}, priority=10, block=True)
+capsolver_cmd = on_command("exmortal", priority=10, block=True, force_whitespace=True)
+capsolver_access_lock = asyncio.Lock()
 help_cmd = on_command("help", aliases={"mshelp"}, priority=20, block=True)
 stats_cmd = on_command("msstats", priority=10, block=True)
 rank_cmd = on_command("msrank", priority=10, block=True)
@@ -396,6 +459,8 @@ vip2_cmd = on_command("vip2", priority=10, block=True, force_whitespace=True)
 @get_driver().on_startup
 async def startup() -> None:
     await db.initialize()
+    group_reaction_overrides.update(await db.group_reaction_overrides())
+    batches.capsolver_users = frozenset(await db.capsolver_members())
     await db.migrate_group_monitor_list()
     await tenhou_store.initialize()
     reviews.start()
@@ -510,11 +575,10 @@ async def group_rank(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
     result = await group_ranking(client, bindings)
     if isinstance(result, str):
         await rank_cmd.finish(result)
-    await rank_cmd.finish(await send_ranking_images(bot, event.group_id, result))
+    await rank_cmd.finish(await send_ranking_forward(bot, event.group_id, "雀魂群排行", result))
 
 
 watch_cmd = on_command("mswatch", priority=10, block=True)
-
 
 @watch_cmd.handle()
 async def watch(event: GroupMessageEvent, args=CommandArg()):
@@ -527,43 +591,116 @@ async def watch(event: GroupMessageEvent, args=CommandArg()):
     await watch_cmd.finish(result)
 
 
-def task_start_reply(job_id, *, started=True):
+def task_start_reply(job_id, *, started=True, verification=BROWSER):
     prefix = "开始处理。" if started else "在线跑谱未开启，任务已保存。"
-    return f"{prefix}查看任务状态：mortal status {job_id}"
+    command = "exmortal" if verification == CAPSOLVER else "mortal"
+    return f"{prefix}查看任务状态：{command} status {job_id}"
 
 
 @review_cmd.handle()
 async def mortal(event: GroupMessageEvent, args=CommandArg()):
+    await handle_mortal(event, args, review_cmd, BROWSER)
+
+
+@capsolver_cmd.handle()
+async def capsolver_mortal(event: MessageEvent, args=CommandArg()):
+    parts = args.extract_plain_text().lower().split()
+    if parts and parts[0] in {"add", "del", "list"}:
+        await capsolver_cmd.finish(await manage_capsolver_access(event.user_id, args, parts))
+        return
+    if not isinstance(event, GroupMessageEvent):
+        await capsolver_cmd.finish("请在群里使用 exmortal 跑谱。")
+        return
+    await handle_mortal(event, args, capsolver_cmd, CAPSOLVER)
+
+
+async def manage_capsolver_access(user_id, args, parts):
+    if str(user_id) not in superusers:
+        return "仅 Bot 超级管理员可管理 exmortal 授权。"
+    usage = "用法：exmortal add <QQ号或@群友> / exmortal del <QQ号或@群友> / exmortal list"
+    if any(segment.type not in {"text", "at"} for segment in args):
+        return usage
+    mentions = [str(segment.data.get("qq", "")) for segment in args if segment.type == "at"]
+    if parts == ["list"] and not mentions:
+        members = await db.capsolver_members()
+        return f"exmortal 授权（{len(members)} 人）\n" + ("、".join(members) or "空")
+    targets = parts[1:] + mentions
+    if parts[0] not in {"add", "del"} or len(targets) != 1:
+        return usage
+    qq = targets[0]
+    if not re.fullmatch(r"[1-9][0-9]{4,11}", qq):
+        return "请指定一个有效 QQ 号或 @一位群友。"
+    if qq in superusers:
+        return f"{qq} 是 Bot 超级管理员，默认拥有 exmortal 权限。"
+    add = parts[0] == "add"
+    async with capsolver_access_lock:
+        changed = await db.set_capsolver_member(qq, add)
+        if add:
+            batches.capsolver_users = batches.capsolver_users | {qq}
+        else:
+            batches.capsolver_users = batches.capsolver_users - {qq}
+    if add:
+        return f"{qq} 已获得 exmortal 权限。" if changed else f"{qq} 已在授权名单中。"
+    return f"{qq} 的 exmortal 权限已移除。" if changed else f"{qq} 不在授权名单中。"
+
+
+async def handle_mortal(event, args, matcher, verification):
+    command = "exmortal" if verification == CAPSOLVER else "mortal"
     text = args.extract_plain_text().strip()
     if not text:
-        await review_cmd.finish(
-            "用法：mortal <雀魂/天凤链接或一番街ID@座位> [座位0-3]，支持四麻半庄"
+        if verification == CAPSOLVER:
+            await matcher.finish(
+                "单牌谱：exmortal <链接> [座位0–3]\n"
+                "单桌：exmortal table <链接>\n"
+                "批量：exmortal batch [场数] 或 exmortal batch [玩家] -l 1–100 [-r 玉南]\n"
+                "多链接：exmortal links <链接1> <链接2>…"
+            )
+        await matcher.finish(
+            f"用法：{command} <雀魂/天凤链接或一番街ID@座位> [座位0-3]，支持四麻半庄"
         )
     parts = text.split()
     parts[0] = parts[0].lower() if parts[0].lower() in BATCH_ACTIONS else parts[0]
     try:
-        if parts[0] in BATCH_ACTIONS:
-            await batch_command(event, parts)
+        if (
+            verification == CAPSOLVER
+            and parts[0] == "batch"
+            and len(parts) > 1
+            and not (len(parts) == 2 and parts[1].lstrip("+-").isdecimal())
+        ):
+            # Keep the original argument text so quoted nicknames survive parsing.
+            await filtered_mortal_batch(event, text.split(maxsplit=1)[1], matcher, verification)
             return
-        if online or not reviews.client.url:
+        if parts[0] in BATCH_ACTIONS:
+            await batch_command(event, parts, matcher=matcher, verification=verification)
+            return
+        if len(parts) > 2:
+            raise ReviewError(f"用法：{command} <牌谱链接> [座位0–3]")
+        if verification == CAPSOLVER or online or not reviews.client.url:
             seat = int(parts[1]) if len(parts) > 1 else None
             job = await batches.create_links(
-                [parts[0]], str(event.group_id), str(event.user_id), seat=seat, resolve_names=False
+                [parts[0]],
+                str(event.group_id),
+                str(event.user_id),
+                seat=seat,
+                resolve_names=False,
+                verification=verification,
             )
             if batches.available:
                 batches.start(job["id"], str(event.group_id), str(event.user_id))
-            await review_cmd.finish(task_start_reply(job["id"], started=batches.available))
+            await matcher.finish(
+                task_start_reply(job["id"], started=batches.available, verification=verification)
+            )
         seat = int(parts[1]) if len(parts) > 1 else None
         log = parse_review_link(parts[0], seat)
-        await review_cmd.send("已加入 Mortal 分析队列，请稍候……")
+        await matcher.send("已加入 Mortal 分析队列，请稍候……")
         result = await reviews.submit(log.url, log.seat)
         image = base64.b64encode(render_review(result, str(event.user_id), log.game_id)).decode()
         message = mention_requester(event.user_id, MessageSegment.image(f"base64://{image}"))
         if result.details_url:
             message += MessageSegment.text(f"\n详细报告：{result.details_url}")
-        await review_cmd.finish(message)
-    except (ValueError, ReviewError) as exc:
-        await review_cmd.finish(str(exc))
+        await matcher.finish(message)
+    except (ValueError, ReviewError, PaipuyaError) as exc:
+        await matcher.finish(str(exc))
 
 
 async def delete_batch_task(event, arguments):
@@ -574,47 +711,68 @@ async def delete_batch_task(event, arguments):
     return f"任务 {job_id} 已删除。"
 
 
-async def batch_command(event: GroupMessageEvent, parts: list[str]):
+async def batch_command(
+    event: GroupMessageEvent, parts: list[str], *, matcher=review_cmd, verification=BROWSER
+):
     group_id, owner = str(event.group_id), str(event.user_id)
     action = parts[0]
+    command = "exmortal" if verification == CAPSOLVER else "mortal"
     if action not in BATCH_ACTIONS:
         raise ReviewError("仅支持英文子命令，请发送 /help 查看用法")
-    if action == "delete":
-        await review_cmd.finish(await delete_batch_task(event, parts[1:]))
+    if action == "delete" and verification != CAPSOLVER:
+        await matcher.finish(await delete_batch_task(event, parts[1:]))
     if action in {"table", "links"}:
         if len(parts) < 2:
             raise ReviewError(
-                "用法：mortal table <雀魂/天凤链接或一番街ID>；mortal links <牌谱1> <牌谱2>…"
+                f"用法：{command} table <雀魂/天凤链接或一番街ID>；{command} links <牌谱1> <牌谱2>…"
             )
         job = await batches.create_links(
-            parts[1:], group_id, owner, table=action == "table", resolve_names=False
+            parts[1:],
+            group_id,
+            owner,
+            table=action == "table",
+            resolve_names=False,
+            verification=verification,
         )
         if batches.available:
             batches.start(job["id"], group_id, owner)
-        await review_cmd.finish(task_start_reply(job["id"], started=batches.available))
+        await matcher.finish(
+            task_start_reply(job["id"], started=batches.available, verification=verification)
+        )
     if action == "batch":
+        batches.require_verification(verification, owner)
         if len(parts) > 2:
-            raise ReviewError("用法：mortal batch [1–100]，默认 10 场")
+            raise ReviewError(f"用法：{command} batch [1–100]，默认 10 场")
         count = batch_count(parts[1] if len(parts) == 2 else None)
         binding = await db.binding(owner)
         if not binding:
             raise ReviewError("请先绑定雀魂账号")
-        await review_cmd.send("正在建立批量任务，读取最近四麻半庄牌谱……")
+        await matcher.send("正在建立批量任务，读取最近四麻半庄牌谱……")
         try:
             job = await batches.create(
                 count,
                 group_id,
                 owner,
                 Player(binding["account_id"], binding["nickname"]),
+                verification=verification,
             )
         except PaipuyaError as exc:
             raise ReviewError(str(exc)) from exc
         if batches.available:
             batches.start(job["id"], group_id, owner)
-        await review_cmd.finish(task_start_reply(job["id"], started=batches.available))
+        await matcher.finish(
+            task_start_reply(job["id"], started=batches.available, verification=verification)
+        )
     if len(parts) < 2:
-        raise ReviewError("用法：mortal status/report/pause/resume <任务编号>")
+        raise ReviewError(f"用法：{command} status/report/pause/resume <任务编号>")
     job = batches.load(parts[1], group_id, owner)
+    job_verification = job.get("verification", BROWSER)
+    if verification == CAPSOLVER and job_verification != CAPSOLVER:
+        raise ReviewError("这是普通链路任务，请用 mortal 操作")
+    if job_verification == CAPSOLVER and not batches.capsolver_allowed(owner):
+        raise ReviewError("未开通 CapSolver 跑谱权限")
+    if action == "delete":
+        await matcher.finish(await delete_batch_task(event, parts[1:]))
     if action in {"export", "report", "chart", "file"}:
         job = await batches.refresh_names(job["id"], group_id, owner)
     if action == "export":
@@ -622,17 +780,17 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
 
         fmt = parts[2].lower() if len(parts) > 2 else "csv"
         if fmt not in {"csv", "xlsx"}:
-            raise ReviewError("用法：mortal export <任务编号> [csv/xlsx]")
+            raise ReviewError(f"用法：{command} export <任务编号> [csv/xlsx]")
         path = settings.batch_directory / job["id"] / ("results." + fmt)
         await asyncio.to_thread(write_export, job, path)
         try:
             await event_bot_upload(event, path)
         except Exception as exc:
             raise ReviewError("导出已保存在本机，但群文件上传失败") from exc
-        await review_cmd.finish(f"已上传{fmt.upper()}结果，列名与本地batchmortal兼容。")
+        await matcher.finish(f"已上传{fmt.upper()}结果，列名与本地batchmortal兼容。")
     if action == "import":
         if len(parts) != 4 or not parts[2].isdecimal():
-            raise ReviewError("用法：mortal import <任务编号> <场次编号> <作者报告链接>")
+            raise ReviewError(f"用法：{command} import <任务编号> <场次编号> <作者报告链接>")
         try:
             job = await batches.import_report(parts[1], group_id, owner, int(parts[2]), parts[3])
         except httpx.HTTPError as exc:
@@ -641,16 +799,14 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
         raise ReviewError("此命令只接受一个任务编号")
     if action == "resume":
         batches.start(job["id"], group_id, owner)
-        await review_cmd.finish(task_start_reply(job["id"]))
+        await matcher.finish(task_start_reply(job["id"], verification=job_verification))
     if action == "pause":
         await batches.pause(job["id"], group_id, owner)
-        await review_cmd.finish(
-            "任务已暂停，可以开始其他任务。已提交的场次会在继续时尝试找回报告。"
-        )
+        await matcher.finish("任务已暂停，可以开始其他任务。已提交的场次会在继续时尝试找回报告。")
     if action in {"report", "chart"}:
         picture = await asyncio.to_thread(render_batch_chart, job)
         encoded = base64.b64encode(picture).decode("ascii")
-        await review_cmd.finish(MessageSegment.image(f"base64://{encoded}"))
+        await matcher.finish(MessageSegment.image(f"base64://{encoded}"))
     if action == "file":
         path = (settings.batch_directory / job["id"] / "report.html").resolve()
         try:
@@ -658,14 +814,15 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
         except Exception as exc:
             logger.exception("批量报告上传失败：job=%s", job["id"])
             raise ReviewError("报告已保存在本机，但上传群文件失败") from exc
-        await review_cmd.finish("已上传 HTML 统计表到群文件，可下载后用浏览器打开。")
+        await matcher.finish("已上传 HTML 统计表到群文件，可下载后用浏览器打开。")
     completed = sum(row["status"] == "done" for row in job["rows"])
     text = (
         f"任务 {job['id']}：{STATUS_LABELS.get(job['status'], job['status'])}，"
         f"成功 {completed}/{len(job['rows'])} 场。"
     )
     if job.get("message"):
-        text += "\n" + job["message"]
+        resume_command = "exmortal" if job_verification == CAPSOLVER else "mortal"
+        text += "\n" + re.sub(r"\bmortal resume ", f"{resume_command} resume ", job["message"])
     if action == "status" and job["status"] == "running" and online:
         for progress in online.job_progress(job["id"]):
             text += "\n" + progress
@@ -680,7 +837,7 @@ async def batch_command(event: GroupMessageEvent, parts: list[str]):
             (i, row) for i, row in enumerate(job["rows"], 1) if row["status"] != "done"
         )
         text += f"\n第 {index} 场在线复盘：{row['online_url']}\n座位：{row['seat']}（0–3）"
-    await review_cmd.finish(text)
+    await matcher.finish(text)
 
 
 async def event_bot_upload(event, path):
@@ -774,35 +931,43 @@ async def ms_mortal(event: GroupMessageEvent, args=CommandArg()):
         parts = text.split()
         if parts and parts[0].lower() == "delete":
             await msmortal_cmd.finish(await delete_batch_task(event, parts[1:]))
-        options = parse_options(text, max_last=MAX_BATCH_COUNT, allow_all=False)
-        count = batch_count(options.last if options.last_explicit else None)
-        if options.mode != 4:
-            raise ValueError("Mortal 批跑仅支持四麻半庄，-l 场数范围为 1–100")
-        if options.subscription or options.group or options.image or options.gap != 60:
-            raise ValueError("msmortal 支持玩家、-l 场数、-r 房间、start/end、-m/-y 和 -n")
-        player = await MahjongQueries(db, paipuya, sanma).player(options, event.user_id)
-        selected = [m for m in (options.modes or [9, 12, 16]) if m in {9, 12, 16}]
-        if not selected:
-            raise ValueError("Mortal 仅支持四麻半庄；请使用 game=南 或 -r 玉南等半庄筛选")
-        games, _ = await paipuya.history(
-            player.account_id, count, start=options.start, end=options.end, modes=selected
-        )
-        job = await batches.create(
-            count, str(event.group_id), str(event.user_id), player, games=games
-        )
-        if batches.available:
-            try:
-                batches.start(job["id"], str(event.group_id), str(event.user_id))
-            except ReviewError as exc:
-                await msmortal_cmd.finish(
-                    f"任务 {job['id']} 已保存。{exc}\n可发送 mortal resume {job['id']} 开始。"
-                )
-        await msmortal_cmd.finish(
-            f"任务 {job['id']}：找到 {len(job['rows'])} 场四麻半庄。\n"
-            f"进度：mortal status {job['id']}\n图表：mortal report {job['id']}"
-        )
+        await filtered_mortal_batch(event, text, msmortal_cmd, BROWSER)
     except (ValueError, ReviewError, PaipuyaError) as exc:
         await msmortal_cmd.finish(str(exc))
+
+
+async def filtered_mortal_batch(event, text, matcher, verification):
+    group_id, owner = str(event.group_id), str(event.user_id)
+    command = "exmortal" if verification == CAPSOLVER else "mortal"
+    usage = "exmortal batch" if verification == CAPSOLVER else "msmortal"
+    batches.require_verification(verification, owner)
+    options = parse_options(text, max_last=MAX_BATCH_COUNT, allow_all=False)
+    count = batch_count(options.last if options.last_explicit else None)
+    if options.mode != 4:
+        raise ValueError("Mortal 批跑仅支持四麻半庄，-l 场数范围为 1–100")
+    if options.subscription or options.group or options.image or options.gap != 60:
+        raise ValueError(f"{usage} 支持玩家、-l 场数、-r 房间、start/end、-m/-y 和 -n")
+    selected = [m for m in (options.modes or [9, 12, 16]) if m in {9, 12, 16}]
+    if not selected:
+        raise ValueError("Mortal 仅支持四麻半庄；请使用 game=南 或 -r 玉南等半庄筛选")
+    player = await MahjongQueries(db, paipuya, sanma).player(options, event.user_id)
+    games, _ = await paipuya.history(
+        player.account_id, count, start=options.start, end=options.end, modes=selected
+    )
+    job = await batches.create(
+        count, group_id, owner, player, games=games, verification=verification
+    )
+    if batches.available:
+        try:
+            batches.start(job["id"], group_id, owner)
+        except ReviewError as exc:
+            await matcher.finish(
+                f"任务 {job['id']} 已保存。{exc}\n可发送 {command} resume {job['id']} 开始。"
+            )
+    await matcher.finish(
+        f"任务 {job['id']}：找到 {len(job['rows'])} 场四麻半庄。\n"
+        f"进度：{command} status {job['id']}\n图表：{command} report {job['id']}"
+    )
 
 
 health_cmd = on_command("msstatus", priority=10, block=True)

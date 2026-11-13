@@ -187,14 +187,14 @@ def test_inconsistent_first_and_chase_riichi_rates_cannot_produce_conflicting_ta
     assert classify(raw)["style"] == []
 
 
-def test_open_hand_traits_require_the_other_side_of_the_tradeoff_and_do_not_duplicate():
+def test_open_hand_traits_keep_their_guardrails_and_can_coexist():
     raw = sample_raw()
     raw.update(副露后和牌率=0.5, 副露后放铳率=0.25)
     assert classify(raw)["style"] == []
     raw.update(副露后和牌率=0.05, 副露后放铳率=0.04)
     assert classify(raw)["style"] == []
     raw.update(副露后和牌率=0.5, 副露后放铳率=0.04)
-    assert classify(raw)["style"] == ["鸣牌善战"]
+    assert classify(raw)["style"] == ["鸣牌善战", "鸣牌慎行"]
 
 
 def test_reference_weights_follow_the_actual_event_denominator_and_fail_closed_for_missing_groups():

@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 import httpx
 
 from .ms_ids import perspective_to_account
+from .paipuya import PaipuyaError
 from .review import ReviewError, parse_review_link
 
 
@@ -213,6 +214,16 @@ class RecordNames:
     async def _majsoul(self, log):
         key = log.source, log.game_id
         self.checks.pop(key, None)
+        names = []
+        error = None
+        try:
+            # Leave time for the official-session fallback within the 230s lookup budget.
+            async with asyncio.timeout(60):
+                names = await self._paipuya_names(log)
+        except (PaipuyaError, httpx.HTTPError, ReviewError, TimeoutError) as exc:
+            error = exc
+        if len(names) == 4 and all(names):
+            return names
         if self.majsoul_browser is not None:
             head = await self.majsoul_browser.record_head(log.url, log.game_id)
             result = majsoul_head_seats(head, log.game_id)
@@ -225,7 +236,12 @@ class RecordNames:
                     "checked_at": datetime.now(UTC).isoformat(),
                 }
                 return [player["name"] for player in result]
+        if error is not None:
+            raise error
+        return names
 
+    async def _paipuya_names(self, log):
+        key = log.source, log.game_id
         client = self.clients.get(4)
         if client is None:
             raise ReviewError("未配置牌谱屋客户端，昵称尚未核验")

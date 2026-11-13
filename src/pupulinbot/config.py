@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     mortal_online_headless: bool = True
     mortal_online_retries: int = Field(default=2, ge=0, le=5)
     mortal_online_proxy: str | None = None
+    mortal_capsolver_api_key: SecretStr | None = Field(default=None, repr=False)
     mortal_save_html: bool = True
     mortal_save_screenshot: bool = False
     mortal_api_token: str | None = None

@@ -5,7 +5,7 @@ import base64
 import json
 import re
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
@@ -28,6 +28,43 @@ LOBBY_CLICK_POINT = """
     if (rect.width < 640 || rect.height < 360 || rect.left < 0 || rect.top < 0) return null;
     const x = Math.ceil(rect.left) + 3, y = Math.ceil(rect.top) + 3;
     return document.elementFromPoint(x, y) === canvas ? {x, y} : null;
+})();
+"""
+
+# Keep the authenticated client's timers and network alive while reducing software rendering.
+LOBBY_RENDER_LIMIT = """
+(() => {
+    if (location.href !== 'https://game.maj-soul.com/1/' ||
+        !window.unityInstance) return false;
+    if (window.__pupulinLobbyFrames) return true;
+    const request = window.requestAnimationFrame.bind(window);
+    const cancel = window.cancelAnimationFrame.bind(window);
+    const pending = new Map();
+    let lastFrame = -Infinity;
+    window.requestAnimationFrame = function(callback) {
+        if (typeof callback !== 'function') return request(callback);
+        let handle;
+        const tick = timestamp => {
+            if (!pending.has(handle)) return;
+            if (timestamp === lastFrame || timestamp - lastFrame >= 1000) {
+                lastFrame = timestamp;
+                pending.delete(handle);
+                callback(timestamp);
+            } else {
+                pending.set(handle, request(tick));
+            }
+        };
+        handle = request(tick);
+        pending.set(handle, handle);
+        return handle;
+    };
+    window.cancelAnimationFrame = function(handle) {
+        const active = pending.get(handle);
+        pending.delete(handle);
+        cancel(active === undefined ? handle : active);
+    };
+    window.__pupulinLobbyFrames = true;
+    return true;
 })();
 """
 
@@ -188,7 +225,11 @@ async def fetch_replay_head(profile, url, uuid, *, wait_seconds=112):
         async with chrome_browser(profile) as (browser, origin):
             target = await official_tab(browser, renew=True)
             async with asyncio.timeout(wait_seconds), chrome_page(origin, target) as page:
-                return await replay_response(page, url, uuid)
+                result = await replay_response(page, url, uuid)
+                if result is not None:
+                    with suppress(OSError, WebSocketException, TimeoutError, ValueError):
+                        await command(page, "Page.navigate", url="about:blank")
+                return result
     except (OSError, WebSocketException, TimeoutError) as exc:
         raise MajsoulConnectionLost from exc
     except (ValueError, TypeError, IndexError, KeyError):
@@ -196,6 +237,7 @@ async def fetch_replay_head(profile, url, uuid, *, wait_seconds=112):
 
 
 async def click_lobby(page):
+    await command(page, "Runtime.evaluate", expression=LOBBY_RENDER_LIMIT, returnByValue=True)
     result = await command(
         page, "Runtime.evaluate", expression=LOBBY_CLICK_POINT, returnByValue=True
     )

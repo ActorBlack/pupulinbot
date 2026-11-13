@@ -34,7 +34,14 @@ def monitor_allowed(restricted, vip2, *, maintainer=False):
 
 
 def check_group_command(
-    event, state, monitor_only_groups, *, superusers=(), monitor_owner=None, vip2=False
+    event,
+    state,
+    monitor_only_groups,
+    *,
+    superusers=(),
+    monitor_owner=None,
+    vip2=False,
+    capsolver_users=(),
 ):
     if not isinstance(event, GroupMessageEvent):
         return
@@ -42,6 +49,10 @@ def check_group_command(
     if user in superusers:
         return
     command = command_name(state)
+    if command == "exmortal":
+        if user not in capsolver_users:
+            raise IgnoredException("未开通 CapSolver 跑谱权限")
+        return
     restricted = str(event.group_id) in monitor_only_groups
     if command == "vip2":
         raise IgnoredException("仅 Bot 超级管理员可管理二级会员")

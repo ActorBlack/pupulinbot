@@ -307,21 +307,27 @@ async def test_cache_hit_does_not_launch_browser_or_call_submission_callback(tmp
 
 
 @pytest.mark.asyncio
-async def test_new_online_report_survives_restart_without_task_files(tmp_path):
+@pytest.mark.parametrize("producer,consumer", [("browser", "capsolver"), ("capsolver", "browser")])
+async def test_online_report_survives_restart_and_is_shared_between_routes(
+    tmp_path, producer, consumer
+):
     cache_dir = tmp_path / "cache"
     pool = OnlinePool(tmp_path / "browser", cache=ReviewCache(cache_dir))
     report = native_report()
     pool.worker.submit = AsyncMock(return_value=(report, REPORT))
-    row = {"uuid": "original-game", "seat": 0}
+    row = {"uuid": "original-game", "seat": 0, "verification": producer}
     assert await pool.submit("first:0", row, AsyncMock()) == (report, REPORT)
+    pool.worker.submit.assert_awaited_once()
     await pool.close()
 
     restarted = OnlinePool(tmp_path / "browser", cache=ReviewCache(cache_dir))
     restarted.worker.submit = AsyncMock()
-    request = row.copy()
-    assert await restarted.submit("second:0", request, AsyncMock()) == (report, REPORT)
+    request = {**row, "verification": consumer}
+    on_submitted = AsyncMock()
+    assert await restarted.submit("second:0", request, on_submitted) == (report, REPORT)
     assert request["review_cache_hit"]
     restarted.worker.submit.assert_not_called()
+    on_submitted.assert_not_called()
     await restarted.close()
 
 
@@ -370,14 +376,21 @@ def test_worker_remembers_only_trusted_remote_task_urls(tmp_path):
     from pupulinbot.batchmortal_worker import BrowserWorker
 
     worker = BrowserWorker.__new__(BrowserWorker)
+    worker.key, worker.seat, worker.model = "job:0", 0, "4.1b"
+    worker.report_future = None
+    worker.report_reader = Mock()
     worker.journal = {"key": "job:0", "state": "submitted"}
     worker.journal_path = tmp_path / "submission-journal.json"
     worker._remember_remote_url("https://evil.invalid/progress?task=abcdef0123456789")
     assert not worker.journal_path.exists()
     worker._remember_remote_url("https://mjai.ekyu.moe/progress?task=abcdef0123456789")
     assert worker.journal["remote_progress_url"].endswith("abcdef0123456789")
+    worker.report_reader.submit.assert_not_called()
     worker._remember_remote_url(REPORT)
     assert worker.journal["remote_report_url"] == REPORT
+    worker._remember_remote_url(REPORT)
+    worker.report_reader.submit.assert_called_once()
+    assert worker.report_reader.submit.call_args.args[1:] == (REPORT, 0, "4.1b")
 
 
 def test_native_report_compaction_preserves_all_metrics():

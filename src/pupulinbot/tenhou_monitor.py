@@ -256,21 +256,24 @@ class TenhouMonitor:
             active = any(s["group_id"] == pending["group_id"] and s["name"] in names for s in subs)
             if active:
                 try:
-                    picture = await self.start_message(game)
+                    info = game["info"]
+                    picture = (
+                        await self.start_message(game) if int(info["playerlevel"]) == 3 else None
+                    )
                     current = await self.store.subscriptions(pending["group_id"])
                     if not any(s["name"] in names for s in current):
                         await self.store.dequeue(pending["group_id"], pending["game_id"])
                         continue
                     # Include start timestamp in the key: short watch IDs can be reused.
-                    key = f"wg:{game['info']['id']}:{game['info']['starttime']}"
-                    watch_id = game["info"]["id"].upper()
-                    notice = TenhouStartNotice(
-                        picture,
-                        rule_name(game["info"])
+                    key = f"wg:{info['id']}:{info['starttime']}"
+                    watch_id = info["id"].upper()
+                    text = (
+                        rule_name(info)
                         + " 对局开始\n"
                         + " / ".join(p["name"] for p in game["players"])
-                        + f"\n观战：{watch_url(watch_id)}\n逐局播报：thlive {watch_id}",
+                        + f"\n观战：{watch_url(watch_id)}\n逐局播报：thlive {watch_id}"
                     )
+                    notice = TenhouStartNotice(picture, text) if picture is not None else text
                     if not await self.deliver(pending["group_id"], key, "start", notice, send):
                         continue
                 except Exception:

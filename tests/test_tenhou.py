@@ -169,9 +169,11 @@ async def test_live_failure_does_not_block_finish_and_history_failure_keeps_curs
 
 
 @pytest.mark.asyncio
-async def test_start_is_persisted_retried_after_disappearing_and_group_scoped(setup):
+@pytest.mark.parametrize(("level", "room"), [(0, "般"), (1, "上"), (2, "特"), (3, "鳳")])
+async def test_start_is_persisted_retried_after_disappearing_and_group_scoped(setup, level, room):
     _, store = setup
     game = fixture("live")[0]
+    game["info"]["playerlevel"] = level
     for owner in ["a", "b"]:
         await store.add("test", owner, game["players"][0]["name"])
     client = SimpleNamespace(
@@ -184,15 +186,16 @@ async def test_start_is_persisted_retried_after_disappearing_and_group_scoped(se
     client.live.return_value = []
     send = AsyncMock()
     await monitor.poll(send)
-    send.assert_awaited_once_with(
-        "test",
-        TenhouStartNotice(
-            b"png",
-            "四鳳南喰赤 对局开始\n"
-            + " / ".join(p["name"] for p in game["players"])
-            + "\n观战：https://tenhou.net/4/?wg=F2821E7D\n逐局播报：thlive F2821E7D",
-        ),
+    text = (
+        f"四{room}南喰赤 对局开始\n"
+        + " / ".join(p["name"] for p in game["players"])
+        + "\n观战：https://tenhou.net/4/?wg=F2821E7D\n逐局播报：thlive F2821E7D"
     )
+    if level == 3:
+        send.assert_awaited_once_with("test", TenhouStartNotice(b"png", text))
+    else:
+        send.assert_awaited_once_with("test", text)
+        monitor.start_message.assert_not_awaited()
     assert await store.pending() == []
     client.live.return_value = [game]
     await monitor.poll(send)

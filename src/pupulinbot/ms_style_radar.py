@@ -63,7 +63,7 @@ AXES = (
     Axis(
         "速度",
         -1,
-        Metric("和立牌平均巡目", "和牌 / 立直事件巡目", "巡"),
+        Metric("和立牌平均巡目", "和牌 / 立直加权巡目", "巡"),
         (Metric("和了巡数", "和牌巡数", "巡"), Metric("立直巡目", "立直巡目", "巡")),
     ),
     Axis(
@@ -85,6 +85,8 @@ class RadarReference(NamedTuple):
     scales: dict[str, float]
     hands: int
     min_hands: int
+    speed_win_weight: float
+    speed_sampling_variance: float
 
 
 def metric_value(raw, metric):
@@ -104,8 +106,16 @@ def contribution(frequency, conditional_value):
     return frequency * conditional_value
 
 
+def speed_turns(raw, win_weight):
+    """Compare both kinds of turns using the same room-wide event weights."""
+    win, riichi = (number(raw.get(key)) for key in ("和了巡数", "立直巡目"))
+    if win is None or riichi is None or min(win, riichi) < 0:
+        return None
+    return win_weight * win + (1 - win_weight) * riichi
+
+
 def composite_metrics(raw):
-    """Derive each axis in its natural units from the same set of hand statistics."""
+    """Derive the metrics that only depend on the player's hand statistics."""
     win, deal, call, riichi = (rate(raw.get(k)) for k in ("和牌率", "放铳率", "副露率", "立直率"))
 
     def nonnegative(key):
@@ -124,17 +134,6 @@ def composite_metrics(raw):
         if call_win + call_deal <= call + 1e-9:
             call_net = call_win - call_deal
     riichi_net = contribution(riichi, number(raw.get("立直收支")))
-    win_turns = contribution(win, nonnegative("和了巡数"))
-    riichi_turns = contribution(riichi, nonnegative("立直巡目"))
-    speed = None
-    if (
-        win is not None
-        and riichi is not None
-        and win_turns is not None
-        and riichi_turns is not None
-    ):
-        if win + riichi:
-            speed = (win_turns + riichi_turns) / (win + riichi)
     return {
         "进攻触达率": attack,
         "铳点损失": loss,
@@ -142,35 +141,38 @@ def composite_metrics(raw):
         "副露和牌贡献率": call_win,
         "副露放铳贡献率": call_deal,
         "立直局均收支": riichi_net,
-        "和立牌平均巡目": speed,
         "打点效率": win_points,
         "净打点效率": win_points - loss if win_points is not None and loss is not None else None,
     }
 
 
 @lru_cache(maxsize=1)
-def _reference_rooms():
+def _reference_data():
     path = Path(__file__).with_name("assets") / "ms_style_radar_reference.json"
-    return json.loads(path.read_text(encoding="utf-8"))["rooms"]
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def comparison_reference(room, rank):
     """Select the exact room and four-player grade exposed by the source."""
     if rank is None:
         return None
-    room_data = _reference_rooms().get(room)
+    calibration = _reference_data()
+    room_data = calibration["rooms"].get(room)
     if room_data is None:
         return None
     level = str(10000 + rank["major"] * 100 + rank["star"])
     cohort = room_data["levels"].get(level)
     if cohort is None:
         return None
+    speed_sampling = room_data.get("speed_sampling", calibration["speed_sampling"])
     return RadarReference(
         cohort["metrics"],
         cohort["rank_rates"],
         room_data["scales"],
         cohort["hands"],
         room_data["min_hands"],
+        room_data["speed_win_weight"],
+        speed_sampling["variance"],
     )
 
 
@@ -208,12 +210,13 @@ def axis_score(axis, actual, reference, hands):
         variance = second_moment - mean**2
     elif key == "和立牌平均巡目":
         win, riichi = (rate(actual.get(field)) for field in ("和牌率", "立直率"))
-        if win is None or riichi is None:
+        if not win or not riichi:
             return None
-        events = hands * (win + riichi)
+        win_events, riichi_events = round(hands * win), round(hands * riichi)
         typical = reference.min_hands * (reference.metrics["和牌率"] + reference.metrics["立直率"])
-        if round(events) < math.ceil(typical):
+        if min(win_events, riichi_events) < 1 or win_events + riichi_events < math.ceil(typical):
             return None
+        variance = reference.speed_sampling_variance
 
     noise = max(0.0, variance) * (1 / hands + 1 / reference.hands)
     weight = scale**2 / (scale**2 + noise)

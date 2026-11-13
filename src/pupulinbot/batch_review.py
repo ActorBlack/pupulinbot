@@ -21,6 +21,7 @@ import httpx
 
 from ._batchmortal.metrics import parse_killerducky_bad_move_stats
 from .batch_limits import MAX_BATCH_COUNT
+from .capsolver import BROWSER, CAPSOLVER, PROVIDERS
 from .ms_ids import account_to_perspective
 from .review import ReviewError, parse_review_link
 from .review_metadata import apply_report_result
@@ -59,6 +60,7 @@ async def upload_report(bot, group_id: int, path: Path):
 
 
 STATUS_LABELS = {
+    "capsolver_failed": "CapSolver 验证已暂停",
     "waiting_human": "等待真人验证",
     "server_timeout": "分析服务任务超时",
     "captcha_rejected": "服务器拒绝验证，待重试",
@@ -210,11 +212,15 @@ class BatchReviews:
         name_resolver=None,
         *,
         superusers=(),
+        capsolver_enabled=False,
+        capsolver_users=(),
     ):
         self.directory, self.records, self.reviews = directory, records, reviews
         self.online, self.notify = online, notify
         self.name_resolver = name_resolver
         self.superusers = frozenset(str(user) for user in superusers)
+        self.capsolver_enabled = capsolver_enabled
+        self.capsolver_users = frozenset(str(user) for user in capsolver_users)
         self.lock = asyncio.Lock()
         self.lifecycle = asyncio.Lock()
         self.tasks: dict[str, asyncio.Task] = {}
@@ -222,6 +228,21 @@ class BatchReviews:
     @property
     def available(self):
         return bool(self.online or self.reviews.client.url)
+
+    def capsolver_allowed(self, user):
+        return str(user) in self.superusers or str(user) in self.capsolver_users
+
+    def require_verification(self, verification, user):
+        if verification not in PROVIDERS:
+            raise ReviewError("未知的 Mortal 验证方式")
+        if verification == CAPSOLVER:
+            if not self.capsolver_allowed(user):
+                raise ReviewError("未开通 CapSolver 跑谱权限")
+            if not self.online or not self.capsolver_enabled:
+                raise ReviewError("CapSolver 跑谱尚未启用")
+
+    def uses_browser(self, verification):
+        return bool(self.online and (verification == CAPSOLVER or not self.reviews.client.url))
 
     def _path(self, job_id: str) -> Path:
         if not re.fullmatch(r"[0-9a-f]{12}", job_id):
@@ -252,7 +273,10 @@ class BatchReviews:
         if write_report:
             (path.parent / "report.html").write_text(render_report(job))
 
-    async def create(self, count: int, group_id: str, owner: str, player, *, games=None) -> dict:
+    async def create(
+        self, count: int, group_id: str, owner: str, player, *, games=None, verification=BROWSER
+    ) -> dict:
+        self.require_verification(verification, owner)
         if type(count) is not int or not 1 <= count <= MAX_BATCH_COUNT:
             raise ReviewError("批量场数必须是 1–100")
         games = (
@@ -302,6 +326,7 @@ class BatchReviews:
             "owner": owner,
             "account_id": player.account_id,
             "nickname": player.nickname,
+            "verification": verification,
             "requested": count,
             "created_at": datetime.now(UTC).isoformat(),
             "status": "ready" if self.available else "waiting_service",
@@ -312,8 +337,17 @@ class BatchReviews:
         return job
 
     async def create_links(
-        self, links, group_id, owner, *, seat=None, table=False, resolve_names=True
+        self,
+        links,
+        group_id,
+        owner,
+        *,
+        seat=None,
+        table=False,
+        resolve_names=True,
+        verification=BROWSER,
     ):
+        self.require_verification(verification, owner)
         if seat is not None and (type(seat) is not int or seat not in range(4)):
             raise ReviewError("座位必须是0–3")
         if not 1 <= len(links) <= MAX_BATCH_COUNT or (table and len(links) != 1):
@@ -353,6 +387,7 @@ class BatchReviews:
             "account_id": None,
             "nickname": "同桌四人" if table else "导入牌谱",
             "kind": "table" if table else "links",
+            "verification": verification,
             "requested": len(rows),
             "created_at": datetime.now(UTC).isoformat(),
             "rows": rows,
@@ -414,6 +449,8 @@ class BatchReviews:
         if self.tasks:
             raise ReviewError("已有批量任务运行，请完成或暂停后再开始")
         job = self.load(job_id, group_id, owner)
+        verification = job.get("verification", BROWSER)
+        self.require_verification(verification, owner)
         if automatic and job["status"] != "retry_wait":
             raise ReviewError("任务已退出自动恢复队列")
         if all(row["status"] == "done" for row in job["rows"]):
@@ -431,7 +468,7 @@ class BatchReviews:
         if not self.available:
             raise ReviewError("自动批跑需要启用在线 Chrome 引擎或 Mortal 桥接服务")
         paused_jobs = set()
-        if self.online and not self.reviews.client.url:
+        if self.uses_browser(verification):
             for manifest in self.directory.glob("*/job.json"):
                 if manifest.parent.name == job_id:
                     continue
@@ -467,6 +504,9 @@ class BatchReviews:
     def schedule_retry(self, job):
         """Persist bounded backoff; ambiguous submissions are only read/recovered."""
         if job["status"] not in {"uncertain", "server_timeout", "error", "names_missing"}:
+            return
+        if job.get("verification") == CAPSOLVER and not self.capsolver_allowed(job.get("owner")):
+            job.pop("next_retry_at", None)
             return
         attempts = job.get("retry_attempts", 0)
         if attempts >= 5:
@@ -511,7 +551,11 @@ class BatchReviews:
                     continue
                 if datetime.fromisoformat(job["next_retry_at"]) > now:
                     continue
-                if allowed and not await allowed(job["group_id"], job["owner"]):
+                if (
+                    job.get("verification", BROWSER) != CAPSOLVER
+                    and allowed
+                    and not await allowed(job["group_id"], job["owner"])
+                ):
                     continue
                 self.start(job["id"], job["group_id"], job["owner"], automatic=True)
                 return
@@ -521,9 +565,12 @@ class BatchReviews:
             except (OSError, ValueError, KeyError, TypeError):
                 logger.warning("无法读取自动恢复任务：%s", path.parent.name)
 
-    async def _analyze_row(self, job_id, group_id, owner, index, row, *, enrich=True):
+    async def _analyze_row(
+        self, job_id, group_id, owner, index, row, *, enrich=True, verification=BROWSER
+    ):
+        self.require_verification(verification, owner)
         started = time.monotonic()
-        if self.online and not self.reviews.client.url:
+        if self.uses_browser(verification):
 
             async def on_submitted(url=None, index=index):
                 async with self.lock:
@@ -533,6 +580,7 @@ class BatchReviews:
                         current["rows"][index]["online_report_url"] = url
                     self.save(current, write_report=False)
 
+            row["verification"] = verification
             data, details_url = await self.online.submit(f"{job_id}:{index}", row, on_submitted)
             metric = report_metrics(data)
             if data.get("batchmortal_artifacts"):
@@ -712,7 +760,8 @@ class BatchReviews:
         consumers = []
         metadata_tasks = []
         metadata_limit = asyncio.Semaphore(2)
-        online_mode = bool(self.online and not self.reviews.client.url)
+        verification = job.get("verification", BROWSER)
+        online_mode = self.uses_browser(verification)
         count = (
             getattr(self.online, "concurrency", 1)
             if online_mode
@@ -783,7 +832,13 @@ class BatchReviews:
                 while True:
                     try:
                         needs_metadata = await self._analyze_row(
-                            job_id, group_id, owner, index, row, enrich=False
+                            job_id,
+                            group_id,
+                            owner,
+                            index,
+                            row,
+                            enrich=False,
+                            verification=verification,
                         )
                         break
                     except ReviewError as exc:
@@ -826,7 +881,7 @@ class BatchReviews:
                     if state in {"captcha_rejected", "server_timeout"}:
                         current["rows"][index]["online_submitted"] = False
                     if first:
-                        if state in VERIFICATION_FAILURE_STATUSES:
+                        if state in VERIFICATION_FAILURE_STATUSES or state == "capsolver_failed":
                             message += f" 进度已保存，发送 mortal resume {job_id} 可继续。"
                         current.update(status=state, message=message)
                     self.save(current, write_report=False)

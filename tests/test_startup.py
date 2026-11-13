@@ -17,7 +17,7 @@ from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from types import SimpleNamespace
 for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats', 'ms4',
                 'msstyle', 'msrank', 'msstatus', 'mswatch',
-                'mslife', 'msreview', 'mstable', 'thwatch', 'thstatus', 'thlast',
+                'mslife', 'msreview', 'mstable', 'exmortal', 'thwatch', 'thstatus', 'thlast',
                 'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank',
                 'thlive'):
     event = SimpleNamespace(get_type=lambda: 'message',
@@ -44,7 +44,7 @@ from nonebot.message import _apply_run_preprocessors
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from pupulinbot.plugin import (
     settings, help_cmd, help_handler, notify_batch, send_auto_review, superusers, batches, db,
-    manage_vip2, vip2_cmd,
+    manage_vip2, vip2_cmd, capsolver_mortal, capsolver_cmd,
 )
 assert "285843647" in superusers and "285843647" in batches.superusers
 settings.monitor_only_groups = {'706530575'}
@@ -69,6 +69,26 @@ async def verify_group_policy():
     assert '已在名单' in await call_vip2(admin, Message('add 234567'))
     assert '234567' in await call_vip2(admin, Message('list'))
     assert await db.is_vip2('234567')
+    async def call_exmortal(event, args):
+        finish = AsyncMock(side_effect=FinishedException)
+        with patch.object(capsolver_cmd, 'finish', new=finish):
+            try:
+                await capsolver_mortal(event, args)
+            except FinishedException:
+                return finish.call_args.args[0]
+        raise AssertionError('Missing command completion')
+    assert '超级管理员' in await call_exmortal(ordinary, Message('add 123456'))
+    assert not batches.capsolver_allowed('123456')
+    assert '已获得' in await call_exmortal(admin, Message('add ') + MessageSegment.at(123456))
+    assert batches.capsolver_allowed('123456')
+    assert '已在授权' in await call_exmortal(admin, Message('add 123456'))
+    assert '123456' in await call_exmortal(admin, Message('list'))
+    assert not await db.is_vip2('123456')
+    assert '超级管理员' in await call_exmortal(ordinary, Message('del 123456'))
+    assert '已移除' in await call_exmortal(admin, Message('del ') + MessageSegment.at(123456))
+    assert not batches.capsolver_allowed('123456')
+    assert not await db.capsolver_members()
+    assert await db.is_vip2('234567')
     with patch('pupulinbot.plugin.send_help', new=AsyncMock()) as send_help, \
          patch.object(help_cmd, 'finish', new=AsyncMock()):
         for group, caller in ((706530575, 123456), (706530575, 234567), (546573626, 285843647)):
@@ -79,9 +99,11 @@ async def verify_group_policy():
         from pupulinbot.help_menu import help_sections
         text = '\\n'.join(body for _, body in help_sections(**options[0]))
         assert all(cmd in text for cmd in ('/ms2', '/mortal', '/mswatch', '/vip2'))
+        assert all(cmd not in text for cmd in ('jqf', 'fudu', 'alsz', 'fssz'))
     for group in (706530575, 546573626):
         for caller in (285843647, 123456, 234567):
             commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
+                        'exmortal',
                         'msbind', 'ms2', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
                         'mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
             for command in commands:
@@ -97,7 +119,7 @@ async def verify_group_policy():
                 monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
                 mortal = command in ('mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus')
                 expected = caller == 285843647 or (
-                    command != 'vip2'
+                    command not in ('vip2', 'exmortal')
                     and (not monitoring or (group != 706530575 and caller != 234567))
                     and (not mortal or group != 706530575 or caller == 234567)
                 )
@@ -198,6 +220,38 @@ async def verify_command_boundaries():
         assert any(results), text
 asyncio.run(verify_command_boundaries())
 
+async def verify_group_ranking_delivery():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import handle_event
+    from pupulinbot.tenhou_queries import TenhouQueries
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    pages = [b'first page', b'second page']
+    roster = AsyncMock(return_value=[{'user_id': 42}])
+    forward = AsyncMock(return_value={'message_id': 123})
+    with patch.object(bot, 'get_group_member_list', new=roster), \\
+         patch.object(bot, 'call_api', new=forward), \\
+         patch.object(db, 'member_bindings', new=AsyncMock(return_value=[{'account_id': 1}])), \\
+         patch('pupulinbot.plugin.group_ranking', new=AsyncMock(return_value=pages)), \\
+         patch.object(TenhouQueries, 'ranking', new=AsyncMock(return_value=pages)):
+        for ordinal, command in enumerate(('msrank', 'thrank'), 800):
+            message = Message('/' + command)
+            await handle_event(bot, GroupMessageEvent.model_construct(
+                time=0, post_type='message', message_type='group', sub_type='normal',
+                self_id=100, group_id=1131357545, user_id=42, message_id=ordinal,
+                sender=SimpleNamespace(role='member'), to_me=False,
+                message=message, original_message=message, raw_message=str(message),
+            ))
+    assert roster.await_count == 2
+    assert [call.args for call in forward.await_args_list] == [('send_group_forward_msg',)] * 2
+    for call, title in zip(forward.await_args_list, ('雀魂群排行', '天凤群排行'), strict=True):
+        assert call.kwargs['group_id'] == 1131357545 and call.kwargs['source'] == title
+        assert [node['data']['content'][0]['data']['file'] for node in call.kwargs['messages']] == [
+            MessageSegment.image(page).data['file'] for page in pages
+        ]
+asyncio.run(verify_group_ranking_delivery())
+
 async def verify_mortal_short_options():
     from unittest.mock import AsyncMock, patch
     from pupulinbot.plugin import ms_mortal, msmortal_cmd, paipuya, MahjongQueries
@@ -229,6 +283,64 @@ async def verify_mortal_short_options():
             create.assert_not_awaited()
             assert '100' in finish.call_args.args[0]
 asyncio.run(verify_mortal_short_options())
+
+async def verify_exmortal_modes():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.exception import FinishedException
+    from pupulinbot.plugin import capsolver_mortal, capsolver_cmd, paipuya, MahjongQueries
+    from pupulinbot.models import Player
+
+    event = GroupMessageEvent.model_construct(
+        post_type='message', group_id=1131357545, user_id=285843647,
+    )
+    link = 'https://tenhou.net/4/?log=2026110806gm-00a9-0000-f946a576&tw=1'
+    async def invoke(text):
+        finish = AsyncMock(side_effect=FinishedException)
+        with patch.object(capsolver_cmd, 'finish', new=finish):
+            try:
+                await capsolver_mortal(event, Message(text))
+            except FinishedException:
+                return finish.call_args.args[0]
+        raise AssertionError('Missing exmortal command completion')
+    with patch.object(batches, 'capsolver_enabled', True), \
+         patch.object(batches, 'online', object()), patch.object(batches, 'start') as start:
+        for text, seats in ((link, [1]), (link+' 3', [3]), ('table '+link, [0,1,2,3]),
+                            ('links '+link+' dboqr0kj4ak3gig8n0tg@2', [1,2])):
+            reply = await invoke(text)
+            job_id = start.call_args.args[0]
+            assert f'exmortal status {job_id}' in reply
+            job = batches.load(job_id, '1131357545', '285843647')
+            assert job['verification'] == 'capsolver'
+            assert [row['seat'] for row in job['rows']] == seats
+        job.update(status='capsolver_failed', message=f'发送 exmortal resume {job_id} 可继续。')
+        batches.save(job)
+        assert f'发送 exmortal resume {job_id}' in await invoke(f'status {job_id}')
+        start.reset_mock()
+        assert f'exmortal status {job_id}' in await invoke(f'resume {job_id}')
+        start.assert_called_once_with(job_id, '1131357545', '285843647')
+        start.reset_mock()
+        assert '1–100' in await invoke('batch 101')
+        start.assert_not_called()
+        create_job = AsyncMock(return_value={'id':'ex-test','rows':[]})
+        player = Player(42,'测试 玩家')
+        with patch.object(MahjongQueries,'player',new=AsyncMock(return_value=player)) as resolve, \
+             patch.object(paipuya,'history',new=AsyncMock(return_value=([],False))) as history, \
+             patch.object(batches,'create',new=create_job):
+            reply = await invoke('batch "测试 玩家" -l 3 -r 玉南 start=2026-11-01')
+            assert 'exmortal status ex-test' in reply and 'exmortal report ex-test' in reply
+            assert resolve.await_args.args[0].player == '测试 玩家'
+            assert history.await_args.args == (42,3)
+            assert history.await_args.kwargs['modes'] == [12]
+            assert history.await_args.kwargs['start'].isoformat() == '2026-10-31T16:00:00+00:00'
+            create_job.assert_awaited_once_with(
+                3, '1131357545', '285843647', player, games=[], verification='capsolver'
+            )
+            history.reset_mock()
+            create_job.reset_mock()
+            assert '1–100' in await invoke('batch "测试 玩家" -l 101')
+            history.assert_not_awaited()
+            create_job.assert_not_awaited()
+asyncio.run(verify_exmortal_modes())
 
 async def verify_mortal_batch_default_and_limit():
     from unittest.mock import AsyncMock, patch
@@ -380,7 +492,7 @@ async def verify_group_text_replies():
     def event(message_id, message, user=42):
         return GroupMessageEvent.model_construct(
             post_type='message', message_type='group', message_id=message_id,
-            group_id=1131357545, user_id=user, self_id=100, original_message=message,
+            group_id=546573626, user_id=user, self_id=100, original_message=message,
             message=Message('fssz'),
         )
 
@@ -430,6 +542,8 @@ async def verify_group_text_replies():
             update = event(message_id, Message(value))
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
         for message_id in range(47, 51):
+            separator = event(200 + message_id, Message('普通聊天'))
+            assert await _apply_event_preprocessors(bot, separator, {}, show_log=False)
             update = event(message_id, Message('alsz'))
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
             assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
@@ -437,17 +551,121 @@ async def verify_group_text_replies():
         call(1, 6), call(1, 6), call(1, 1), call(1, 19), call(1, 32), *[call(1, 100)] * 4,
     ]
     assert send.await_args_list == [
-        call(group_id=1131357545, message=Message('发四是巨大🐷')),
-        call(group_id=1131357545, message=Message('发四是巨大🐷🐷🐷🐷🐷🐷')),
-        call(group_id=1131357545, message=Message('发四是巨大猪🐷')),
-        call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 17)),
-        call(group_id=1131357545, message=Message('发四是巨大猪' + '🐷' * 32)),
-        call(group_id=1131357545, message=Message('阿落是小🐷')),
-        call(group_id=1131357545, message=Message('阿落不是小🐷')),
-        call(group_id=1131357545, message=Message('阿落不是小🐷')),
-        call(group_id=1131357545, message=Message('泥才是小🐷')),
+        call(group_id=546573626, message=Message('发四是巨大🐷')),
+        call(group_id=546573626, message=Message('发四是巨大🐷🐷🐷🐷🐷🐷')),
+        call(group_id=546573626, message=Message('发四是巨大猪🐷')),
+        call(group_id=546573626, message=Message('发四是巨大猪' + '🐷' * 17)),
+        call(group_id=546573626, message=Message('发四是巨大猪' + '🐷' * 32)),
+        call(group_id=546573626, message=Message('阿落是小🐷')),
+        call(group_id=546573626, message=Message('阿落不是小🐷')),
+        call(group_id=546573626, message=Message('阿落不是小🐷')),
+        call(group_id=546573626, message=Message('泥才是小🐷')),
     ]
 asyncio.run(verify_group_text_replies())
+
+async def verify_group_reaction_switches():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+    from pupulinbot.db import Database
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+    serial = 1000
+    primary, secondary, other = 546573626, 996147537, 1131357545
+
+    async def dispatch(group, text, *, user=42, role='member'):
+        nonlocal serial
+        serial += 1
+        update = GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=serial,
+            group_id=group, user_id=user, self_id=100, sender=SimpleNamespace(role=role),
+            original_message=Message(text), message=Message(text),
+        )
+        before = send.await_count
+        assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
+        if send.await_count != before:
+            assert send.await_count == before + 1
+            assert send.await_args.kwargs['group_id'] == group
+            return send.await_args.kwargs['message'].extract_plain_text()
+        return None
+
+    with patch.object(bot, 'send_group_msg', new=send), \\
+         patch('pupulinbot.plugin.randint', return_value=1), \\
+         patch('pupulinbot.plugin.group_reaction_overrides', {}), \\
+         patch('pupulinbot.plugin.repeat_stops', {}), \\
+         patch('pupulinbot.repeat_stop.send_verified_image', new_callable=AsyncMock) as stop_image:
+        assert await dispatch(primary, 'fudu off', user=285843647) == 'fudu 已关闭'
+        for feature, trigger, reply in (
+            ('jqf', '好厉害', '井棋风'),
+            ('alsz', 'alsz', '阿落是小🐷'),
+            ('fssz', 'fssz 2', '发四是巨大猪🐷'),
+        ):
+            assert await dispatch(other, trigger) is None
+            for role in ('member', 'admin', 'owner'):
+                assert await dispatch(primary, feature + ' off', role=role) is None
+            assert await dispatch(other, feature + ' on', user=285843647) == feature + ' 已开启'
+            assert await dispatch(other, trigger) == reply
+            assert await dispatch(primary, trigger) == reply
+            assert await dispatch(primary, feature + ' off', user=285843647) == feature + ' 已关闭'
+            for role in ('member', 'admin', 'owner'):
+                assert await dispatch(primary, feature + ' on', role=role) is None
+            assert await dispatch(primary, trigger) is None
+            reopened = Database(db.path)
+            saved = await reopened.group_reaction_overrides()
+            assert saved[primary, feature] is False
+            assert saved[other, feature] is True
+            assert await dispatch(other, trigger) == reply
+            if feature == 'jqf':
+                assert await dispatch(secondary, trigger) == reply
+                assert await dispatch(secondary, 'jqf off', user=285843647) == 'jqf 已关闭'
+                assert await dispatch(secondary, trigger) is None
+                assert await dispatch(secondary, 'jqf on', user=285843647) == 'jqf 已开启'
+            assert await dispatch(primary, feature + ' on', user=285843647) == feature + ' 已开启'
+            assert await dispatch(primary, trigger) == reply
+            assert await dispatch(other, feature + ' off', user=285843647) == feature + ' 已关闭'
+            assert await dispatch(other, trigger) is None
+            assert await dispatch(primary, trigger) == reply
+
+        assert await dispatch(primary, 'fudu on', user=285843647) == 'fudu 已开启'
+        for feature in ('jqf', 'fudu', 'alsz', 'fssz'):
+            for action in ('on', 'off'):
+                for role in ('member', 'admin', 'owner', 'member'):
+                    assert await dispatch(primary, f'{feature} {action}', role=role) is None
+        for _ in range(4):
+            assert await dispatch(other, '四连复读') is None
+        stop_image.assert_not_awaited()
+        assert await dispatch(other, 'fudu on', user=285843647) == 'fudu 已开启'
+        for _ in range(3):
+            assert await dispatch(primary, '四连复读') is None
+            assert await dispatch(other, '四连复读') is None
+        stop_image.assert_not_awaited()
+        assert await dispatch(primary, 'fudu off', user=285843647) == 'fudu 已关闭'
+        assert await dispatch(other, '四连复读') is None
+        assert await dispatch(primary, '四连复读') is None
+        stop_image.assert_awaited_once()
+        assert stop_image.await_args.args[1] == other
+        saved = await Database(db.path).group_reaction_overrides()
+        assert saved[primary, 'fudu'] is False and saved[other, 'fudu'] is True
+        assert await dispatch(primary, 'fudu on', user=285843647) == 'fudu 已开启'
+        for _ in range(3):
+            assert await dispatch(primary, '四连复读') is None
+        stop_image.assert_awaited_once()
+        assert await dispatch(primary, '四连复读') is None
+        assert [call.args[1] for call in stop_image.await_args_list] == [other, primary]
+
+    async with db.connect() as connection:
+        await connection.executescript('''
+            CREATE TABLE disabled_group_reactions (group_id INTEGER, feature TEXT);
+            INSERT INTO disabled_group_reactions VALUES (9988, 'jqf');
+        ''')
+    reopened = Database(db.path)
+    await reopened.initialize()
+    assert (await reopened.group_reaction_overrides())[9988, 'jqf'] is False
+    await reopened.set_group_reaction(9988, 'jqf', True)
+    await reopened.initialize()
+    assert (await reopened.group_reaction_overrides())[9988, 'jqf'] is True
+asyncio.run(verify_group_reaction_switches())
 
 async def verify_daily_identity():
     from datetime import UTC, datetime

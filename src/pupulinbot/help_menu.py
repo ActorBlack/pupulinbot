@@ -121,6 +121,8 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/mortal links <链接1> <链接2>：多链接任务\n"
             "/mortal import <任务编号> <场次编号> <报告链接>：导入报告\n"
             "/mortal file <任务编号>：HTML 群文件\n/mortalstatus：分析服务状态\n"
+            "/exmortal <牌谱> [座位]：CapSolver 单牌谱；/exmortal table <牌谱>：全桌\n"
+            "/exmortal batch [玩家] -l 1–100：批量，支持房间和日期筛选。需单独授权。\n"
             "跑谱完成后会在结果消息中 @任务发起者。\n" + mortal,
         ),
         (

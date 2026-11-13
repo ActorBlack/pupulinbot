@@ -30,15 +30,16 @@ def comparable_message(message: Message) -> Message:
 
 
 class RepeatStop:
-    def __init__(self, image: Path = STOP_IMAGE):
+    def __init__(self, image: Path = STOP_IMAGE, *, group_id: int = GROUP_ID):
         self.image = image
+        self.group_id = group_id
         self.recent_ids: deque[int] = deque(maxlen=64)
         self.previous: Message | None = None
         self.count = 0
 
     async def handle(self, bot: Bot, event: GroupMessageEvent) -> None:
         if (
-            event.group_id != GROUP_ID
+            event.group_id != self.group_id
             or event.user_id == event.self_id
             or event.message_id in self.recent_ids
         ):
@@ -53,6 +54,7 @@ class RepeatStop:
         if self.count == 4 and message:
             try:
                 picture = await asyncio.to_thread(self.image.read_bytes)
-                await send_verified_image(bot, GROUP_ID, Message(MessageSegment.image(picture)))
+                message = Message(MessageSegment.image(picture))
+                await send_verified_image(bot, self.group_id, message)
             except Exception:
                 logger.exception("发送四连复读停止图失败")

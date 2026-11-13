@@ -3,6 +3,7 @@ import base64
 import json
 import shutil
 import subprocess
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,11 +12,13 @@ import pytest
 
 from pupulinbot.live import LiveServiceError
 from pupulinbot.majsoul_replay import (
+    LOBBY_RENDER_LIMIT,
     LOBBY_URL,
     RECORD_RPC,
     MajsoulConnectionLost,
     ReplayBrowserUnavailable,
     click_lobby,
+    fetch_replay_head,
     official_tab,
     replay_response,
 )
@@ -223,17 +226,88 @@ async def test_record_read_reconnects_once_on_disconnect_but_not_on_a_missing_he
 
 async def test_lobby_click_sends_browser_input_only_for_a_valid_point(monkeypatch):
     send = AsyncMock(
-        side_effect=[{"result": {"value": None}}, {"result": {"value": {"x": 8, "y": 4}}}, {}, {}]
+        side_effect=[
+            {},
+            {"result": {"value": None}},
+            {},
+            {"result": {"value": {"x": 8, "y": 4}}},
+            {},
+            {},
+        ]
     )
     monkeypatch.setattr("pupulinbot.majsoul_replay.command", send)
     page = object()
     assert not await click_lobby(page)
-    assert send.await_count == 1
+    assert send.await_count == 2
     assert await click_lobby(page)
-    clicks = send.await_args_list[2:]
+    clicks = send.await_args_list[4:]
     assert [call.args[1] for call in clicks] == ["Input.dispatchMouseEvent"] * 2
     assert [call.kwargs["type"] for call in clicks] == ["mousePressed", "mouseReleased"]
     assert [(call.kwargs["x"], call.kwargs["y"]) for call in clicks] == [(8, 4)] * 2
+
+
+def test_lobby_frame_limit_preserves_same_frame_callbacks_and_cancellation():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required")
+    setup = """
+const assert = require('node:assert/strict');
+global.window = globalThis;
+global.location = {href: 'https://game.maj-soul.com/1/'};
+global.unityInstance = {};
+let nextId = 0;
+const pending = new Map();
+window.requestAnimationFrame = callback => {pending.set(++nextId, callback); return nextId;};
+window.cancelAnimationFrame = id => pending.delete(id);
+const originalTimer = setTimeout;
+function frame(time) {
+    const batch = [...pending.values()];
+    pending.clear();
+    batch.forEach(callback => callback(time));
+}
+"""
+    checks = """
+const received = [];
+requestAnimationFrame(t => received.push(t));
+requestAnimationFrame(t => received.push(t));
+frame(0);
+assert.deepEqual(received, [0, 0]);
+const cancelled = requestAnimationFrame(() => {throw new Error('cancelled callback ran');});
+requestAnimationFrame(t => received.push(t));
+frame(50);
+cancelAnimationFrame(cancelled);
+frame(100);
+assert.deepEqual(received, [0, 0]);
+frame(200);
+assert.deepEqual(received, [0, 0]);
+frame(1000);
+assert.deepEqual(received, [0, 0, 1000]);
+assert.equal(setTimeout, originalTimer);
+"""
+    subprocess.run([node, "-e", setup + LOBBY_RENDER_LIMIT + checks], check=True, timeout=10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_error", [None, ValueError("Chrome closed")])
+async def test_successful_replay_parks_page_without_losing_head(monkeypatch, cleanup_error):
+    @asynccontextmanager
+    async def browser(profile):
+        yield object(), "ws://127.0.0.1:1234"
+
+    @asynccontextmanager
+    async def page(origin, target):
+        yield object()
+
+    result = {"uuid": UUID, "accounts": [{"nickname": "player"}]}
+    cleanup = AsyncMock(side_effect=cleanup_error)
+    monkeypatch.setattr("pupulinbot.majsoul_replay.chrome_browser", browser)
+    monkeypatch.setattr("pupulinbot.majsoul_replay.chrome_page", page)
+    monkeypatch.setattr("pupulinbot.majsoul_replay.official_tab", AsyncMock(return_value="A"))
+    monkeypatch.setattr("pupulinbot.majsoul_replay.replay_response", AsyncMock(return_value=result))
+    monkeypatch.setattr("pupulinbot.majsoul_replay.command", cleanup)
+    assert await fetch_replay_head(None, LOBBY_URL + "?paipu=" + UUID, UUID) == result
+    assert cleanup.await_args.args[1] == "Page.navigate"
+    assert cleanup.await_args.kwargs == {"url": "about:blank"}
 
 
 async def test_official_tab_reuses_game_page_and_closes_duplicate_pages(monkeypatch):

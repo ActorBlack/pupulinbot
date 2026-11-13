@@ -15,6 +15,7 @@ from .batch_review import (
     finish_file_write,
     report_metrics,
 )
+from .capsolver import BROWSER, CAPSOLVER, CAPSOLVER_TIMEOUT
 from .online_worker import TURNSTILE_TIMEOUT, progress_report_url
 from .review import ReviewError
 
@@ -133,6 +134,7 @@ class OnlineReviews:
             "online_url": row["online_url"],
             "seat": row["seat"],
             "submitted": bool(row.get("online_submitted")),
+            "verification": row.get("verification", BROWSER),
             "need_game_result": not (type(row.get("rank")) is int and 1 <= row["rank"] <= 4),
             "profile": str(self.profile.resolve()),
             "model": self.model,
@@ -143,12 +145,15 @@ class OnlineReviews:
         self.progress = "正在打开 Mortal 复盘页"
         self.process.stdin.write((json.dumps(request) + "\n").encode())
         await self.process.stdin.drain()
+        token_timeout = (
+            CAPSOLVER_TIMEOUT if request["verification"] == CAPSOLVER else TURNSTILE_TIMEOUT
+        )
         try:
             async with (
                 asyncio.timeout(
                     self.timeout
                     + (self.options.get("retries", 2) + 1)
-                    * (TURNSTILE_TIMEOUT + VERIFICATION_BROWSER_GRACE + 60)
+                    * (token_timeout + VERIFICATION_BROWSER_GRACE + 60)
                     + 120
                 ),
                 asyncio.timeout(None) as verification,
@@ -159,12 +164,16 @@ class OnlineReviews:
                     event = json.loads(line[len(b"PUPULIN_ONLINE ") :])
                     status = event.get("status")
                     if status == "verification_wait":
-                        self.progress = "等待 Mortal 网页验证，尚未提交"
+                        self.progress = (
+                            "等待 CapSolver 验证，尚未提交"
+                            if request["verification"] == CAPSOLVER
+                            else "等待 Mortal 网页验证，尚未提交"
+                        )
                         # Allow browser interaction plus the worker's full token wait.
                         if self.options.get("controlled_gate") and not request["submitted"]:
                             verification.reschedule(
                                 asyncio.get_running_loop().time()
-                                + TURNSTILE_TIMEOUT
+                                + token_timeout
                                 + VERIFICATION_BROWSER_GRACE
                             )
                         continue
@@ -213,10 +222,12 @@ class OnlineReviews:
         except TimeoutError as exc:
             await self._terminate()
             if verification.expired():
-                limit = TURNSTILE_TIMEOUT + VERIFICATION_BROWSER_GRACE
+                limit = token_timeout + VERIFICATION_BROWSER_GRACE
                 logger.info("Mortal 验证流程超过 %s 秒，关闭 Chrome：%s", limit, key)
                 raise OnlinePaused(
-                    "verification_timeout",
+                    "capsolver_failed"
+                    if request["verification"] == CAPSOLVER
+                    else "verification_timeout",
                     f"Mortal 验证流程超过 {limit} 秒，尚未提交。",
                 ) from exc
             raise OnlinePaused("uncertain", "浏览器响应超时，任务已暂停；不会自动重复提交") from exc
