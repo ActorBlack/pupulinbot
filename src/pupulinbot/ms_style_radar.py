@@ -6,6 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
+from .ms_level import rank_identity
 from .ms_sample import number
 from .ms_trait_tags import rate
 
@@ -87,6 +88,7 @@ class RadarReference(NamedTuple):
     min_hands: int
     speed_win_weight: float
     speed_sampling_variance: float
+    level: int
 
 
 def metric_value(raw, metric):
@@ -153,26 +155,33 @@ def _reference_data():
 
 
 def comparison_reference(room, rank):
-    """Select the exact room and four-player grade exposed by the source."""
-    if rank is None:
-        return None
+    """Use the current grade or the highest grade with a usable room baseline."""
     calibration = _reference_data()
     room_data = calibration["rooms"].get(room)
     if room_data is None:
         return None
-    level = str(10000 + rank["major"] * 100 + rank["star"])
-    cohort = room_data["levels"].get(level)
-    if cohort is None:
+    min_hands = room_data["min_hands"]
+    cohorts = {
+        int(level): cohort
+        for level, cohort in room_data["levels"].items()
+        if rank_identity(level) is not None and cohort["hands"] >= min_hands
+    }
+    if not cohorts:
         return None
+    level = 10000 + rank["major"] * 100 + rank["star"] if rank else None
+    if level not in cohorts:
+        level = max(cohorts)
+    cohort = cohorts[level]
     speed_sampling = room_data.get("speed_sampling", calibration["speed_sampling"])
     return RadarReference(
         cohort["metrics"],
         cohort["rank_rates"],
         room_data["scales"],
         cohort["hands"],
-        room_data["min_hands"],
+        min_hands,
         room_data["speed_win_weight"],
         speed_sampling["variance"],
+        level,
     )
 
 

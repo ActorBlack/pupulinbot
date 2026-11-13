@@ -91,7 +91,12 @@ def render_style(player, stats, games, options, *, current_level=None):
         actual["和立牌平均巡目"] = speed_turns(actual, reference.speed_win_weight)
     baseline = reference.metrics if reference else {}
     reference_ranks = reference.rank_rates if reference else []
-    reference_label = f"{room_name}{rank_label(rank)}均值 = 50" if reference else "暂无同段位均值"
+    reference_rank = rank_identity(reference.level) if reference else None
+    fallback = bool(reference_rank and rank_label(reference_rank) != rank_label(rank))
+    mean_label = "基准均值" if fallback else "同段均值"
+    reference_label = (
+        f"{room_name}{rank_label(reference_rank)}均值 = 50" if reference else "暂无房间基准"
+    )
     hands = number(raw.get("_hand_count"))
     if hands is not None and (not hands.is_integer() or hands < count):
         hands = None
@@ -229,7 +234,7 @@ def render_style(player, stats, games, options, *, current_level=None):
     if reference:
         for x in range(233, 269, 12):
             draw.line((x, legend_y, x + 7, legend_y), fill=NEUTRAL, width=3)
-        text(283, legend_y - 10, "同段均值", 20, MUTED)
+        text(283, legend_y - 10, mean_label, 20, MUTED)
 
     text(736, 211, "各维度指标", 31, style="bold")
     text(1536, 222, "pp 为百分点", 18, MUTED, anchor="rt")
@@ -239,7 +244,7 @@ def render_style(player, stats, games, options, *, current_level=None):
         ("维度", group_x, "lm"),
         ("指标", metric_x, "lm"),
         ("本人", own_x, "rm"),
-        ("同段均值", mean_x, "rm"),
+        (mean_label, mean_x, "rm"),
         ("差值", delta_x, "rm"),
     ):
         text(x, 289, label, 20, BLUE if label == "本人" else MUTED, "bold", anchor)
@@ -292,7 +297,7 @@ def render_style(player, stats, games, options, *, current_level=None):
             average += f"（已知 {known} 场）"
         text(471, 963, average, 19, MUTED, anchor="rt")
     text(565, 963, "本人", 17, BLUE, anchor="rt")
-    text(661, 963, "同段均值", 17, MUTED, anchor="rt")
+    text(661, 963, mean_label, 17, MUTED, anchor="rt")
     ranks = [n / known for n in summary["rank_counts"]] if known else [None] * 4
     for i, own in enumerate(ranks):
         base = number(reference_ranks[i]) if i < len(reference_ranks) else None
@@ -315,7 +320,7 @@ def render_style(player, stats, games, options, *, current_level=None):
         text(771, y + 7, name, 18, accent, "bold", "mt")
         note = (
             f"{metric.label} {display(own, metric.kind)}，"
-            f"较同段 {difference(own, base, metric.kind)}"
+            f"{'较基准' if fallback else '较同段'} {difference(own, base, metric.kind)}"
         )
         text(823, y + 5, note, 21, BONUS_INK if bonus is not None else INK, width=700)
     if not standout:

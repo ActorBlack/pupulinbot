@@ -34,7 +34,8 @@
 和牌率等分母遵循牌谱屋段位统计的聚合口径，顺位分布使用同一段位组。
 上游用各玩家在该房间最后收录的段位分组，再汇总组内玩家的历史数据。
 玩家若选择历史样本，样本指标仍取所选对局，比较段位仍取当前段位。
-缺少对应房间的精确段位时留空。 [牌谱屋段位汇总源码](https://github.com/SAPikachu/amae-koromo-scripts/blob/master/globalStatistics.js)
+当前段位缺少可用基准时，采用该房间样本达到门槛的最高段位。雷达图标明实际参照的段位。
+[牌谱屋段位汇总源码](https://github.com/SAPikachu/amae-koromo-scripts/blob/master/globalStatistics.js)
 
 ### 指标和权重
 

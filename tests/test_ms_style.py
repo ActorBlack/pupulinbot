@@ -208,10 +208,29 @@ def test_radar_centers_exact_current_grade_in_each_room():
     master2 = comparison_reference("12", rank_identity(10402))
     assert saint2.metrics["放铳率"] < master2.metrics["放铳率"]
     assert saint2.rank_rates != master2.rank_rates
-    assert comparison_reference("12", None) is None
     assert comparison_reference("21", promoted) is None
-    assert comparison_reference("12", rank_identity(10712)) is None
-    assert comparison_reference("16", rank_identity(10712)) is not None
+    assert comparison_reference("16", rank_identity(10712)).level == 10712
+
+
+@pytest.mark.parametrize(
+    ("room", "player_level", "baseline_level"),
+    [
+        ("12", 10702, 10701),
+        ("12", None, 10701),
+        ("9", 10702, 10501),
+        ("16", 10717, 10720),
+        ("15", 10716, 10720),
+    ],
+)
+def test_radar_falls_back_to_highest_usable_grade_in_the_same_room(
+    room, player_level, baseline_level
+):
+    from pupulinbot.ms_level import rank_identity
+    from pupulinbot.ms_style_radar import comparison_reference
+
+    fallback = comparison_reference(room, rank_identity(player_level))
+    assert fallback.level == baseline_level
+    assert fallback == comparison_reference(room, rank_identity(baseline_level))
 
 
 def test_radar_bonus_uses_unrounded_extremes_and_caps_at_150():
