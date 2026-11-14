@@ -30,32 +30,46 @@ PALETTES = {
 
 @lru_cache(maxsize=1)
 def rarity_counts():
-    path = Path(__file__).with_name("assets") / "ms_style_rarity.json"
+    assets = Path(__file__).with_name("assets")
+    return _read_counts(assets / "ms_style_rarity.json", complete=True) or _read_counts(
+        assets / "ms_style_rarity_provisional.json", complete=False
+    )
+
+
+def _read_counts(path, *, complete):
     try:
         data = json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     if (
         not isinstance(data, dict)
-        or data.get("complete") is not True
-        or data.get("samples") != TARGET_SAMPLES
+        or data.get("complete") is not complete
         or not isinstance(data.get("visible_hits"), dict)
     ):
         return None
-    counts = data["visible_hits"]
-    if any(type(count) is not int or not 0 <= count <= TARGET_SAMPLES for count in counts.values()):
+    samples = data.get("samples")
+    if type(samples) is not int or not 0 < samples <= TARGET_SAMPLES:
         return None
-    return counts
+    if complete != (samples == TARGET_SAMPLES):
+        return None
+    counts = data["visible_hits"]
+    if not counts or any(
+        type(count) is not int or not 0 <= count <= samples for count in counts.values()
+    ):
+        return None
+    return samples, counts
 
 
-def tier_for_count(hits):
-    return next(tier for minimum, tier in TIERS if hits * 10000 >= TARGET_SAMPLES * minimum)
+def tier_for_count(hits, samples=TARGET_SAMPLES):
+    return next(tier for minimum, tier in TIERS if hits * 10000 >= samples * minimum)
 
 
 def rarity_tier(tag):
     if tag == "普普林":
         return "easter_egg"
-    counts = rarity_counts()
-    if counts is None:
+    calibration = rarity_counts()
+    if calibration is None:
         return "gray"
-    return tier_for_count(counts[tag]) if tag in counts else "gray"
+    samples, counts = calibration
+    hits = counts.get(tag, 0)
+    return tier_for_count(hits, samples) if hits else "gray"
