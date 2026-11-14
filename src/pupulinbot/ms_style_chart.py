@@ -18,7 +18,7 @@ from .ms_style_radar import (
     metric_value,
     speed_turns,
 )
-from .ms_style_rarity import PALETTES, rarity_tier
+from .ms_style_rarity import PALETTES, TIERS, rarity_tier
 from .ms_tags import supplemental_tags
 from .ms_trait_tags import COMBINATION_TAGS, is_named_yakuman_tag
 from .typography import profile_face as face
@@ -40,6 +40,7 @@ BONUS_START = {
 BONUS_CAP_DEVIATION = 5.0
 BONUS_CAP_THRESHOLD = NORMAL.cdf(BONUS_CAP_DEVIATION)
 STYLE_TAG_LIMIT = 15
+TAG_DISPLAY_ORDER = (*(tier for _, tier in TIERS), "combination", "easter_egg")
 
 # Outline in clockwise order, midtone, shadow, outline color.
 TAG_STONES = {
@@ -500,13 +501,17 @@ def render_style(player, stats, games, options, *, current_level=None):
         visible_tags = list(dict.fromkeys(tags))[:STYLE_TAG_LIMIT]
         if not visible_tags:
             text(736, 1012, "暂无达成标签" if stats else "标签数据不足", 21, MUTED)
-        for index, tag in enumerate(visible_tags):
-            row, column = divmod(index, 3)
-            x, y = 736 + column * 270, 1000 + row * 43
+        ranked_tags = []
+        for tag in visible_tags:
             if is_named_yakuman_tag(tag):
                 tier = "gold"
             else:
                 tier = "combination" if tag in COMBINATION_TAGS else rarity_tier(tag)
+            ranked_tags.append((tag, tier))
+        ranked_tags.sort(key=lambda item: TAG_DISPLAY_ORDER.index(item[1]))
+        for index, (tag, tier) in enumerate(ranked_tags):
+            row, column = divmod(index, 3)
+            x, y = 736 + column * 270, 1000 + row * 43
             _draw_tag_plate(draw, x, y, tier)
             text(x + 52, y + 18, tag, 22, PALETTES[tier][-1], "bold", "lm", width=190)
     text(37, 1240, "数据来源  雀魂牌谱屋", 16, MUTED)

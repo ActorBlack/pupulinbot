@@ -185,6 +185,61 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
         assert image.size == SIZE and image.mode == "RGB"
 
 
+def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
+    from PIL import ImageDraw
+
+    from pupulinbot import ms_style_chart
+
+    tags = [
+        "体面结局",
+        "副露进攻",
+        "重炮手",
+        "无声快刀",
+        "日常踩雷",
+        "国士受害者",
+        "一击必杀",
+        "普普林",
+        "略胜一筹",
+        "大三元",
+        "副露进攻",
+    ]
+    tiers = {
+        "体面结局": "gray",
+        "副露进攻": "blue",
+        "无声快刀": "gold",
+        "日常踩雷": "orange",
+        "一击必杀": "purple",
+        "普普林": "easter_egg",
+        "略胜一筹": "green",
+    }
+    drawn = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, value, *args, **kwargs):
+        if value in tags:
+            drawn.append(value)
+        return original(draw, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    monkeypatch.setattr(ms_style_chart, "supplemental_tags", lambda *args, **kwargs: tags)
+    monkeypatch.setattr(ms_style_chart, "rarity_tier", tiers.__getitem__)
+    ms_style_chart.render_style(
+        Player(42, "测试"), stats(100), games(), parse_options("-r 玉南 -l 100")
+    )
+    assert drawn == [
+        "体面结局",
+        "略胜一筹",
+        "副露进攻",
+        "一击必杀",
+        "日常踩雷",
+        "无声快刀",
+        "国士受害者",
+        "大三元",
+        "重炮手",
+        "普普林",
+    ]
+
+
 def test_radar_centers_exact_current_grade_in_each_room():
     from pupulinbot.ms_level import rank_identity, rank_progress
     from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference
