@@ -26,7 +26,7 @@ NOW = datetime(2026, 11, 10, tzinfo=UTC)
 
 
 def records(ranks=None, *, count=100):
-    ranks = ranks if ranks is not None else [i % 4 + 1 for i in range(count)]
+    ranks = ranks if ranks is not None else [(i // 2) % 4 + 1 for i in range(count)]
     return [
         GameRecord(
             str(i),
@@ -136,18 +136,18 @@ def test_recent_form_compares_last_twenty_to_own_baseline_with_variance_guard(
 @pytest.mark.parametrize(
     "ranks,raw,expected,minimum",
     [
-        ([1, 2, 3, 4] * 25, {"局收支": 150}, "高局收支", 25),
+        ([1, 1, 2, 2, 3, 3, 4, 4] * 12 + [1, 2, 3, 4], {"局收支": 150}, "局收支重视", 25),
         ([1, 2, 2, 3, 1, 2, 2, 3, 3, 4] * 10, {}, "避四流", 50),
         ([1, 1, 1, 1, 2, 3, 3, 4, 4, 4] * 10, {}, "争一流", 50),
     ],
 )
 def test_placement_and_income_tags_have_distinct_minimum_samples(ranks, raw, expected, minimum):
     rows = records(ranks)
-    assert supplemental_tags(stats(raw=raw), rows, 42) == [expected]
+    assert expected in supplemental_tags(stats(raw=raw), rows, 42)
     assert expected in supplemental_tags(stats(minimum, raw=raw), rows[:minimum], 42)
     assert expected not in supplemental_tags(stats(minimum - 1, raw=raw), rows[: minimum - 1], 42)
     rows[-1].players[0]["rank"] = None
-    if expected != "高局收支":
+    if expected != "局收支重视":
         assert expected not in supplemental_tags(stats(raw=raw), rows, 42)
 
 
@@ -155,7 +155,7 @@ def test_first_place_tag_does_not_require_high_fourth_rate_or_exclude_avoidance(
     rows = records([1, 1, 1, 1, 2, 3, 3, 3, 4, 4] * 10)
     assert supplemental_tags(stats(), rows, 42) == ["争一流"]
     rows = records([1, 1, 1, 1, 2, 2, 2, 3, 3, 4] * 10)
-    assert supplemental_tags(stats(), rows, 42) == ["避四流", "争一流"]
+    assert supplemental_tags(stats(), rows, 42) == ["上分糕手"]
 
 
 def test_round_income_uses_real_net_points_and_hand_count_never_efficiency_or_pt():
@@ -163,17 +163,17 @@ def test_round_income_uses_real_net_points_and_hand_count_never_efficiency_or_pt
     rows = records()
     for game in rows:
         game.players[0].update(score=25000, gradingScore=300)
-    assert "高局收支" not in supplemental_tags(sample, rows, 42)
+    assert "局收支重视" not in supplemental_tags(sample, rows, 42)
     for bad in (None, True, float("nan"), float("inf"), 149.99):
         sample.raw["局收支"] = bad
-        assert "高局收支" not in supplemental_tags(sample, rows, 42)
+        assert "局收支重视" not in supplemental_tags(sample, rows, 42)
     sample.raw.pop("局收支")
     for game in rows:
         game.players[0]["score"] = 27400
     assert sample_round_income(sample.raw, rows, 42, 1200) == 200
-    assert "高局收支" in supplemental_tags(sample, rows, 42)
+    assert "局收支重视" in supplemental_tags(sample, rows, 42)
     rows[-1].players[0]["score"] = None
-    assert "高局收支" not in supplemental_tags(sample, rows, 42)
+    assert "局收支重视" not in supplemental_tags(sample, rows, 42)
 
 
 def test_priority_limit_preserves_calling_form_and_income_before_secondary_traits():
@@ -188,7 +188,7 @@ def test_priority_limit_preserves_calling_form_and_income_before_secondary_trait
     )
     tags = supplemental_tags(sample, records(ranks), 42)
     assert tags[:2] == ["副露流", "好调中"]
-    assert {"高局收支", "高和高铳", "高打点", "立直流", "火力全开"} <= set(tags)
+    assert {"精打细算", "高和高铳", "高打点", "立直流", "火力全开"} <= set(tags)
     assert len(tags) <= 10
 
 
@@ -196,7 +196,7 @@ def test_ms_text_and_image_keep_main_style_and_append_the_same_tags(monkeypatch)
     rows = records()
     sample = stats(call_rate=0.4, deal_in_rate=0.10)
     player, options = Player(42, "示例玩家"), parse_options("-l 100 -r 玉南")
-    expected = "#" + analyze_style(sample).label + " #副露流 #稳健防守 #铳点节流"
+    expected = "#" + analyze_style(sample).label + " #副露流 #稳健防守"
     text = format_summary(player, rows, False, options, {"sample": sample}, now=NOW)
     assert text.splitlines()[-1] == "牌风: " + expected
     labels = []
@@ -214,7 +214,10 @@ def test_ms_text_and_image_keep_main_style_and_append_the_same_tags(monkeypatch)
     picture = render_profile(player, value, scope="四麻 · 玉南 · 最近100场", games=rows)
     assert Image.open(io.BytesIO(picture)).size == (1600, 1258)
     assert "#" + analyze_style(sample).label in labels
-    assert "#副露流 #稳健防守 #铳点节流" in labels
+    assert [label for label in labels if label in {"#副露流", "#稳健防守"}] == [
+        "#副露流",
+        "#稳健防守",
+    ]
     sample.games = 101
     text = format_summary(player, rows, False, options, {"sample": sample}, now=NOW)
     assert "副露流" not in text and "稳健防守" not in text
@@ -260,7 +263,7 @@ def test_supported_rooms_use_matched_references_and_same_sample_guards(mode):
     assert reference is not None
     sample = stats(300, call_rate=0.9, raw={"局收支": 200})
     tags = supplemental_tags(sample, rows, 42)
-    assert "副露流" in tags and "高局收支" in tags
+    assert "副露流" in tags and "局收支重视" in tags
     assert supplemental_tags(sample, rows, 42, mode=3) == []
     sample.games = 299
     assert supplemental_tags(sample, rows, 42) == []

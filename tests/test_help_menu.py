@@ -20,7 +20,8 @@ async def test_help_is_one_forward_with_multiple_readable_nodes(kind):
     assert len(kwargs["messages"]) == 8
     text = "\n".join(n["data"]["content"][0]["data"]["text"] for n in kwargs["messages"])
     assert "/mslife" in text and "/msbind" in text and "/mswatch on" in text
-    assert "仅播报结算" in text and "不会自动跑完" in text
+    assert "自动播报对局结算" in text and "不会自动跑完" in text
+    assert "/mslive" in text and "/thlive" in text
     assert all(n["data"]["uin"] == "123" for n in kwargs["messages"])
 
 
@@ -33,7 +34,7 @@ async def test_rejected_forward_falls_back_once_to_usable_text():
     await send_help(bot, event, live_enabled=True, mortal_enabled=True)
     bot.send.assert_awaited_once()
     text = bot.send.call_args.args[1]
-    assert "合并帮助发送失败" in text and "/help" in text and "仅播报结算" in text
+    assert "合并帮助发送失败" in text and "/help" in text and "自动播报对局结算" in text
 
 
 def test_forward_does_not_embed_external_content_or_fake_history():

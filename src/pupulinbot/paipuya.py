@@ -11,6 +11,8 @@ from urllib.parse import parse_qs, quote, urlsplit
 import httpx
 
 from .models import GameRecord, Player, PlayerStats, ms_datetime
+from .ms_sample import number
+from .ms_trait_tags import yakuman_names
 from .paipuya_auth import PaipuyaAccess, PaipuyaAuthError
 from .query_cache import QueryCache
 
@@ -205,6 +207,40 @@ class PaipuyaClient:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+
+    async def recent_yakuman_names(self, account_id, games, *, mode):
+        """Match the public room highlights to the player's exact sample."""
+        sample = {g.uuid: g.started_at.timestamp() for g in games if g.mode == str(mode)}
+        if mode not in self.modes or self.mode != "四麻" or not sample:
+            return ()
+
+        async def load():
+            rows = await self._get("recent_highlight_games", {"limit": 500, "mode": str(mode)})
+            if not isinstance(rows, list):
+                raise PaipuyaError("牌谱屋高光响应格式错误")
+            return rows
+
+        rows = await self.cache.get(("recent_highlight_games", mode), 600, load)
+        names = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            uuid = row.get("uuid")
+            if not isinstance(uuid, str) or uuid not in sample or number(row.get("modeId")) != mode:
+                continue
+            started = number(row.get("startTime"))
+            event = row.get("event")
+            if (
+                started is None
+                or abs(started - sample[uuid]) > 1
+                or not isinstance(event, dict)
+                or event.get("type") != "役满"
+                or number(event.get("player")) != account_id
+            ):
+                continue
+            for name in yakuman_names(event.get("fan")):
+                names[name] = None
+        return tuple(names)
 
     async def search_player(self, nickname: str) -> list[Player]:
         data = await self._get(

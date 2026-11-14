@@ -3,12 +3,19 @@
 import argparse
 import hashlib
 import json
+from collections import defaultdict
 from math import sqrt
 from pathlib import Path
-from statistics import NormalDist, quantiles
+from statistics import NormalDist, correlation, quantiles
 
 from pupulinbot.ms_options import ROOMS
-from pupulinbot.ms_style_radar import AXES, composite_metrics, metric_value, speed_turns
+from pupulinbot.ms_style_radar import (
+    AXES,
+    SANMA_STYLE_ROOMS,
+    composite_metrics,
+    metric_value,
+    speed_turns,
+)
 
 NORMAL_IQR = 2 * NormalDist().inv_cdf(0.75)
 PUBLISHED_COMPOSITES = {"铳点损失", "净打点效率"}
@@ -16,6 +23,13 @@ MIN_JOINT_PROFILES = 24
 SPEED_METRIC = "和立牌平均巡目"
 DEFAULT_SPEED_ROOM = 12
 GOLD_SOUTH = 9
+SANMA_MIN_PLAYERS = 10
+SANMA_MIN_SAMPLING_POOL = 8
+SANMA_CORRELATION_PRIOR_PLAYERS = 24
+SANMA_SAMPLING_PRIOR_PLAYERS = 12
+SANMA_EAST = (21, 23)
+SANMA_SOUTH = (22, 24, 26)
+POINT_METRICS = ("铳点损失", "立直局均收支", "净打点效率")
 
 
 def histogram_quantile(histogram, quantile):
@@ -34,38 +48,197 @@ def histogram_quantile(histogram, quantile):
     raise ValueError("Quantile outside histogram")
 
 
-def estimate_speed_sampling(payloads, win_weight, source_room):
-    windows = {}
+def speed_window_pairs(payloads, source_room, *, same_snapshot=False):
+    windows = defaultdict(dict)
     digests = []
     for payload in payloads:
-        contributes = False
+        source = defaultdict(dict)
         for line in payload.splitlines():
             row = json.loads(line)
             if "player_key" in row and row["room"] == source_room:
-                windows.setdefault(row["player_key"], {})[row.get("games", 100)] = row
-                contributes = True
-        if contributes:
+                source[row["player_key"]][row.get("games", 100)] = row
+        if same_snapshot:
+            # Replace both windows together to keep their cutoff dates aligned.
+            source = {key: pair for key, pair in source.items() if {12, 100} <= pair.keys()}
+            windows.update(source)
+        else:
+            for key, pair in source.items():
+                windows[key].update(pair)
+        if source:
             digests.append(hashlib.sha256(payload).hexdigest())
 
+    return windows.values(), digests
+
+
+def window_residuals(windows, metric):
     residuals = []
-    for pair in windows.values():
+    for pair in windows:
         if not {12, 100} <= pair.keys():
             continue
         short, long = pair[12], pair[100]
-        short_speed, long_speed = (speed_turns(row["raw"], win_weight) for row in (short, long))
-        if short_speed is None or long_speed is None or not 0 < short["hands"] < long["hands"]:
+        x_short, x_long = (metric(row["raw"]) for row in (short, long))
+        n_short, n_long = short["hands"], long["hands"]
+        if x_short is None or x_long is None or not 0 < n_short < n_long:
             continue
-        residuals.append((short_speed - long_speed) / sqrt(1 / short["hands"] - 1 / long["hands"]))
-    if len(residuals) < MIN_JOINT_PROFILES:
-        raise ValueError(f"Insufficient matched 12/100-game windows for room {source_room}")
+        residuals.append((x_short - x_long) / sqrt(1 / n_short - 1 / n_long))
+    return residuals
+
+
+def speed_residuals(windows, win_weight):
+    return window_residuals(windows, lambda raw: speed_turns(raw, win_weight))
+
+
+def residual_variance(residuals):
     q1, _, q3 = quantiles(residuals, method="inclusive")
     if q3 <= q1:
-        raise ValueError(f"Zero speed sampling IQR for room {source_room}")
+        raise ValueError("Zero sampling IQR")
+    return ((q3 - q1) / NORMAL_IQR) ** 2
+
+
+def estimate_speed_sampling(payloads, win_weight, source_room):
+    windows, digests = speed_window_pairs(payloads, source_room)
+    residuals = speed_residuals(windows, win_weight)
+    if len(residuals) < MIN_JOINT_PROFILES:
+        raise ValueError(f"Insufficient matched 12/100-game windows for room {source_room}")
     return {
         "source_room": source_room,
         "matched_players": len(residuals),
-        "variance": ((q3 - q1) / NORMAL_IQR) ** 2,
+        "variance": residual_variance(residuals),
         "source_sha256": digests,
+    }
+
+
+def sanma_composite_scale(key, histograms, profiles, win_weight):
+    """Propagate room-wide marginal spread using observed joint correlations."""
+    if key == "进攻触达率":
+        fields = ("和牌率", "流局率", "流听率")
+    elif key == "副露净结果率":
+        fields = ("副露率", "副露后和牌率", "副露后放铳率")
+    elif key == "立直局均收支":
+        fields = ("立直率", "立直收支")
+    elif key == SPEED_METRIC:
+        fields = ("和了巡数", "立直巡目")
+    else:
+        raise ValueError(f"Unknown composite {key}")
+
+    marginal = []
+    for field in fields:
+        histogram = histograms[field]["histogramFull"]
+        q1, median, q3 = (histogram_quantile(histogram, q) for q in (0.25, 0.5, 0.75))
+        if q3 <= q1:
+            raise ValueError(f"Zero IQR for {field}")
+        marginal.append((q1, median, q3))
+    center = [item[1] for item in marginal]
+    if key == "进攻触达率":
+        weights = (1, center[2], center[1])
+    elif key == "副露净结果率":
+        weights = (center[1] - center[2], center[0], -center[0])
+    elif key == "立直局均收支":
+        weights = (center[1], center[0])
+    else:
+        weights = (win_weight, 1 - win_weight)
+
+    weighted = [
+        w * (q3 - q1) / NORMAL_IQR for w, (q1, _, q3) in zip(weights, marginal, strict=True)
+    ]
+    joint = [
+        row for row in profiles if all(isinstance(row.get(field), (int, float)) for field in fields)
+    ]
+    columns = [
+        [min(q3 + 1.5 * (q3 - q1), max(q1 - 1.5 * (q3 - q1), row[field])) for row in joint]
+        for field, (q1, _, q3) in zip(fields, marginal, strict=True)
+    ]
+    variance = sum(value**2 for value in weighted)
+    correlations = {}
+    if len(joint) >= 4:
+        weight = len(joint) / (len(joint) + SANMA_CORRELATION_PRIOR_PLAYERS)
+        for i, col in enumerate(columns):
+            for j, other in enumerate(columns[:i]):
+                rho = correlation(col, other) if min(len(set(col)), len(set(other))) > 1 else 0
+                correlations[f"{fields[j]}/{fields[i]}"] = rho
+                variance += 2 * weight * rho * weighted[i] * weighted[j]
+    return sqrt(variance), {
+        "joint_players": len(joint),
+        "quartiles": dict(zip(fields, marginal, strict=True)),
+        "correlations": correlations,
+    }
+
+
+def build_room_reference(mode, cohorts, histograms, profiles, *, players=4):
+    counts = histograms["count"]["histogramFull"]
+    raw_profiles = [row for row in profiles if row["count"] >= counts["min"]]
+    if players == 4 and len(raw_profiles) < MIN_JOINT_PROFILES:
+        raise ValueError(f"Insufficient joint profiles for {mode}")
+    wins = sum(row["extended"]["和牌率"] * row["extended"]["count"] for row in cohorts.values())
+    riichis = sum(row["extended"]["立直率"] * row["extended"]["count"] for row in cohorts.values())
+    win_weight = wins / (wins + riichis)
+    derived_profiles = [
+        {**composite_metrics(row), SPEED_METRIC: speed_turns(row, win_weight)}
+        for row in raw_profiles
+    ]
+    scales, quartiles, observations = {}, {}, {}
+    marginal_calibration = {}
+    for axis in AXES:
+        metric = axis.metric
+        if metric.key in PUBLISHED_COMPOSITES:
+            histogram = histograms[metric.key]["histogramFull"]
+            q1, q3 = (histogram_quantile(histogram, q) for q in (0.25, 0.75))
+            observations[metric.key] = sum(histogram["bins"])
+        elif players == 3:
+            scale, details = sanma_composite_scale(metric.key, histograms, raw_profiles, win_weight)
+            scales[metric.key] = scale
+            marginal_calibration[metric.key] = details
+            continue
+        else:
+            values = [
+                value
+                for row in derived_profiles
+                if (value := metric_value(row, metric)) is not None
+            ]
+            if len(values) < MIN_JOINT_PROFILES:
+                raise ValueError(f"Insufficient values for {mode}/{metric.key}")
+            q1, _, q3 = quantiles(values, method="inclusive")
+            observations[metric.key] = len(values)
+        if q3 <= q1:
+            raise ValueError(f"Zero IQR for {mode}/{metric.key}")
+        quartiles[metric.key] = [q1, q3]
+        scales[metric.key] = (q3 - q1) / NORMAL_IQR
+
+    levels = {}
+    for level, row in cohorts.items():
+        basic, extended = row["basic"], row["extended"]
+        rank_rates = basic["rank_rates"]
+        if len(rank_rates) != 4 or abs(sum(rank_rates[:players]) - 1) > 1e-6:
+            if players == 3 and extended["count"] < counts["min"]:
+                continue
+            raise ValueError(f"Invalid placements for {mode}/{level}")
+        derived = composite_metrics(extended)
+        derived[SPEED_METRIC] = speed_turns(extended, win_weight)
+        metrics = {key: value for key, value in derived.items() if value is not None}
+        for axis in AXES:
+            for metric in axis.inputs:
+                if metric.key in derived:
+                    continue
+                value = metric_value(extended, metric)
+                if value is not None:
+                    metrics[metric.key] = value
+        levels[level] = {
+            "games": basic["count"],
+            "hands": extended["count"],
+            "rank_rates": rank_rates[:players],
+            "metrics": metrics,
+        }
+        if players == 3:
+            levels[level]["players"] = row["num_players"]
+    return {
+        **({"marginal_calibration": marginal_calibration} if players == 3 else {}),
+        "histogram_players": sum(counts["bins"]),
+        "min_hands": counts["min"],
+        "speed_win_weight": win_weight,
+        "quartiles": quartiles,
+        "scales": scales,
+        "observations": observations,
+        "levels": levels,
     }
 
 
@@ -74,76 +247,12 @@ def build_reference(data, source_digest, profiles, profile_digest, speed_windows
     for modes in ROOMS[4].values():
         for mode_id in modes:
             mode = str(mode_id)
-            histograms = data["global_histogram"][mode]["0"]
-            counts = histograms["count"]["histogramFull"]
-            raw_profiles = [row for row in profiles["rooms"][mode] if row["count"] >= counts["min"]]
-            if len(raw_profiles) < MIN_JOINT_PROFILES:
-                raise ValueError(f"Insufficient joint profiles for {mode}")
-            cohorts = data["global_statistics_2"][mode]
-            wins = sum(
-                row["extended"]["和牌率"] * row["extended"]["count"] for row in cohorts.values()
+            rooms[mode] = build_room_reference(
+                mode,
+                data["global_statistics_2"][mode],
+                data["global_histogram"][mode]["0"],
+                profiles["rooms"][mode],
             )
-            riichis = sum(
-                row["extended"]["立直率"] * row["extended"]["count"] for row in cohorts.values()
-            )
-            win_weight = wins / (wins + riichis)
-            derived_profiles = [
-                {**composite_metrics(row), SPEED_METRIC: speed_turns(row, win_weight)}
-                for row in raw_profiles
-            ]
-            scales, quartiles, observations = {}, {}, {}
-            for axis in AXES:
-                metric = axis.metric
-                if metric.key in PUBLISHED_COMPOSITES:
-                    histogram = histograms[metric.key]["histogramFull"]
-                    q1, q3 = (histogram_quantile(histogram, q) for q in (0.25, 0.75))
-                    observations[metric.key] = sum(histogram["bins"])
-                else:
-                    values = [
-                        value
-                        for row in derived_profiles
-                        if (value := metric_value(row, metric)) is not None
-                    ]
-                    if len(values) < MIN_JOINT_PROFILES:
-                        raise ValueError(f"Insufficient values for {mode}/{metric.key}")
-                    q1, _, q3 = quantiles(values, method="inclusive")
-                    observations[metric.key] = len(values)
-                if q3 <= q1:
-                    raise ValueError(f"Zero IQR for {mode}/{metric.key}")
-                quartiles[metric.key] = [q1, q3]
-                scales[metric.key] = (q3 - q1) / NORMAL_IQR
-
-            levels = {}
-            for level, row in cohorts.items():
-                basic, extended = row["basic"], row["extended"]
-                rank_rates = basic["rank_rates"]
-                if len(rank_rates) != 4 or abs(sum(rank_rates) - 1) > 1e-6:
-                    raise ValueError(f"Invalid placements for {mode}/{level}")
-                derived = composite_metrics(extended)
-                derived[SPEED_METRIC] = speed_turns(extended, win_weight)
-                metrics = {key: value for key, value in derived.items() if value is not None}
-                for axis in AXES:
-                    for metric in axis.inputs:
-                        if metric.key in derived:
-                            continue
-                        value = metric_value(extended, metric)
-                        if value is not None:
-                            metrics[metric.key] = value
-                levels[level] = {
-                    "games": basic["count"],
-                    "hands": extended["count"],
-                    "rank_rates": rank_rates,
-                    "metrics": metrics,
-                }
-            rooms[mode] = {
-                "histogram_players": sum(counts["bins"]),
-                "min_hands": counts["min"],
-                "speed_win_weight": win_weight,
-                "quartiles": quartiles,
-                "scales": scales,
-                "observations": observations,
-                "levels": levels,
-            }
     gold_south = rooms[str(GOLD_SOUTH)]
     gold_south["speed_sampling"] = estimate_speed_sampling(
         speed_windows, gold_south["speed_win_weight"], GOLD_SOUTH
@@ -167,22 +276,139 @@ def build_reference(data, source_digest, profiles, profile_digest, speed_windows
     }
 
 
+def sanma_sampling_estimates(residuals):
+    """Shrink a room's noisy IQR variance estimate toward rooms of the same length."""
+    estimates = {}
+    for group in (SANMA_EAST, SANMA_SOUTH):
+        for mode in group:
+            own = residuals[mode]
+            neighbors = [source for source in group if source != mode and residuals[source]]
+            pooled = [value for source in neighbors for value in residuals[source]]
+            if len(own) >= MIN_JOINT_PROFILES:
+                variance, sources = residual_variance(own), [mode]
+            elif len(pooled) >= SANMA_MIN_SAMPLING_POOL:
+                variance, sources = residual_variance(pooled), neighbors
+                if len(own) >= 4:
+                    n, prior = len(own), SANMA_SAMPLING_PRIOR_PLAYERS
+                    variance = (n * residual_variance(own) + prior * variance) / (n + prior)
+                    sources = [mode, *sources]
+            elif len(own) + len(pooled) >= SANMA_MIN_SAMPLING_POOL:
+                variance = residual_variance(own + pooled)
+                sources = [mode, *neighbors] if own else neighbors
+            else:
+                variance, sources = None, []
+            estimates[mode] = {
+                "source_rooms": sorted(sources),
+                "room_matched_players": len(own),
+                "neighbor_matched_players": len(pooled) if set(sources) - {mode} else 0,
+                "variance": variance,
+            }
+    return estimates
+
+
+def build_sanma_reference(payload, profile_payloads, speed_payloads):
+    """Calibrate the three-player rooms from separate snapshots and joint profiles."""
+    rows = [json.loads(line) for line in payload.splitlines()]
+    cohorts = {
+        str(row["room"]): row["cohorts"][str(row["room"])] for row in rows if "cohorts" in row
+    }
+    histograms = next(row["histogram"] for row in rows if "histogram" in row)
+    profiles = defaultdict(dict)
+    anchors = set()
+    for source in profile_payloads:
+        for line in source.splitlines():
+            row = json.loads(line)
+            if "anchor" in row:
+                anchors.add(row["anchor"])
+            if "raw" in row:
+                profiles[str(row["room"])][row["player_key"]] = {
+                    **row["raw"],
+                    "count": row["hands"],
+                }
+
+    # Add recent joint profiles, keeping the longer career profile if both
+    # windows use the same anonymized player key.
+    rooms = {}
+    speed_samples = {}
+    point_samples = {key: {} for key in POINT_METRICS}
+    for room in SANMA_STYLE_ROOMS:
+        mode = str(room)
+        pairs, _ = speed_window_pairs(speed_payloads, room, same_snapshot=True)
+        recent = [pair[100] for pair in pairs if pair[100]["player_key"] not in profiles[mode]]
+        for row in recent:
+            profiles[mode][row["player_key"]] = {**row["raw"], "count": row["hands"]}
+        data = build_room_reference(
+            mode,
+            cohorts[mode],
+            histograms[mode]["0"],
+            profiles[mode].values(),
+            players=3,
+        )
+        data["min_players"] = SANMA_MIN_PLAYERS
+        data["recent_profiles"] = sum(row["hands"] >= data["min_hands"] for row in recent)
+        rooms[mode] = data
+        speed_samples[room] = speed_residuals(pairs, data["speed_win_weight"])
+        for key in POINT_METRICS:
+            point_samples[key][room] = window_residuals(
+                pairs, lambda raw, key=key: composite_metrics(raw)[key]
+            )
+
+    speed = sanma_sampling_estimates(speed_samples)
+    points = {key: sanma_sampling_estimates(sample) for key, sample in point_samples.items()}
+    for room in SANMA_STYLE_ROOMS:
+        data = rooms[str(room)]
+        data["speed_sampling"] = speed[room]
+        data["point_sampling_variances"] = {
+            key: row[room]["variance"]
+            for key, row in points.items()
+            if row[room]["variance"] is not None
+        }
+    return {
+        "source": ["global_statistics_2", "global_histogram"],
+        "source_sha256": hashlib.sha256(payload).hexdigest(),
+        "profile_sample": {
+            "anchors": sorted(anchors),
+            "source": "games → player_extended_stats",
+            "source_sha256": [hashlib.sha256(p).hexdigest() for p in profile_payloads],
+        },
+        "window_sample": {
+            "anchors": sorted(
+                {
+                    row["anchor"]
+                    for payload in speed_payloads
+                    for line in payload.splitlines()
+                    if "anchor" in (row := json.loads(line))
+                }
+            ),
+            "source_sha256": [hashlib.sha256(p).hexdigest() for p in speed_payloads],
+        },
+        "rooms": rooms,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
-    parser.add_argument("--profiles", type=Path, required=True)
+    parser.add_argument("--players", choices=(3, 4), default=4, type=int)
+    parser.add_argument("--profiles", type=Path, nargs="+", required=True)
     parser.add_argument("--speed-windows", type=Path, nargs="+", required=True)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     payload = args.input.read_bytes()
-    profiles = args.profiles.read_bytes()
-    data = build_reference(
-        json.loads(payload),
-        hashlib.sha256(payload).hexdigest(),
-        json.loads(profiles),
-        hashlib.sha256(profiles).hexdigest(),
-        [path.read_bytes() for path in args.speed_windows],
-    )
+    profiles = [path.read_bytes() for path in args.profiles]
+    windows = [path.read_bytes() for path in args.speed_windows]
+    if args.players == 3:
+        data = build_sanma_reference(payload, profiles, windows)
+    else:
+        if len(profiles) != 1:
+            parser.error("four-player calibration requires one profile JSON")
+        data = build_reference(
+            json.loads(payload),
+            hashlib.sha256(payload).hexdigest(),
+            json.loads(profiles[0]),
+            hashlib.sha256(profiles[0]).hexdigest(),
+            windows,
+        )
     args.output.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 

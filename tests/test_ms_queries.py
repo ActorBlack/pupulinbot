@@ -25,6 +25,19 @@ def game(i=0, delta=10):
     )
 
 
+async def test_mslast_returns_one_block_per_game_with_links_and_pt():
+    games = [game(2), game(1)]
+    client = SimpleNamespace(
+        resolve=AsyncMock(return_value=Player(42, "测试")),
+        history=AsyncMock(return_value=(games, False)),
+    )
+    service = MahjongQueries(None, client, None)
+    blocks = await service.query("mslast", "测试 -r 玉南 -l 2", 1, 2)
+    assert len(blocks) == 2 and blocks[0].startswith("测试（四麻）")
+    for block, record in zip(blocks, games, strict=True):
+        assert "PT +10" in block and block.endswith(record.url)
+
+
 def test_date_timezone_end_inclusive_and_mode_rooms():
     options = parse_options("喵杰 mode=3 room=玉,王 start=2026-01-01 end=2026-01-01 last=0")
     assert options.modes == [23, 24, 25, 26]

@@ -400,7 +400,7 @@ class TenhouQueries:
                     if delta is not None:
                         block += f"\n本场推算 PT {delta:+g}"
                     blocks.append(block)
-                return "\n\n".join(blocks)
+                return blocks
             if command == "thvs":
                 return matchup_text(view, options.name)
             if command in {"thheat", "thstat", "thsession", "thcompare"}:
@@ -477,6 +477,7 @@ class TenhouQueries:
             (
                 name,
                 grade_name(rank["estimated_grade"]),
+                grade_name(rank.get("high_grade", rank["estimated_grade"])),
                 value(rank.get("pt"), decimals=0),
                 value(rank.get("pt_max"), decimals=0),
             )

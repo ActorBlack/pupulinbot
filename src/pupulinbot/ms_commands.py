@@ -7,22 +7,25 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from nonebot import on_command
-from nonebot.adapters.onebot.v11 import GroupMessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.params import CommandArg
 
-from .formatting import format_records, format_stats
+from .formatting import format_record_blocks, format_stats
 from .live import LiveServiceError
 from .models import Player
 from .monitor_card import collect_profiles, render_monitor_card
 from .ms_charts import render_history, render_profile
 from .ms_extra import matchup, render_comparison
 from .ms_ids import account_to_friend, friend_to_account
-from .ms_options import MODE_NAMES, TZ, parse_options
+from .ms_options import MODE_NAMES, ROOMS, TZ, parse_options
 from .ms_recent import render_recent
+from .ms_sample import number
 from .ms_style import style_lines
 from .ms_style_chart import render_style
+from .ms_style_radar import SANMA_STYLE_ROOMS
 from .ms_summary import format_summary
 from .paipuya import PaipuyaError
+from .qq_delivery import send_group_forward
 
 QUERY_COMMANDS = (
     "ms",
@@ -37,6 +40,7 @@ QUERY_COMMANDS = (
     "mssfri",
     "mslast",
     "msstyle",
+    "msstyle3",
     "msvs",
     "mscompare",
 )
@@ -70,9 +74,13 @@ class MahjongQueries:
         if command == "ms2":
             return await self.member_binding(text, user_id, role=role, mentioned=mentioned)
         last_limit = 500 if command == "ms" else 2000
-        options = parse_options(text, mode=3 if command == "ms3" else 4, max_last=last_limit)
+        options = parse_options(
+            text, mode=3 if command in {"ms3", "msstyle3"} else 4, max_last=last_limit
+        )
+        if command == "msstyle3" and options.mode != 3:
+            raise ValueError("四麻牌风请使用 msstyle")
         if command == "msstyle" and options.mode != 4:
-            raise ValueError("msstyle 的参考模型仅适用于四麻；请使用 mode=4")
+            raise ValueError("三麻牌风请使用 msstyle3")
         if command == "ms3" and options.mode != 3:
             raise ValueError("ms3 仅查询三麻；四麻请使用 ms4")
         if command == "ms4" and options.mode != 4:
@@ -98,9 +106,7 @@ class MahjongQueries:
                 mode = "三麻" if options.mode == 3 else "四麻"
                 stamp = game.started_at.astimezone(TZ)
                 return (
-                    f"{player.nickname} 正在对局\n"
-                    f"{mode}　{stamp:%m-%d %H:%M}\n"
-                    f"{names}\n{game.url}"
+                    f"{player.nickname} 正在对局\n{mode}　{stamp:%m-%d %H:%M}\n{names}\n{game.url}"
                 )
             except LiveServiceError as exc:
                 return str(exc)
@@ -129,7 +135,21 @@ class MahjongQueries:
             default_room=None,
             max_last=last_limit,
         )
-        supports_image = command in {"ms3", "ms4", "mslast", "mscompare", "msstyle", "msvs"}
+        if command == "msstyle3":
+            options.modes = [
+                room for room in (options.modes or SANMA_STYLE_ROOMS) if room in SANMA_STYLE_ROOMS
+            ]
+            if not options.modes:
+                raise ValueError("msstyle3 暂未开放王座东，支持金东、金南、玉东、玉南和王座南")
+        supports_image = command in {
+            "ms3",
+            "ms4",
+            "mslast",
+            "mscompare",
+            "msstyle",
+            "msstyle3",
+            "msvs",
+        }
         if options.image and not supports_image:
             raise ValueError("-i 用于 ms4/ms3 面板或 mslast 牌谱图片；图表命令直接发送图片")
         if command in {"ms", "mscompare"} and not options.last_explicit:
@@ -186,17 +206,20 @@ class MahjongQueries:
             if command == "msvs":
                 return matchup(player, opponent, games, options, truncated)
             if command == "mslast":
+                if not games:
+                    return f"{player.nickname}：牌谱屋暂未收录该玩家的对局。"
                 if options.image:
                     return await asyncio.to_thread(render_recent, player, games, options.mode)
-                return (
-                    f"{player.nickname}（{'三麻' if options.mode == 3 else '四麻'}）\n"
-                    + format_records(games, player.account_id)
-                )
-            if command == "msstyle":
+                mode = "三麻" if options.mode == 3 else "四麻"
+                blocks = format_record_blocks(games, player.account_id)
+                blocks[0] = f"{player.nickname}（{mode}）\n{blocks[0]}"
+                return blocks
+            if command in {"msstyle", "msstyle3"}:
                 stats, identity = await asyncio.gather(
                     self.sample_stats(player, games, options, client),
                     self.rank_metadata(player, client),
                 )
+                stats = await self.with_yakuman_names(player, stats, games, options, client)
                 return await asyncio.to_thread(
                     render_style, player, stats, games, options, current_level=identity.get("level")
                 )
@@ -250,6 +273,7 @@ class MahjongQueries:
                     stats.raw[key] = identity.get(key)
         except TimeoutError as exc:
             raise PaipuyaError("统计查询超时，请稍后重试") from exc
+        stats = await self.with_yakuman_names(player, stats, games, options, client)
         room = MODE_NAMES[str(options.modes[0])].removeprefix("三麻")
         count = (
             f"最近 {stats.games:,} 场" if options.last_explicit else f"已收录 {stats.games:,} 场"
@@ -269,6 +293,31 @@ class MahjongQueries:
             )
         )
 
+    async def with_yakuman_names(self, player, stats, games, options, client):
+        load = getattr(client, "recent_yakuman_names", None)
+        if (
+            not callable(load)
+            or options.mode != 4
+            or len(options.modes or ()) != 1
+            or not games
+            or stats is None
+            or stats.games != len(games)
+        ):
+            return stats
+        count = number(stats.raw.get("役满"))
+        if count is None or not count.is_integer() or count < 1:
+            return stats
+        try:
+            async with asyncio.timeout(5):
+                names = await load(player.account_id, games, mode=options.modes[0])
+        except (PaipuyaError, TimeoutError):
+            return stats
+        if not names:
+            return stats
+        enriched = copy(stats)
+        enriched.raw = {**stats.raw, "_yakuman_win_names": names}
+        return enriched
+
     async def rank_metadata(self, player, client):
         if callable(getattr(client, "metadata", None)):
             try:
@@ -281,7 +330,8 @@ class MahjongQueries:
 
     async def sample_stats(self, player, games, options, client):
         finished = [g for g in games if g.ended_at and g.seat(player.account_id)]
-        if not finished or options.mode != 4:
+        allowed = options.modes or [room for pair in ROOMS[options.mode].values() for room in pair]
+        if not finished or not {str(game.mode) for game in finished} <= set(map(str, allowed)):
             return None
         try:
             async with asyncio.timeout(210):
@@ -353,6 +403,9 @@ class MahjongQueries:
                 await asyncio.gather(*(optional(f) for f in (total, sample, activity)))
         except TimeoutError:
             pass
+        context["sample"] = await self.with_yakuman_names(
+            player, context.get("sample"), finished, options, client
+        )
         return format_summary(player, games, truncated, options, context, now=now)
 
     async def member_binding(self, text, user_id, *, role, mentioned):
@@ -432,7 +485,7 @@ def install_commands(service):
         )
 
         @matcher.handle()
-        async def handler(event: GroupMessageEvent, args=CommandArg()):
+        async def handler(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
             mentioned = [str(s.data.get("qq", "")) for s in args if s.type == "at"]
             member = {}
             if name == "ms2":
@@ -451,6 +504,11 @@ def install_commands(service):
                 )
             except (ValueError, PaipuyaError) as exc:
                 await matcher.finish(str(exc))
+            if name == "mslast" and isinstance(result, (list, bytes)):
+                items = [result] if isinstance(result, bytes) else result
+                await matcher.finish(
+                    await send_group_forward(bot, event.group_id, "雀魂最近对局", items)
+                )
             if isinstance(result, bytes):
                 result = MessageSegment.image(
                     "base64://" + base64.b64encode(result).decode("ascii")

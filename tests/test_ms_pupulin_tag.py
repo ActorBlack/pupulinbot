@@ -24,7 +24,7 @@ def test_profile_includes_both_numeric_minimums_without_extra_event_or_hand_requ
     assert is_pupulin_profile(sample)
     assert supplemental_tags(sample, rows, 42) == ["普普林"]
     assert style_lines(sample, games=rows, account_id=42)[0].endswith(" #普普林")
-    assert RATE_TRAITS["立直多面"][-1] == "窄听立直流"
+    assert RATE_TRAITS["立直多面"][-1] == "愚形爱好者"
 
 
 @pytest.mark.parametrize(

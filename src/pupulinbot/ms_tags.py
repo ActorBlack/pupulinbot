@@ -9,14 +9,16 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
+from .ms_candidate_tags import candidate_tags
 from .ms_sample import number
 from .ms_tag_reference import build_reference
 from .ms_trait_tags import (
+    achievement_tags,
+    exposures,
     is_pupulin_profile,
     select_tags,
     trait_tags,
     wilson_interval,
-    yakuman_victim,
 )
 
 MIN_GAMES = 20
@@ -73,7 +75,7 @@ def _below(rate, trials, mean):
 
 def _placements(games, account_id):
     ranks = [number(g.seat(account_id).get("rank")) for g in games]
-    return ranks if all(r in {1, 2, 3, 4} for r in ranks) else None
+    return [int(r) for r in ranks] if all(r in {1, 2, 3, 4} for r in ranks) else None
 
 
 def _recent_form(ranks, reference):
@@ -119,9 +121,9 @@ def sample_round_income(raw, games, account_id, hands):
     return sum(value - 25000 for value in scores) / hands
 
 
-def supplemental_tags(stats, games, account_id, *, mode=4):
+def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
     """Classify one matched room sample; never substitute a player's lifetime stats."""
-    if mode != 4 or stats is None:
+    if mode != 4 or stats is None or maximum <= 0:
         return []
     finished = sorted(
         (g for g in games if g.ended_at and g.seat(account_id)), key=lambda g: g.started_at
@@ -139,10 +141,10 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
         if str(finished[0].mode) in {"8", "9", "11", "12", "15", "16"} and is_pupulin_profile(stats)
         else None
     )
-    reference = reference_for(finished[0].mode)
-    if reference is None:
+    room = str(finished[0].mode)
+    reference = reference_for(room)
+    if reference is None and room != "15":
         return [easter_egg] if easter_egg else []
-    mean, cut = reference["means"], reference["thresholds"]
     raw = getattr(stats, "raw", {}) or {}
     hands = number(raw.get("_hand_count"))
     known_hands = hands is not None and hands.is_integer() and hands >= count
@@ -151,6 +153,37 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
         _rate(getattr(stats, key, None))
         for key in ("win_rate", "deal_in_rate", "call_rate", "riichi_rate")
     )
+    ranks = _placements(finished, account_id)
+    candidates = candidate_tags(
+        raw,
+        finished,
+        ranks,
+        account_id,
+        hands=hands if known_hands else None,
+        win=win,
+        deal=deal,
+        call=call,
+        riichi=riichi,
+        fallback=reference["levels"]
+        if reference and reference["reference_kind"] == "saint3_fallback"
+        else None,
+    )
+    candidate_luck = ["悬赏猎人"] if "悬赏猎人" in candidates else []
+    if candidate_luck:
+        candidates.remove("悬赏猎人")
+    if reference is None:
+        counts = exposures(raw, hands, win=win, call=call, riichi=riichi) if known_hands else None
+        return select_tags(
+            [],
+            {
+                "style": candidates,
+                "luck": candidate_luck,
+                "achievement": achievement_tags(raw, finished, counts),
+            },
+            maximum,
+            easter_egg=easter_egg,
+        )
+    mean, cut = reference["means"], reference["thresholds"]
     points, turn = (number(raw.get(key)) for key in ("平均打点", "和了巡数"))
     tags = []
     if reliable_hands:
@@ -158,7 +191,6 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
             tags.append("副露流")
         elif _at_most(call, cut["call_low"]) and _below(call, hands, mean["副露率"]):
             tags.append("门清流")
-    ranks = _placements(finished, account_id)
     if ranks and count >= RANK_MIN_GAMES:
         form = _recent_form(ranks, reference)
         if form:
@@ -166,7 +198,7 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
     if reliable_hands and hands >= 300:
         income = sample_round_income(raw, finished, account_id, hands)
         if _at_least(income, cut["income_high"]):
-            tags.append("高局收支")
+            tags.append("局收支重视")
     if ranks and count >= RANK_MIN_GAMES:
         first, last = ranks.count(1) / count, ranks.count(4) / count
         top2 = sum(r <= 2 for r in ranks) / count
@@ -229,7 +261,7 @@ def supplemental_tags(stats, games, account_id, *, mode=4):
             include_style=reliable_hands,
         )
     else:
-        extra = {"style": [], "luck": [], "achievement": []}
-        if yakuman_victim(raw, finished):
-            extra["achievement"].append("役满受害者")
-    return select_tags(tags, extra, MAX_TAGS, easter_egg=easter_egg)
+        extra = {"style": [], "luck": [], "achievement": achievement_tags(raw, finished)}
+    extra["luck"].extend(candidate_luck)
+    tags.extend(candidates)
+    return select_tags(tags, extra, maximum, easter_egg=easter_egg)

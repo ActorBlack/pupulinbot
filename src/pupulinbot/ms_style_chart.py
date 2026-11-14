@@ -1,4 +1,4 @@
-"""Four-player style radar for the selected sample and current grade."""
+"""Mahjong Soul style radar for the selected sample and current grade."""
 
 import io
 import math
@@ -18,6 +18,9 @@ from .ms_style_radar import (
     metric_value,
     speed_turns,
 )
+from .ms_style_rarity import PALETTES, rarity_tier
+from .ms_tags import supplemental_tags
+from .ms_trait_tags import COMBINATION_TAGS, is_named_yakuman_tag
 from .typography import profile_face as face
 
 SIZE = (1600, 1270)
@@ -36,6 +39,140 @@ BONUS_START = {
 }
 BONUS_CAP_DEVIATION = 5.0
 BONUS_CAP_THRESHOLD = NORMAL.cdf(BONUS_CAP_DEVIATION)
+STYLE_TAG_LIMIT = 15
+
+# Outline in clockwise order, midtone, shadow, outline color.
+TAG_STONES = {
+    "green": (((0, -9), (8, 0), (0, 9), (-8, 0)), "#72c694", "#39916c", "#478e6d"),
+    "blue": (((0, -11), (10, 0), (0, 11), (-10, 0)), "#77b9eb", "#3878b6", "#4c7dac"),
+    "purple": (
+        ((-5, -9), (5, -9), (10, 0), (5, 9), (-5, 9), (-10, 0)),
+        "#ad83d5",
+        "#7750a4",
+        "#8056a7",
+    ),
+    "orange": (
+        ((0, -11), (9, -3), (7, 4), (0, 11), (-7, 4), (-9, -3)),
+        "#e3975a",
+        "#b96839",
+        "#b16b43",
+    ),
+}
+
+TAG_GRADIENTS = {
+    "orange": ((0, (255, 248, 241)), (110, (255, 236, 220)), (254, (250, 218, 192))),
+    "gold": (
+        (0, (255, 245, 216)),
+        (88, (255, 240, 197)),
+        (150, (255, 251, 231)),
+        (218, (250, 228, 172)),
+        (254, (255, 242, 205)),
+    ),
+    "easter_egg": (
+        (0, (253, 229, 238)),
+        (65, (255, 239, 221)),
+        (125, (232, 247, 229)),
+        (188, (225, 241, 252)),
+        (254, (242, 228, 250)),
+    ),
+}
+
+
+def _draw_tag_stone(draw, cx, cy, tier, highlight):
+    shape, midtone, shadow, rim = TAG_STONES[tier]
+    outline = [(cx + dx, cy + dy) for dx, dy in shape]
+    for (ax, ay), (bx, by) in zip(outline, outline[1:] + outline[:1], strict=True):
+        light = 2 * (ay + by - 2 * cy) + (ax + bx - 2 * cx)
+        color = highlight if light < -5 else shadow if light > 5 else midtone
+        draw.polygon(((cx - 1, cy - 1), (ax, ay), (bx, by)), fill=color)
+    draw.line((*outline, outline[0]), fill=rim)
+    if tier == "blue":
+        draw.line((cx - 6, cy - 2, cx - 1, cy - 7), fill="#effaff")
+    elif tier == "purple":
+        draw.polygon(
+            ((cx - 1, cy - 4), (cx + 3, cy - 1), (cx, cy + 3), (cx - 4, cy)), fill=highlight
+        )
+    elif tier == "orange":
+        draw.polygon(
+            ((cx, cy - 7), (cx + 4, cy - 2), (cx + 2, cy + 4), (cx, cy + 7), (cx - 4, cy - 2)),
+            fill="#f8b675",
+        )
+        draw.line((cx, cy - 7, cx - 4, cy - 2, cx, cy + 2), fill="#fff0d8")
+
+
+def _draw_tag_gradient(draw, x, y, stops):
+    for (start, first), (end, last) in zip(stops[:-1], stops[1:], strict=True):
+        for dx in range(start, end + 1):
+            fraction = (dx - start) / (end - start)
+            color = tuple(round(a + (b - a) * fraction) for a, b in zip(first, last, strict=True))
+            draw.line((x + dx, y + max(0, dx - 245), x + dx, y + min(37, dx + 28)), fill=color)
+
+
+def _draw_tag_plate(draw, x, y, tier):
+    plate, edge, socket, accent, _ = PALETTES[tier]
+    outline = (
+        (x, y),
+        (x + 245, y),
+        (x + 254, y + 9),
+        (x + 254, y + 37),
+        (x + 9, y + 37),
+        (x, y + 28),
+    )
+    if tier in TAG_GRADIENTS:
+        _draw_tag_gradient(draw, x, y, TAG_GRADIENTS[tier])
+    else:
+        draw.polygon(outline, fill=plate)
+    if tier != "easter_egg":
+        draw.polygon(
+            (outline[0], (x + 47, y), (x + 35, y + 37), outline[4], outline[5]), fill=socket
+        )
+    draw.line((*outline, outline[0]), fill=edge)
+
+    cx, cy = x + 21, y + 18
+    if tier == "easter_egg":
+        rim = ((cx, cy - 12), (cx + 12, cy), (cx, cy + 12), (cx - 12, cy))
+        table = ((cx, cy - 7), (cx + 7, cy), (cx, cy + 7), (cx - 7, cy))
+        draw.polygon([(px, py + 2) for px, py in rim], fill="#674c8b")
+        # Each hue has a center face and a darker or lighter beveled edge.
+        facets = (
+            ("#ff77bb", "#ffd1e6"),
+            ("#ffe086", "#e38a2d"),
+            ("#67f2bf", "#179d84"),
+            ("#8de1ff", "#4f87e8"),
+        )
+        for index, (face_color, bevel_color) in enumerate(facets):
+            following = (index + 1) % len(facets)
+            draw.polygon(
+                (rim[index], rim[following], table[following], table[index]), fill=bevel_color
+            )
+            draw.polygon(((cx, cy), table[index], table[following]), fill=face_color)
+        draw.line((*rim, rim[0]), fill="#69488a", width=1)
+        draw.line((cx - 5, cy - 4, cx, cy - 9), fill="#f7fcff")
+        draw.point((cx + 1, cy - 8), fill="#fff7fb")
+    elif tier == "combination":
+        left = ((cx - 4, cy - 9), (cx + 5, cy), (cx - 4, cy + 9), (cx - 13, cy))
+        right = ((cx + 4, cy - 9), (cx + 13, cy), (cx + 4, cy + 9), (cx - 5, cy))
+        draw.polygon(right, outline=accent, width=2)
+        draw.polygon(left, fill=accent)
+        draw.line((cx + 1, cy - 4, cx + 5, cy, cx + 1, cy + 4), fill=socket)
+    elif tier == "gray":
+        diamond = ((cx, cy - 8), (cx + 8, cy), (cx, cy + 8), (cx - 8, cy))
+        draw.polygon(diamond, fill=accent, outline="#a2b1c3")
+    elif tier == "gold":
+        star = (
+            (cx, cy - 11),
+            (cx + 3, cy - 3),
+            (cx + 11, cy),
+            (cx + 3, cy + 3),
+            (cx, cy + 11),
+            (cx - 3, cy + 3),
+            (cx - 11, cy),
+            (cx - 3, cy - 3),
+        )
+        draw.polygon(star, fill="#fff3d1", outline="#b99767")
+        draw.polygon(((cx, cy + 11), (cx + 3, cy + 3), (cx + 11, cy), (cx, cy)), fill="#957044")
+    else:
+        _draw_tag_stone(draw, cx, cy, tier, accent)
 
 
 def radar_bonus_score(score, *, start=3.0):
@@ -75,9 +212,10 @@ def render_style(player, stats, games, options, *, current_level=None):
     count = len(finished)
     if getattr(stats, "games", None) != count or not count:
         stats = None
-    style = analyze_style(stats, options.mode)
+    sanma = options.mode == 3
+    style = None if sanma else analyze_style(stats, options.mode)
     raw = getattr(stats, "raw", {}) or {}
-    actual = {**raw, **style.metrics}
+    actual = {**raw, **(style.metrics if style else {})}
     actual.update(composite_metrics(actual))
     progress = rank_progress(current_level)
     rank = progress or rank_identity(current_level)
@@ -86,6 +224,8 @@ def render_style(player, stats, games, options, *, current_level=None):
     scope = selected or rooms
     room = next(iter(scope)) if len(scope) == 1 and rooms <= scope else ""
     room_name = MODE_NAMES.get(room, "")
+    if sanma:
+        room_name = room_name.removeprefix("三麻").replace("王", "王座")
     reference = comparison_reference(room, rank)
     if reference:
         actual["和立牌平均巡目"] = speed_turns(actual, reference.speed_win_weight)
@@ -127,7 +267,7 @@ def render_style(player, stats, games, options, *, current_level=None):
 
     card((36, 26, 1564, 165))
     text(66, 47, player.nickname, 43, style="title", width=870)
-    sample_scope = f"四麻{room_name}  "
+    sample_scope = f"{'三麻' if sanma else '四麻'}{room_name}  "
     dates = ""
     if finished:
         lo, hi = (g.started_at.astimezone(TZ) for g in (finished[0], finished[-1]))
@@ -140,8 +280,9 @@ def render_style(player, stats, games, options, *, current_level=None):
         if progress:
             rank_title += "　" + point_text(progress, capacity=False, unit=True)
         text(1534, 51, rank_title, 33, BLUE, "bold", "rt", 500)
-    tag = "#" + style.label if style.x is not None else "牌风数据不足"
-    text(1534, 111, tag, 24, MUTED, "bold", "rt", 600)
+    if style is not None:
+        tag = "#" + style.label if style.x is not None else "牌风数据不足"
+        text(1534, 111, tag, 24, MUTED, "bold", "rt", 600)
 
     card((36, 185, 690, 913))
     card((710, 185, 1564, 913))
@@ -232,9 +373,10 @@ def render_style(player, stats, games, options, *, current_level=None):
     draw.line((68, legend_y, 104, legend_y), fill=BLUE, width=5)
     text(118, legend_y - 10, "本人", 20)
     if reference:
-        for x in range(233, 269, 12):
+        legend_x = 175 if has_bonus else 233
+        for x in range(legend_x, legend_x + 36, 12):
             draw.line((x, legend_y, x + 7, legend_y), fill=NEUTRAL, width=3)
-        text(283, legend_y - 10, mean_label, 20, MUTED)
+        text(legend_x + 50, legend_y - 10, mean_label, 20, MUTED)
 
     text(736, 211, "各维度指标", 31, style="bold")
     text(1536, 222, "pp 为百分点", 18, MUTED, anchor="rt")
@@ -249,7 +391,6 @@ def render_style(player, stats, games, options, *, current_level=None):
     ):
         text(x, 289, label, 20, BLUE if label == "本人" else MUTED, "bold", anchor)
 
-    insights = []
     top = 322
     for i, (axis, score, bonus) in enumerate(zip(AXES, scores, bonuses, strict=True)):
         group = (axis.metric, *axis.inputs)
@@ -283,8 +424,6 @@ def render_style(player, stats, games, options, *, current_level=None):
             text(own_x, y, display(own, metric.kind), 21, accent, "number", "rm")
             text(mean_x, y, display(base, metric.kind), 20, mean_color, "number", "rm")
             text(delta_x, y, difference(own, base, metric.kind), 20, label_color, "number", "rm")
-            if j == 0 and score is not None:
-                insights.append((abs(score - 50), axis.name, metric, own, base, bonus))
         top += height
 
     card((36, 933, 690, 1224))
@@ -298,10 +437,10 @@ def render_style(player, stats, games, options, *, current_level=None):
         text(471, 963, average, 19, MUTED, anchor="rt")
     text(565, 963, "本人", 17, BLUE, anchor="rt")
     text(661, 963, mean_label, 17, MUTED, anchor="rt")
-    ranks = [n / known for n in summary["rank_counts"]] if known else [None] * 4
+    ranks = [n / known for n in summary["rank_counts"]] if known else [None] * options.mode
     for i, own in enumerate(ranks):
         base = number(reference_ranks[i]) if i < len(reference_ranks) else None
-        y = 1000 + i * 46
+        y = (1014 + i * 61) if sanma else (1000 + i * 46)
         text(65, y + 3, f"{i + 1}位", 20, style="bold")
         draw.rounded_rectangle((127, y + 2, 472, y + 28), 6, fill="#edf2f8")
         for value, top, color in ((own, y + 3, BLUE), (base, y + 17, NEUTRAL)):
@@ -311,27 +450,65 @@ def render_style(player, stats, games, options, *, current_level=None):
         text(565, y + 4, display(own, "%"), 20, BLUE, "number", "rt")
         text(661, y + 4, display(base, "%"), 19, MUTED, "number", "rt")
 
-    text(736, 954, "牌风看点", 27, style="bold")
-    standout = sorted((v for v in insights if v[0] >= 25), key=lambda v: v[0], reverse=True)[:3]
-    for i, (_, name, metric, own, base, bonus) in enumerate(standout):
-        y = 1001 + i * 49
-        accent, fill = (BONUS_INK, BONUS_FILL) if bonus is not None else (BLUE, "#e8f0fc")
-        card((736, y, 805, y + 33), fill, 8)
-        text(771, y + 7, name, 18, accent, "bold", "mt")
-        note = (
-            f"{metric.label} {display(own, metric.kind)}，"
-            f"{'较基准' if fallback else '较同段'} {difference(own, base, metric.kind)}"
+    if sanma:
+        text(736, 954, "牌风看点", 28, style="bold")
+        standout = sorted(
+            (i for i, score in enumerate(scores) if score is not None and abs(score - 50) >= 20),
+            key=lambda i: abs(scores[i] - 50),
+            reverse=True,
+        )[:3]
+        relation = "基准" if fallback else "同段"
+        for row, i in enumerate(standout):
+            axis, bonus = AXES[i], bonuses[i]
+            metric = axis.metric
+            own, base = metric_value(actual, metric), metric_value(baseline, metric)
+            y = 1000 + row * 48
+            accent, fill = (BONUS_INK, BONUS_FILL) if bonus is not None else (BLUE, "#e8f0fc")
+            card((736, y, 805, y + 33), fill, 8)
+            text(771, y + 16, axis.name, 18, accent, "bold", "mm")
+            note = (
+                f"{metric.label} {display(own, metric.kind)}，"
+                f"较{relation} {difference(own, base, metric.kind)}"
+            )
+            text(
+                823,
+                y + 16,
+                note,
+                21,
+                BONUS_INK if bonus is not None else INK,
+                anchor="lm",
+                width=700,
+            )
+        if not standout:
+            note = "暂无可比牌风指标" if all(score is None for score in scores) else "各项接近基准"
+            text(736, 1010, note, 21, MUTED)
+        extras = []
+        if hands is not None:
+            extras.append(f"{hands:,.0f} 小局")
+        for label, key in (("自摸率", "自摸率"), ("默和率", "默听率"), ("先制率", "先制率")):
+            value = number(raw.get(key))
+            if value is not None and 0 <= value <= 1:
+                extras.append(f"{label} {display(value, '%')}")
+        if extras:
+            text(736, 1179, "　".join(extras), 19, MUTED, width=794)
+    else:
+        text(736, 954, "成就", 28, style="bold")
+        tags = supplemental_tags(
+            stats, finished, player.account_id, mode=options.mode, maximum=STYLE_TAG_LIMIT
         )
-        text(823, y + 5, note, 21, BONUS_INK if bonus is not None else INK, width=700)
-    if not standout:
-        note = "暂无可比牌风指标" if not insights else "暂无明显偏离"
-        text(736, 1010, note, 21, MUTED)
-    extras = (("自摸", "自摸率"), ("默和", "默听率"), ("先制", "先制率"))
-    extra_line = "　".join(
-        f"{label} {display(number(actual[key]), '%')}" for label, key in extras if key in actual
-    )
-    if extra_line:
-        text(736, 1179, extra_line, 19, MUTED, width=794)
+        # Some achievements expand into several individual yaku names.
+        visible_tags = list(dict.fromkeys(tags))[:STYLE_TAG_LIMIT]
+        if not visible_tags:
+            text(736, 1012, "暂无达成标签" if stats else "标签数据不足", 21, MUTED)
+        for index, tag in enumerate(visible_tags):
+            row, column = divmod(index, 3)
+            x, y = 736 + column * 270, 1000 + row * 43
+            if is_named_yakuman_tag(tag):
+                tier = "gold"
+            else:
+                tier = "combination" if tag in COMBINATION_TAGS else rarity_tier(tag)
+            _draw_tag_plate(draw, x, y, tier)
+            text(x + 52, y + 18, tag, 22, PALETTES[tier][-1], "bold", "lm", width=190)
     text(37, 1240, "数据来源  雀魂牌谱屋", 16, MUTED)
     output = io.BytesIO()
     image.save(output, "PNG")

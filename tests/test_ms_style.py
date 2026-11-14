@@ -168,7 +168,7 @@ def test_style_report_renders_complete_and_missing_inputs_without_faking_coordin
 
     ref = comparison_reference("12", rank_identity(10502))
     complete = SimpleNamespace(
-        raw={**ORACLE[-1]["metrics"], **ref.metrics, "_hand_count": 1024}, games=100
+        raw={**ORACLE[-1]["metrics"], **ref.metrics, "_hand_count": 1024}, games=len(games())
     )
     for value in (None, complete):
         image = Image.open(
@@ -208,7 +208,7 @@ def test_radar_centers_exact_current_grade_in_each_room():
     master2 = comparison_reference("12", rank_identity(10402))
     assert saint2.metrics["放铳率"] < master2.metrics["放铳率"]
     assert saint2.rank_rates != master2.rank_rates
-    assert comparison_reference("21", promoted) is None
+    assert comparison_reference("99", promoted) is None
     assert comparison_reference("16", rank_identity(10712)).level == 10712
 
 
@@ -380,5 +380,125 @@ async def test_profile_filter_does_not_use_summary_image_route():
     assert service.profile_query.call_args.args[1].last == 100
     with pytest.raises(ValueError, match="文字摘要"):
         await service.query("ms", "x last=100 -i", 1, 2)
-    with pytest.raises(ValueError, match="仅适用于四麻"):
+
+
+@pytest.mark.asyncio
+async def test_sanma_style_uses_its_exact_room_sample_and_rank():
+    records = [replace(game, mode="24") for game in games()]
+    sample = stats(len(records))
+    current = {"id": 20403, "score": 2700, "delta": 10}
+    sanma = SimpleNamespace(
+        modes=[24, 22, 26],
+        resolve=AsyncMock(return_value=Player(42, "x")),
+        history=AsyncMock(return_value=(records, False)),
+        range_stats=AsyncMock(return_value=sample),
+        metadata=AsyncMock(return_value=SimpleNamespace(raw={"level": current})),
+        recent_yakuman_names=AsyncMock(),
+    )
+    service = MahjongQueries(None, None, sanma)
+    with patch("pupulinbot.ms_commands.render_style", return_value=b"png") as render:
+        assert await service.query("msstyle3", "x -r 玉南 -l 100", 1, 2) == b"png"
+    assert render.call_args.args[1] is sample
+    assert render.call_args.args[3].modes == [24]
+    assert render.call_args.kwargs["current_level"] == current
+    assert sanma.range_stats.call_args.kwargs["modes"] == [24]
+    sanma.recent_yakuman_names.assert_not_called()
+
+
+def test_sanma_radar_has_independent_room_and_grade_references():
+    from pupulinbot.ms_level import rank_identity
+    from pupulinbot.ms_style_radar import AXES, axis_score, comparison_reference
+
+    grade = rank_identity(20403)
+    jade = comparison_reference("24", grade)
+    gold = comparison_reference("22", grade)
+    yonma = comparison_reference("12", rank_identity(10403))
+    assert jade.level == gold.level == 20403
+    assert yonma.level == 10403
+    assert len(jade.rank_rates) == 3
+    assert len(yonma.rank_rates) == 4
+    assert jade.metrics != gold.metrics
+    assert jade.scales != gold.scales
+    assert jade.scales != yonma.scales
+    assert yonma.point_sampling_variances is None
+    assert all(value > 0 for value in jade.point_sampling_variances.values())
+    defense = AXES[1]
+    lower_loss = {**jade.metrics, defense.metric.key: jade.metrics[defense.metric.key] - 300}
+    uncalibrated = jade._replace(point_sampling_variances=None)
+    assert (
+        50
+        < axis_score(defense, lower_loss, jade, 900)
+        < axis_score(defense, lower_loss, uncalibrated, 900)
+    )
+    for ref in (jade, gold):
+        for axis in AXES:
+            assert axis_score(axis, ref.metrics, ref, 900) == pytest.approx(50)
+    for room in (21, 22, 23, 24, 26):
+        ref = comparison_reference(str(room), grade)
+        assert ref.speed_sampling_variance > 0
+        assert len(ref.rank_rates) == 3
+        assert sum(ref.rank_rates) == pytest.approx(1)
+    assert comparison_reference("25", rank_identity(20720)) is None
+
+
+def test_sanma_style_image_skips_four_player_achievements():
+    from pupulinbot.ms_style_chart import render_style
+
+    sample = stats(3)
+    sample.raw["_hand_count"] = 18
+    records = [replace(game, mode="24") for game in games(3)]
+    options = parse_options("mode=3 -r 玉南")
+    with (
+        patch("pupulinbot.ms_style_chart.supplemental_tags") as tags,
+        patch("pupulinbot.ms_style_chart.analyze_style") as classification,
+    ):
+        png = render_style(Player(42, "x"), sample, records, options, current_level=20403)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    tags.assert_not_called()
+    classification.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query, rooms",
+    [("x", [21, 22, 23, 24, 26]), ("x game=东", [21, 23])],
+)
+@pytest.mark.asyncio
+async def test_sanma_style_room_filters_skip_throne_east(query, rooms):
+    player = Player(42, "x")
+    records = [replace(game, mode="23") for game in games()]
+    sanma = SimpleNamespace(
+        modes=[21, 22, 23, 24, 25, 26],
+        resolve=AsyncMock(return_value=player),
+        history=AsyncMock(side_effect=[([records[0]], False), (records, False)]),
+        range_stats=AsyncMock(return_value=stats(len(records))),
+    )
+    service = MahjongQueries(None, None, sanma)
+    with pytest.raises(ValueError, match="暂未开放王座东"):
+        await service.query("msstyle3", "x -r 王座东", 1, 2)
+    with pytest.raises(ValueError, match="请使用 msstyle3"):
         await service.query("msstyle", "x mode=3", 1, 2)
+    with patch("pupulinbot.ms_commands.render_style", return_value=b"png"):
+        assert await service.query("msstyle3", query, 1, 2) == b"png"
+    assert sanma.history.await_args_list == [
+        call(42, 1, modes=rooms),
+        call(42, 200, start=None, end=None, modes=[23]),
+    ]
+
+
+def test_sanma_style_renders_gold_radar_table_and_insight():
+    import io
+
+    from PIL import Image, ImageColor
+
+    from pupulinbot.ms_style_chart import BONUS_FILL, BONUS_LINE, radar_bonus_score, render_style
+
+    sample = stats(3)
+    records = [replace(game, mode="24") for game in games(3)]
+    options = parse_options("mode=3 -r 玉南")
+    with patch("pupulinbot.ms_style_chart.axis_score", side_effect=[99.99, 40, 50, 55, 52, 56]):
+        png = render_style(Player(42, "x"), sample, records, options, current_level=20403)
+    image = Image.open(io.BytesIO(png))
+    bonus = radar_bonus_score(99.99, start=2)
+    assert image.getpixel((362, round(558 - 180 * bonus / 100))) == ImageColor.getrgb(BONUS_LINE)
+    assert image.getpixel((813, 377)) == ImageColor.getrgb(BONUS_FILL)
+    assert image.getpixel((742, 1016)) == ImageColor.getrgb(BONUS_FILL)

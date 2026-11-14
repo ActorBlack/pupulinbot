@@ -45,7 +45,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "省略 -l：所选房间累计统计；不加 -i：统计文字\n"
             "/ms4 [玩家] -o [-i]：查询当前公开观战\n"
             "/msstats [玩家] [sanma]：统计文字\n"
-            "/mslast [玩家] -l 10 [-i]：最近对局\n"
+            "/mslast [玩家] -l 10 [-i]：最近对局（合并消息）\n"
             "/ms [玩家] -l 100：最近 X 场文字摘要（默认最近对局房间）\n"
             "/msrank [sanma]：本群雀魂绑定成员的段位、PT 排行图（合并消息）\n"
             "/msfri <好友码>：好友码转账号\n/mssfri [玩家]：查询好友码",
@@ -53,7 +53,8 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
         (
             "战绩图表",
             "/mslife [玩家] -l 100：段位积分走势\n"
-            "/msstyle [玩家] [-l 场数]：六维牌风雷达，默认最近 200 场\n"
+            "/msstyle [玩家] [-l 场数]：四麻牌风雷达\n"
+            "/msstyle3 [玩家] [-l 场数]：三麻牌风雷达，默认最近 200 场\n"
             "/mscompare [玩家] -l 100：前后半段对比\n"
             "/msvs <对手> -l 200：自己与对手的同桌统计\n"
             "/msheat [玩家]：对局时间热力图\n/msstat [玩家]：对局数量统计\n"
@@ -77,7 +78,9 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/mswatch off <昵称或account ID>：移除监控（仅负责人）\n"
             "/mswatch off all：清空本群四麻监控（仅负责人）\n"
             "/mswatch list：查看名单；三麻加 mode=3\n"
-            "各群独立，仅播报结算。\n"
+            "各群独立，自动播报对局结算。\n"
+            "/mslive find [昵称或 account ID]：查三麻、四麻公开对局编号\n"
+            "/mslive <对局编号或链接>：开启逐局播报；status 查看，off 停止\n"
             "/msstatus：服务状态",
         ),
         (
@@ -92,7 +95,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/thvs <对手昵称>：同桌战绩\n"
             "/thstyle [昵称] -r 凤南：凤凰桌牌风雷达\n"
             "/thdetail [昵称] -l 100：战绩汇总图\n"
-            "/thlast [昵称] -l 5 [-i]：最近对局；默认一场\n"
+            "/thlast [昵称] -l 5 [-i]：最近对局（合并消息）；默认一场\n"
             "/thrank [sanma]：本群天凤绑定成员的段位、积分排行图（合并消息）\n"
             "绑定后可省略昵称；三麻可用 mode=3。\n"
             "省略 -r 跟随该模式最近一场；可选 -r 般/上/特/凤，加东查东风。\n"
@@ -121,8 +124,9 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/mortal links <链接1> <链接2>：多链接任务\n"
             "/mortal import <任务编号> <场次编号> <报告链接>：导入报告\n"
             "/mortal file <任务编号>：HTML 群文件\n/mortalstatus：分析服务状态\n"
-            "/exmortal <牌谱> [座位]：CapSolver 单牌谱；/exmortal table <牌谱>：全桌\n"
-            "/exmortal batch [玩家] -l 1–100：批量，支持房间和日期筛选。需单独授权。\n"
+            "/exmortal <牌谱> [座位]：CapSolver 单牌谱；/extable <牌谱>：全桌\n"
+            "/exmortal [玩家] [-l 1–100]：批量，默认 10 场，支持房间和日期筛选。需单独授权。\n"
+            "/exmortal add <QQ号或@群友>、delete <QQ号或@群友>、list：仅超级管理员管理授权。\n"
             "跑谱完成后会在结果消息中 @任务发起者。\n" + mortal,
         ),
         (

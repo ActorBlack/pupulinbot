@@ -20,7 +20,7 @@
         let url;
         try { url = new URL(String(args[0]), location.href); } catch (_) { return socket; }
         if (!url.hostname.endsWith('.maj-soul.com') || url.pathname !== '/gateway') return socket;
-        const state = {socket, pending: new Set(), reserved: new Set(), own: new Map(), remap: new Map(), cursor: 65535, forwarded: new WeakSet()};
+        const state = {socket, url, pending: new Set(), reserved: new Set(), own: new Map(), remap: new Map(), cursor: 65535, forwarded: new WeakSet()};
         sockets.push(state);
         function allocate() {
             for (let i = 0; i < 65535; ++i) {
@@ -85,26 +85,36 @@
     WrappedSocket.prototype = NativeSocket.prototype;
     Object.setPrototypeOf(WrappedSocket, NativeSocket);
     window.WebSocket = WrappedSocket;
+    async function request(rpc, payload, includeRoute = false, alternate = false) {
+        const active = sockets.filter(s => s.socket.readyState === NativeSocket.OPEN);
+        const state = active.at(alternate ? -2 : -1);
+        if (!state) return {error: 'not_connected'};
+        if (state.socket.binaryType !== 'arraybuffer') return {error: 'unsupported_transport'};
+        let id;
+        try { id = state.allocate(); } catch (_) { return {error: 'request_ids_exhausted'}; }
+        state.reserved.add(id);
+        const method = new TextEncoder().encode('.lq.Lobby.' + rpc);
+        const packet = new Uint8Array([2, id & 255, id >> 8, ...field(1, method), ...field(2, payload)]);
+        const result = await new Promise(resolve => {
+            const timer = setTimeout(() => {
+                state.own.delete(id); resolve({error: 'rpc_timeout'});
+            }, 8000);
+            state.own.set(id, {resolve, timer});
+            try { state.send(packet); }
+            catch (_) { clearTimeout(timer); state.own.delete(id); resolve({error: 'not_connected'}); }
+        });
+        return includeRoute && result.wire ? {...result, route: state.url.origin} : result;
+    }
     Object.defineProperty(window, '__pupulinSpectator', {value: {
-        async list(filter) {
+        list(filter) {
             if (!filters.has(filter)) return {error: 'invalid_filter'};
-            const state = [...sockets].reverse().find(s => s.socket.readyState === NativeSocket.OPEN);
-            if (!state) return {error: 'not_connected'};
-            if (state.socket.binaryType !== 'arraybuffer') return {error: 'unsupported_transport'};
-            let id;
-            try { id = state.allocate(); } catch (_) { return {error: 'request_ids_exhausted'}; }
-            state.reserved.add(id);
-            const method = new TextEncoder().encode('.lq.Lobby.fetchGameLiveList');
-            const payload = [8, ...integer(filter)];
-            const request = new Uint8Array([2, id & 255, id >> 8, ...field(1, method), ...field(2, payload)]);
-            return new Promise(resolve => {
-                const timer = setTimeout(() => {
-                    state.own.delete(id); resolve({error: 'rpc_timeout'});
-                }, 8000);
-                state.own.set(id, {resolve, timer});
-                try { state.send(request); }
-                catch (_) { clearTimeout(timer); state.own.delete(id); resolve({error: 'not_connected'}); }
-            });
+            return request('fetchGameLiveList', [8, ...integer(filter)]);
+        },
+        observe(uuid, alternate = false) {
+            if (typeof uuid !== 'string' || !/^[0-9]{6}-[a-z0-9-]{12,80}$/i.test(uuid)) {
+                return {error: 'invalid_uuid'};
+            }
+            return request('fetchOBToken', field(1, new TextEncoder().encode(uuid)), true, alternate);
         },
         status() { return {sockets: sockets.length, connected: sockets.some(s => s.socket.readyState === NativeSocket.OPEN)}; }
     }});

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from nonebot.adapters.onebot.v11 import ActionFailed, Message, MessageSegment
 
-from pupulinbot.qq_delivery import send_ranking_forward, send_verified_image
+from pupulinbot.qq_delivery import send_group_forward, send_ranking_forward, send_verified_image
 
 
 @pytest.mark.parametrize("title", ["雀魂群排行", "天凤群排行"])
@@ -47,6 +47,16 @@ def bot_with_history(*messages):
         send_group_msg=AsyncMock(return_value={"message_id": 123}),
         get_msg=AsyncMock(side_effect=messages),
     )
+
+
+async def test_recent_forward_failure_never_sends_records_as_separate_messages():
+    bot = bot_with_history()
+    bot.self_id = "123"
+    bot.call_api = AsyncMock(return_value={})
+    result = await send_group_forward(bot, 456, "雀魂最近对局", ["战绩 1", "战绩 2"])
+    assert result == "合并消息发送失败，请稍后重试。"
+    bot.call_api.assert_awaited_once()
+    bot.send_group_msg.assert_not_awaited()
 
 
 @pytest.mark.asyncio

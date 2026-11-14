@@ -16,6 +16,23 @@ class ReviewError(RuntimeError):
     pass
 
 
+RIICHI_CITY_ID = re.compile(r"([a-z0-9]{20})(?:@([0-3]))?")
+TENHOU_ID = re.compile(r"[0-9]{10}gm-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{8}", re.IGNORECASE)
+REPLAY_WRAPPERS = chr(34) + chr(39) + "「」『』<>“”"
+
+
+def looks_like_review_link(text: str) -> bool:
+    """Recognize replay inputs without treating ordinary ASCII nicknames as IDs."""
+    value = text.strip().strip(REPLAY_WRAPPERS)
+    return bool(
+        "://" in value
+        or value.startswith("paipu=")
+        or RIICHI_CITY_ID.fullmatch(value)
+        or TENHOU_ID.fullmatch(value)
+        or re.fullmatch(r"[0-9]{6}-[A-Za-z0-9-]{8,94}(?:_a[0-9]+(?:_[0-9]+)?)?", value)
+    )
+
+
 @dataclass(slots=True)
 class ReviewResult:
     rating: float
@@ -210,13 +227,12 @@ def parse_review_link(text: str, seat: int | None = None) -> ReviewLog:
     """Normalize official URLs or a Riichi City ID, preserving the target seat."""
     if seat is not None and (type(seat) is not int or seat not in range(4)):
         raise ReviewError("座位必须是0–3")
-    text = text.strip().strip(chr(34) + chr(39) + "「」『』<>“”")
-    city = re.fullmatch(r"([a-z0-9]{20})(?:@([0-3]))?", text)
+    text = text.strip().strip(REPLAY_WRAPPERS)
+    city = RIICHI_CITY_ID.fullmatch(text)
     if city:
         target = seat if seat is not None else int(city[2] or 0)
         return ReviewLog("riichi_city", city[1], f"{city[1]}@{target}", target)
-    tenhou_id = r"[0-9]{10}gm-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{8}"
-    if re.fullmatch(tenhou_id, text, re.IGNORECASE):
+    if TENHOU_ID.fullmatch(text):
         text = "https://tenhou.net/0/?log=" + text
     parsed = urlsplit(text)
     if parsed.scheme or parsed.netloc:
@@ -227,7 +243,7 @@ def parse_review_link(text: str, seat: int | None = None) -> ReviewLog:
             and parsed.path in {"/0", "/0/", "/3", "/3/", "/4", "/4/", "/5", "/5/", "/6", "/6/"}
         ):
             logs = query.get("log", [])
-            if len(logs) != 1 or not re.fullmatch(tenhou_id, logs[0], re.IGNORECASE):
+            if len(logs) != 1 or not TENHOU_ID.fullmatch(logs[0]):
                 raise ReviewError("天凤牌谱 log 编号无效")
             game_id = logs[0].lower()
             if seat is None:

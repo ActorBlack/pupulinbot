@@ -7,7 +7,7 @@ from nonebot.exception import IgnoredException
 from .ms_commands import QUERY_ALIASES, QUERY_COMMANDS
 from .tenhou_commands import QUERY_COMMANDS as TENHOU_QUERIES
 
-MONITOR_COMMANDS = frozenset({"mswatch", "thwatch", "msstatus", "thstatus", "thlive"})
+MONITOR_COMMANDS = frozenset({"mswatch", "thwatch", "msstatus", "thstatus", "thlive", "mslive"})
 MORTAL_COMMANDS = frozenset({"mortal", "msreview", "msmortal", "mstable", "mortalstatus"})
 PUBLIC_COMMANDS = frozenset(
     {
@@ -49,7 +49,7 @@ def check_group_command(
     if user in superusers:
         return
     command = command_name(state)
-    if command == "exmortal":
+    if command in {"exmortal", "extable"}:
         if user not in capsolver_users:
             raise IgnoredException("未开通 CapSolver 跑谱权限")
         return

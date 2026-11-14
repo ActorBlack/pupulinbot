@@ -6,7 +6,9 @@ room aggregates; evaluating a sample never makes an additional API request.
 
 import math
 from datetime import UTC, datetime
+from functools import lru_cache
 
+from .majsoul_rounds import yaku_names
 from .ms_sample import number
 
 # key: (denominator, minimum events, high/low offsets, category, high/low names)
@@ -14,22 +16,22 @@ RATE_TRAITS = {
     "里宝率": ("riichi_wins", 30, 0.08, 0.08, "luck", "里宝超人", "里宝绝缘体"),
     "一发率": ("riichi_wins", 30, 0.06, 0.06, "luck", "一发超人", "一发绝缘体"),
     "自摸率": ("wins", 50, 0.07, None, "style", "自摸超人", None),
-    "先制率": ("riichis", 50, 0.05, None, "style", "先手立直流", None),
-    "追立率": ("riichis", 50, 0.05, None, "style", "追立斗士", None),
-    "副露后和牌率": ("calls", 75, 0.05, None, "style", "鸣牌善战", None),
-    "副露后放铳率": ("calls", 75, None, 0.03, "style", None, "鸣牌慎行"),
-    "流听率": ("draws", 50, 0.08, None, "style", "流局听牌王", None),
-    "立直后放铳率": ("riichis", 50, 0.03, 0.03, "style", "立直撞铳", "立直护体"),
-    "立直后和牌率": ("riichis", 50, 0.05, 0.05, "style", "立直收割机", "立直苦战"),
+    "先制率": ("riichis", 50, 0.05, None, "style", "先发制人", None),
+    "追立率": ("riichis", 50, 0.05, None, "style", "后发制人", None),
+    "副露后和牌率": ("calls", 75, 0.05, None, "style", "副露进攻", None),
+    "副露后放铳率": ("calls", 75, None, 0.03, "style", None, "副露防守"),
+    "流听率": ("draws", 50, 0.08, None, "style", "罚符小偷", None),
+    "立直后放铳率": ("riichis", 50, 0.03, 0.03, "style", "全自动放铳", "全自动防守"),
+    "立直后和牌率": ("riichis", 50, 0.05, 0.05, "style", "立直收割机", "场供贡献者"),
     "立直后流局率": ("riichis", 50, 0.04, None, "style", "立直流局王", None),
-    "立直多面": ("riichis", 50, 0.05, 0.05, "style", "多面立直流", "窄听立直流"),
+    "立直多面": ("riichis", 50, 0.05, 0.05, "style", "好形爱好者", "愚形爱好者"),
 }
 AVERAGE_TRAITS = {
-    "立直巡目": ("riichis", 50, None, 0.5, "style", None, "早巡立直"),
-    "平均起手向听": ("hands", 300, 0.1, 0.1, "luck", "配牌修行", "配牌眷顾"),
+    "立直巡目": ("riichis", 50, None, 0.5, "style", None, "神速立直"),
+    "平均起手向听": ("hands", 300, 0.1, 0.1, "luck", "白手起家", "生于罗马"),
     "打点效率": ("hands", 400, 200, None, "style", "火力全开", None),
-    "铳点损失": ("hands", 400, 150, 150, "style", "铳点漏财", "铳点节流"),
-    "净打点效率": ("hands", 400, 250, 250, "style", "攻防高效", "攻防承压"),
+    "铳点损失": ("hands", 400, 150, None, "style", "散财童子", None),
+    "净打点效率": ("hands", 400, 250, 250, "style", "高效打点", "低效打点"),
 }
 # Upstream dates collection to *around* 2021-09-10. Leave a rollout buffer.
 MULTISIDED_SINCE = datetime(2021, 10, 1, tzinfo=UTC)
@@ -199,41 +201,72 @@ def build_trait_reference(levels):
     return result
 
 
-def yakuman_victim(raw, games):
-    """A real large deal-in, matched to this exact sample; never infer from a final score."""
-    loss = raw.get("最近大铳")
-    if not isinstance(loss, dict) or not isinstance(loss.get("id"), str):
-        return False
-    game = next((game for game in games if game.uuid == loss["id"]), None)
-    if game is None:
-        return False
-    timestamp = number(loss.get("start_time"))
-    if timestamp is None or abs(timestamp - game.started_at.timestamp()) > 1:
-        return False
-    fans = loss.get("fans")
+@lru_cache(maxsize=1)
+def yakuman_tag_groups():
+    names = yaku_names()
+    wins = frozenset(names[str(key)] for key in range(35, 51))
+    losses = frozenset(_victim_tag(name) for name in wins)
+    return wins, losses
+
+
+def _victim_tag(name):
+    return ("国士" if name == "国士无双" else name) + "受害者"
+
+
+def is_named_yakuman_tag(tag):
+    wins, losses = yakuman_tag_groups()
+    return tag in wins or tag in losses
+
+
+def yakuman_names(fans):
+    """Identify named limit hands from Paipuya's role-labelled fan details."""
     if not isinstance(fans, list) or not fans:
-        return False
-    total = yakuman = 0
+        return ()
+    names = []
+    allowed, _ = yakuman_tag_groups()
     for fan in fans:
         if not isinstance(fan, dict):
-            return False
+            return ()
         count, limit = number(fan.get("count")), number(fan.get("役满"))
         if any(v is None or not v.is_integer() or not 0 <= v <= 100 for v in (count, limit)):
-            return False
-        total += count
-        yakuman += limit
-    return yakuman > 0 or total >= 13
+            return ()
+        label = fan.get("label")
+        if limit and isinstance(label, str) and label in allowed:
+            names.append(label)
+    return tuple(dict.fromkeys(names))
 
 
-def achievement_tags(raw, games, counts):
+def yakuman_victim(raw, games):
+    """Return the roles in a real large deal-in matched to this exact sample."""
+    loss = raw.get("最近大铳")
+    if not isinstance(loss, dict) or not isinstance(loss.get("id"), str):
+        return ()
+    game = next((game for game in games if game.uuid == loss["id"]), None)
+    timestamp = number(loss.get("start_time"))
+    if game is None or timestamp is None or abs(timestamp - game.started_at.timestamp()) > 1:
+        return ()
+    return yakuman_names(loss.get("fans"))
+
+
+def achievement_tags(raw, games, counts=None):
     tags = []
-    for key, label, basis in (("役满", "役满达成", "wins"), ("流满", "流局满贯", "hands")):
-        maximum = counts[basis]
-        value = _counter(raw, key, maximum + 1e-6) if maximum is not None else None
-        if value is not None and value >= 1:
-            tags.append(label)
-    if yakuman_victim(raw, games):
-        tags.append("役满受害者")
+    if counts is not None:
+        wins = counts["wins"]
+        count = _counter(raw, "役满", wins + 1e-6) if wins is not None else None
+        names = raw.get("_yakuman_win_names")
+        if count and isinstance(names, (list, tuple)):
+            allowed, _ = yakuman_tag_groups()
+            named_wins = tuple(
+                dict.fromkeys(name for name in names if isinstance(name, str) and name in allowed)
+            )
+            if named_wins:
+                tags.append(named_wins)
+        hands = counts["hands"]
+        if hands is not None and _counter(raw, "流满", hands + 1e-6):
+            tags.append("流局满贯")
+    losses = yakuman_victim(raw, games)
+    if losses:
+        tags.append(tuple(_victim_tag(name) for name in losses))
     return tags
 
 
@@ -289,22 +322,24 @@ def trait_tags(
     # conditional deal-in rate alone is insufficient to call them productive.
     post_deal, post_win = rate(raw.get("副露后放铳率")), rate(raw.get("副露后和牌率"))
     deal_ref, win_ref = references.get("副露后放铳率"), references.get("副露后和牌率")
-    if "鸣牌善战" in result["style"] and (
+    if "副露进攻" in result["style"] and (
         post_deal is None or deal_ref is None or post_deal > deal_ref["mean"]
     ):
-        result["style"].remove("鸣牌善战")
-    if "鸣牌慎行" in result["style"] and (
-        post_win is None
-        or win_ref is None
-        or post_win < win_ref["mean"] - 0.03
+        result["style"].remove("副露进攻")
+    if "副露防守" in result["style"] and (
+        post_win is None or win_ref is None or post_win < win_ref["mean"] - 0.03
     ):
-        result["style"].remove("鸣牌慎行")
+        result["style"].remove("副露防守")
+    if "副露进攻" in result["style"] and "副露防守" in result["style"]:
+        attack_position = result["style"].index("副露进攻")
+        result["style"][attack_position] = "进退自如"
+        result["style"].remove("副露防守")
 
     # This is a combination of two observed rates, not a fabricated conditional
     # chase-deal-in rate (the aggregate API does not provide that joint count).
-    if "追立斗士" in result["style"] and "立直撞铳" in result["style"]:
-        result["style"].remove("追立斗士")
-        result["style"].remove("立直撞铳")
+    if "后发制人" in result["style"] and "全自动放铳" in result["style"]:
+        result["style"].remove("后发制人")
+        result["style"].remove("全自动放铳")
         result["style"].append("追立冒险家")
 
     efficiencies = efficiency_metrics(raw)
@@ -344,6 +379,18 @@ def trait_tags(
     return result
 
 
+TAG_COMBINATIONS = (
+    ("一击必杀", "高打点", "重炮手"),
+    ("高效打点", "局收支重视", "精打细算"),
+    ("略胜一筹", "棋差一着", "毫厘之间"),
+    ("深度门清", "默听流", "静默猎手"),
+    ("争一流", "避四流", "上分糕手"),
+)
+COMBINATION_TAGS = frozenset(
+    ("进退自如", "追立冒险家", *(combined for _, _, combined in TAG_COMBINATIONS))
+)
+
+
 def select_tags(existing, extra, maximum, *, easter_egg=None):
     """Reserve display slots for achievements, luck and an optional easter egg."""
     if maximum <= 0:
@@ -356,4 +403,13 @@ def select_tags(existing, extra, maximum, *, easter_egg=None):
     styles = list(
         dict.fromkeys(existing[:base_priority] + extra["style"] + existing[base_priority:])
     )
-    return achievements + eggs + styles[: slots - len(eggs)] + luck
+    for left, right, combined in TAG_COMBINATIONS:
+        if left in styles and right in styles:
+            first, second = sorted((styles.index(left), styles.index(right)))
+            styles[first] = combined
+            del styles[second]
+    # A group reserves one slot even when several distinct yaku are visible.
+    visible_achievements = [
+        name for group in achievements for name in ((group,) if isinstance(group, str) else group)
+    ]
+    return visible_achievements + eggs + styles[: slots - len(eggs)] + luck

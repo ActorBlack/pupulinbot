@@ -7,7 +7,7 @@ from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.params import CommandArg
 
-from .qq_delivery import send_ranking_forward
+from .qq_delivery import send_group_forward, send_ranking_forward
 from .qq_members import GroupMembersError, group_member_ids
 from .tenhou import CN, TenhouError, validate_name
 from .tenhou_queries import TenhouQueries
@@ -155,6 +155,11 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                 )
             except (TenhouError, GroupMembersError) as exc:
                 await matcher.finish(str(exc))
+            if name == "thlast" and isinstance(result, (list, bytes)):
+                items = [result] if isinstance(result, bytes) else result
+                await matcher.finish(
+                    await send_group_forward(bot, event.group_id, "天凤最近对局", items)
+                )
             if isinstance(result, bytes):
                 result = MessageSegment.image(
                     "base64://" + base64.b64encode(result).decode("ascii")

@@ -1,4 +1,4 @@
-"""Descriptive four-player scores centered on the player's current grade."""
+"""Descriptive Mahjong Soul scores centered on the player's current grade."""
 
 import json
 import math
@@ -7,8 +7,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 from .ms_level import rank_identity
+from .ms_options import ROOMS
 from .ms_sample import number
 from .ms_trait_tags import rate
+
+SANMA_STYLE_ROOMS = (21, 22, 23, 24, 26)
 
 
 class Metric(NamedTuple):
@@ -87,8 +90,9 @@ class RadarReference(NamedTuple):
     hands: int
     min_hands: int
     speed_win_weight: float
-    speed_sampling_variance: float
+    speed_sampling_variance: float | None
     level: int
+    point_sampling_variances: dict[str, float] | None = None
 
 
 def metric_value(raw, metric):
@@ -148,15 +152,19 @@ def composite_metrics(raw):
     }
 
 
-@lru_cache(maxsize=1)
-def _reference_data():
-    path = Path(__file__).with_name("assets") / "ms_style_radar_reference.json"
+@lru_cache(maxsize=2)
+def _reference_data(players=4):
+    suffix = "_sanma" if players == 3 else ""
+    path = Path(__file__).with_name("assets") / f"ms_style_radar{suffix}_reference.json"
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def comparison_reference(room, rank):
     """Use the current grade or the highest grade with a usable room baseline."""
-    calibration = _reference_data()
+    is_sanma = any(room == str(mode) for pair in ROOMS[3].values() for mode in pair)
+    if is_sanma and int(room) not in SANMA_STYLE_ROOMS:
+        return None
+    calibration = _reference_data(3) if is_sanma else _reference_data()
     room_data = calibration["rooms"].get(room)
     if room_data is None:
         return None
@@ -164,15 +172,18 @@ def comparison_reference(room, rank):
     cohorts = {
         int(level): cohort
         for level, cohort in room_data["levels"].items()
-        if rank_identity(level) is not None and cohort["hands"] >= min_hands
+        if rank_identity(level) is not None
+        and cohort["hands"] >= min_hands
+        and cohort.get("players", 0) >= room_data.get("min_players", 0)
     }
     if not cohorts:
         return None
-    level = 10000 + rank["major"] * 100 + rank["star"] if rank else None
+    prefix = 20000 if is_sanma else 10000
+    level = prefix + rank["major"] * 100 + rank["star"] if rank else None
     if level not in cohorts:
         level = max(cohorts)
     cohort = cohorts[level]
-    speed_sampling = room_data.get("speed_sampling", calibration["speed_sampling"])
+    speed_sampling = room_data.get("speed_sampling", calibration.get("speed_sampling"))
     return RadarReference(
         cohort["metrics"],
         cohort["rank_rates"],
@@ -180,8 +191,9 @@ def comparison_reference(room, rank):
         cohort["hands"],
         min_hands,
         room_data["speed_win_weight"],
-        speed_sampling["variance"],
+        speed_sampling["variance"] if speed_sampling else None,
         level,
+        room_data.get("point_sampling_variances"),
     )
 
 
@@ -219,7 +231,7 @@ def axis_score(axis, actual, reference, hands):
         variance = second_moment - mean**2
     elif key == "和立牌平均巡目":
         win, riichi = (rate(actual.get(field)) for field in ("和牌率", "立直率"))
-        if not win or not riichi:
+        if not win or not riichi or reference.speed_sampling_variance is None:
             return None
         win_events, riichi_events = round(hands * win), round(hands * riichi)
         typical = reference.min_hands * (reference.metrics["和牌率"] + reference.metrics["立直率"])
@@ -227,7 +239,8 @@ def axis_score(axis, actual, reference, hands):
             return None
         variance = reference.speed_sampling_variance
 
-    noise = max(0.0, variance) * (1 / hands + 1 / reference.hands)
+    empirical = (reference.point_sampling_variances or {}).get(key, 0.0)
+    noise = max(0.0, variance, empirical) * (1 / hands + 1 / reference.hands)
     weight = scale**2 / (scale**2 + noise)
     deviation = axis.direction * (value - mean) / scale * weight
     return 50 * (1 + math.erf(deviation / math.sqrt(2)))

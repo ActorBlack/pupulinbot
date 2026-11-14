@@ -39,7 +39,8 @@ from .group_policy import (
     command_name,
 )
 from .help_menu import BATCH_ACTIONS, send_help
-from .live import LiveServiceClient
+from .live import LiveServiceClient, LiveServiceError
+from .majsoul_live import MajsoulLiveWatch
 from .models import Player
 from .monitor import GameMonitor
 from .monitor_card import collect_profiles, render_monitor_card
@@ -58,7 +59,14 @@ from .qq_members import GroupMembersError, group_member_ids
 from .record_names import RecordNames
 from .repeat_stop import GROUP_ID as REPEAT_STOP_GROUP
 from .repeat_stop import RepeatStop
-from .review import MortalClient, ReviewError, ReviewQueue, parse_review_link, render_review
+from .review import (
+    MortalClient,
+    ReviewError,
+    ReviewQueue,
+    looks_like_review_link,
+    parse_review_link,
+    render_review,
+)
 from .review_cache import ReviewCache
 from .spectator import BrowserSpectatorClient
 from .tenhou import TenhouClient
@@ -222,7 +230,7 @@ tenhou_store = TenhouStore(db)
 tenhou_monitor = TenhouMonitor(tenhou_store, tenhou_client)
 
 
-async def send_tenhou_message(group, message):
+async def send_observation_message(group, message):
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         raise ConnectionError("OneBot is disconnected")
@@ -238,7 +246,9 @@ async def send_tenhou_message(group, message):
         await bot.send_group_msg(group_id=int(group), message=payload, _timeout=90)
 
 
-tenhou_rounds = TenhouLiveWatch(tenhou_store, tenhou_client, tenhou_monitor, send_tenhou_message)
+tenhou_rounds = TenhouLiveWatch(
+    tenhou_store, tenhou_client, tenhou_monitor, send_observation_message
+)
 install_tenhou_commands(
     tenhou_store,
     tenhou_client,
@@ -266,6 +276,7 @@ majsoul_browser = BrowserSpectatorClient(
     enabled=settings.spectator_browser and not settings.live_api_url,
     records_enabled=settings.majsoul_record_browser,
 )
+majsoul_rounds = MajsoulLiveWatch(db, majsoul_browser, send_observation_message)
 live = (
     LiveServiceClient(settings.live_api_url, settings.live_api_token)
     if settings.live_api_url
@@ -403,6 +414,24 @@ if settings.majsoul_record_browser and settings.majsoul_record_keepalive:
             logger.warning("雀魂官方牌谱会话：大厅暂不可用，取名时将按需重连")
 
 
+if settings.majsoul_live_index and (majsoul_browser.enabled or majsoul_browser.records_enabled):
+
+    @scheduler.scheduled_job(
+        "interval", seconds=60, id="pupulin_majsoul_live_index", max_instances=1, coalesce=True
+    )
+    async def refresh_majsoul_live_index():
+        first_scan = majsoul_browser.last_success is None
+        try:
+            games = await majsoul_browser.public_games()
+        except LiveServiceError as exc:
+            logger.warning("雀魂观战索引刷新失败：%s", exc)
+        else:
+            if first_scan:
+                logger.info(
+                    "雀魂观战索引首次扫描完成，收录 %s 桌", len({g.uuid for g in games.values()})
+                )
+
+
 async def build_monitor_notification(sub, game, event, fallback):
     congratulations = ""
     try:
@@ -480,6 +509,7 @@ async def shutdown() -> None:
     await reviews.close()
     await paipuya.close()
     await sanma.close()
+    await majsoul_rounds.close()
     await tenhou_rounds.close()
     await tenhou_client.close()
     await majsoul_browser.close()
@@ -579,6 +609,36 @@ async def group_rank(bot: Bot, event: GroupMessageEvent, args=CommandArg()):
 
 
 watch_cmd = on_command("mswatch", priority=10, block=True)
+majsoul_rounds_cmd = on_command("mslive", priority=10, block=True, force_whitespace=True)
+
+
+@majsoul_rounds_cmd.handle()
+async def handle_majsoul_rounds(event: GroupMessageEvent, args=CommandArg()):
+    group, user = str(event.group_id), str(event.user_id)
+    value = args.extract_plain_text().strip()
+    parts = value.split(maxsplit=1)
+    try:
+        if value in {"", "status"}:
+            reply = majsoul_rounds.status(group)
+        elif value == "off":
+            reply = await majsoul_rounds.stop(
+                group,
+                user,
+                manager=(
+                    user == settings.monitor_owner
+                    or user in superusers
+                    or event.sender.role in {"owner", "admin"}
+                ),
+            )
+        elif parts[0] == "find":
+            await majsoul_rounds_cmd.send("正在查询雀魂公开对局…")
+            reply = await majsoul_rounds.find(user, parts[1] if len(parts) == 2 else "")
+        else:
+            reply = await majsoul_rounds.follow(group, user, value)
+    except LiveServiceError as exc:
+        reply = str(exc)
+    await majsoul_rounds_cmd.finish(MessageSegment.text(reply))
+
 
 @watch_cmd.handle()
 async def watch(event: GroupMessageEvent, args=CommandArg()):
@@ -605,7 +665,7 @@ async def mortal(event: GroupMessageEvent, args=CommandArg()):
 @capsolver_cmd.handle()
 async def capsolver_mortal(event: MessageEvent, args=CommandArg()):
     parts = args.extract_plain_text().lower().split()
-    if parts and parts[0] in {"add", "del", "list"}:
+    if parts and parts[0] in {"add", "delete", "del", "list"}:
         await capsolver_cmd.finish(await manage_capsolver_access(event.user_id, args, parts))
         return
     if not isinstance(event, GroupMessageEvent):
@@ -617,7 +677,7 @@ async def capsolver_mortal(event: MessageEvent, args=CommandArg()):
 async def manage_capsolver_access(user_id, args, parts):
     if str(user_id) not in superusers:
         return "仅 Bot 超级管理员可管理 exmortal 授权。"
-    usage = "用法：exmortal add <QQ号或@群友> / exmortal del <QQ号或@群友> / exmortal list"
+    usage = "用法：exmortal add <QQ号或@群友> / exmortal delete <QQ号或@群友> / exmortal list"
     if any(segment.type not in {"text", "at"} for segment in args):
         return usage
     mentions = [str(segment.data.get("qq", "")) for segment in args if segment.type == "at"]
@@ -625,7 +685,7 @@ async def manage_capsolver_access(user_id, args, parts):
         members = await db.capsolver_members()
         return f"exmortal 授权（{len(members)} 人）\n" + ("、".join(members) or "空")
     targets = parts[1:] + mentions
-    if parts[0] not in {"add", "del"} or len(targets) != 1:
+    if parts[0] not in {"add", "delete", "del"} or len(targets) != 1:
         return usage
     qq = targets[0]
     if not re.fullmatch(r"[1-9][0-9]{4,11}", qq):
@@ -651,8 +711,8 @@ async def handle_mortal(event, args, matcher, verification):
         if verification == CAPSOLVER:
             await matcher.finish(
                 "单牌谱：exmortal <链接> [座位0–3]\n"
-                "单桌：exmortal table <链接>\n"
-                "批量：exmortal batch [场数] 或 exmortal batch [玩家] -l 1–100 [-r 玉南]\n"
+                "单桌：extable <链接>\n"
+                "批量：exmortal [玩家] [-l 1–100]，默认 10 场\n"
                 "多链接：exmortal links <链接1> <链接2>…"
             )
         await matcher.finish(
@@ -661,15 +721,18 @@ async def handle_mortal(event, args, matcher, verification):
     parts = text.split()
     parts[0] = parts[0].lower() if parts[0].lower() in BATCH_ACTIONS else parts[0]
     try:
-        if (
-            verification == CAPSOLVER
-            and parts[0] == "batch"
-            and len(parts) > 1
-            and not (len(parts) == 2 and parts[1].lstrip("+-").isdecimal())
-        ):
-            # Keep the original argument text so quoted nicknames survive parsing.
-            await filtered_mortal_batch(event, text.split(maxsplit=1)[1], matcher, verification)
-            return
+        if verification == CAPSOLVER:
+            if parts[0] == "table":
+                raise ReviewError("全桌跑谱请用 extable <牌谱链接>")
+            if parts[0] == "batch":
+                raise ReviewError("批跑请用 exmortal [玩家] [-l 1–100]，默认 10 场")
+            # An explicit batch length also disambiguates nicknames shaped like replay IDs.
+            batch_length = any(part == "-l" or part.startswith("last=") for part in parts[1:])
+            if parts[0] not in BATCH_ACTIONS and (
+                batch_length or not looks_like_review_link(parts[0])
+            ):
+                await filtered_mortal_batch(event, text, matcher, verification)
+                return
         if parts[0] in BATCH_ACTIONS:
             await batch_command(event, parts, matcher=matcher, verification=verification)
             return
@@ -939,7 +1002,7 @@ async def ms_mortal(event: GroupMessageEvent, args=CommandArg()):
 async def filtered_mortal_batch(event, text, matcher, verification):
     group_id, owner = str(event.group_id), str(event.user_id)
     command = "exmortal" if verification == CAPSOLVER else "mortal"
-    usage = "exmortal batch" if verification == CAPSOLVER else "msmortal"
+    usage = "exmortal" if verification == CAPSOLVER else "msmortal"
     batches.require_verification(verification, owner)
     options = parse_options(text, max_last=MAX_BATCH_COUNT, allow_all=False)
     count = batch_count(options.last if options.last_explicit else None)
@@ -1041,6 +1104,7 @@ async def health(event: GroupMessageEvent):
 
 
 table_review_cmd = on_command("mstable", priority=10, block=True)
+extable_cmd = on_command("extable", priority=10, block=True, force_whitespace=True)
 
 
 @table_review_cmd.handle()
@@ -1054,9 +1118,20 @@ async def table_review(event: GroupMessageEvent, args=CommandArg()):
         await table_review_cmd.finish(str(exc))
 
 
+@extable_cmd.handle()
+async def capsolver_table(event: GroupMessageEvent, args=CommandArg()):
+    try:
+        text = args.extract_plain_text().strip()
+        if not text:
+            raise ReviewError("用法：extable <雀魂/天凤链接或一番街ID@0>，分析同桌四个座位")
+        await batch_command(event, ["table", text], matcher=extable_cmd, verification=CAPSOLVER)
+    except (ValueError, ReviewError) as exc:
+        await extable_cmd.finish(str(exc))
+
+
 @scheduler.scheduled_job("interval", seconds=60, id="pupulin_tenhou_monitor", max_instances=1)
 async def poll_tenhou() -> None:
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         return
-    await tenhou_monitor.poll(send_tenhou_message)
+    await tenhou_monitor.poll(send_observation_message)

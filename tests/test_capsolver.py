@@ -180,10 +180,11 @@ def test_solver_reuses_supplied_http_client_across_seats(monkeypatch):
     client.close.assert_not_called()
 
 
-def test_only_granted_users_can_use_capsolver_in_monitor_only_groups():
+@pytest.mark.parametrize("command", ["exmortal", "extable"])
+def test_only_granted_users_can_use_capsolver_in_monitor_only_groups(command):
     restricted = {"456"}
     event = GroupMessageEvent.model_construct(group_id=456, user_id=123)
-    state = {"_prefix": {"command": ("exmortal",)}}
+    state = {"_prefix": {"command": (command,)}}
     with pytest.raises(IgnoredException):
         check_group_command(event, state, restricted, vip2=True)
     check_group_command(event, state, restricted, capsolver_users={"123"})

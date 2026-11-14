@@ -58,14 +58,14 @@ def test_neutral_reference_metrics_do_not_receive_extra_traits():
         ("一发率", "high", "luck", "一发超人"),
         ("一发率", "low", "luck", "一发绝缘体"),
         ("自摸率", "high", "style", "自摸超人"),
-        ("先制率", "high", "style", "先手立直流"),
-        ("追立率", "high", "style", "追立斗士"),
-        ("副露后和牌率", "high", "style", "鸣牌善战"),
-        ("副露后放铳率", "low", "style", "鸣牌慎行"),
-        ("流听率", "high", "style", "流局听牌王"),
-        ("立直巡目", "low", "style", "早巡立直"),
-        ("平均起手向听", "low", "luck", "配牌眷顾"),
-        ("平均起手向听", "high", "luck", "配牌修行"),
+        ("先制率", "high", "style", "先发制人"),
+        ("追立率", "high", "style", "后发制人"),
+        ("副露后和牌率", "high", "style", "副露进攻"),
+        ("副露后放铳率", "low", "style", "副露防守"),
+        ("流听率", "high", "style", "罚符小偷"),
+        ("立直巡目", "low", "style", "神速立直"),
+        ("平均起手向听", "low", "luck", "生于罗马"),
+        ("平均起手向听", "high", "luck", "白手起家"),
     ],
 )
 def test_metric_specific_traits_trigger_at_effect_threshold_and_not_just_outside(
@@ -83,10 +83,13 @@ def test_metric_specific_traits_trigger_at_effect_threshold_and_not_just_outside
     assert label not in classify(raw)[category]
 
 
-@pytest.mark.parametrize("key,label", [("役满", "役满达成"), ("流满", "流局满贯")])
+@pytest.mark.parametrize("key,label", [("役满", ("大三元",)), ("流满", "流局满贯")])
 def test_achievements_require_real_valid_sample_counters(key, label):
     raw = sample_raw()
     raw[key] = 1
+    if key == "役满":
+        assert classify(raw)["achievement"] == []
+        raw["_yakuman_win_names"] = ("大三元", "役满", "大三元")
     assert classify(raw)["achievement"] == [label]
     for bad in (None, True, 0, -1, 0.5, 100000, float("nan"), float("inf")):
         raw[key] = bad
@@ -146,10 +149,10 @@ def test_impossible_inferred_riichi_wins_do_not_inflate_luck_evidence():
 @pytest.mark.parametrize(
     "metric,rate_key,minimum,category,label",
     [
-        ("先制率", "立直率", 50, "style", "先手立直流"),
+        ("先制率", "立直率", 50, "style", "先发制人"),
         ("自摸率", "和牌率", 50, "style", "自摸超人"),
-        ("副露后和牌率", "副露率", 75, "style", "鸣牌善战"),
-        ("流听率", "流局率", 50, "style", "流局听牌王"),
+        ("副露后和牌率", "副露率", 75, "style", "副露进攻"),
+        ("流听率", "流局率", 50, "style", "罚符小偷"),
     ],
 )
 def test_conditional_event_minimums_do_not_use_total_hand_count(
@@ -176,9 +179,9 @@ def test_sampling_guard_can_reject_a_high_point_estimate_even_after_minimum_even
     threshold = reference_for("12")["traits"]["先制率"]["high"]
     raw.update(立直率=100 / 3600, 先制率=threshold, 追立率=1 - threshold)
     # Five points above mean is still uncertain with only 100 declarations.
-    assert "先手立直流" not in classify(raw)["style"]
+    assert "先发制人" not in classify(raw)["style"]
     raw.update(立直率=0.19)
-    assert "先手立直流" in classify(raw)["style"]
+    assert "先发制人" in classify(raw)["style"]
 
 
 def test_inconsistent_first_and_chase_riichi_rates_cannot_produce_conflicting_tags():
@@ -187,14 +190,14 @@ def test_inconsistent_first_and_chase_riichi_rates_cannot_produce_conflicting_ta
     assert classify(raw)["style"] == []
 
 
-def test_open_hand_traits_keep_their_guardrails_and_can_coexist():
+def test_open_hand_traits_keep_their_guardrails_and_combine_when_both_qualify():
     raw = sample_raw()
     raw.update(副露后和牌率=0.5, 副露后放铳率=0.25)
     assert classify(raw)["style"] == []
     raw.update(副露后和牌率=0.05, 副露后放铳率=0.04)
     assert classify(raw)["style"] == []
     raw.update(副露后和牌率=0.5, 副露后放铳率=0.04)
-    assert classify(raw)["style"] == ["鸣牌善战", "鸣牌慎行"]
+    assert classify(raw)["style"] == ["进退自如"]
 
 
 def test_reference_weights_follow_the_actual_event_denominator_and_fail_closed_for_missing_groups():
@@ -214,40 +217,56 @@ def test_reference_weights_follow_the_actual_event_denominator_and_fail_closed_f
 
 def test_selection_limits_total_ten_luck_three_and_achievements_three():
     extra = {
-        "style": ["先手立直流", "早巡立直", "多面立直流", "火力全开"],
-        "luck": ["里宝超人", "一发超人", "配牌眷顾", "额外手气"],
-        "achievement": ["役满达成", "流局满贯", "役满受害者", "额外成就"],
+        "style": ["先发制人", "神速立直", "好形爱好者", "火力全开"],
+        "luck": ["里宝超人", "一发超人", "生于罗马", "额外手气"],
+        "achievement": [("大三元",), "流局满贯", ("国士受害者",), "额外成就"],
     }
     existing = ["门清流", "好调中", "争一流", "高打点"]
     assert select_tags(existing, extra, 10) == [
-        "役满达成",
+        "大三元",
         "流局满贯",
-        "役满受害者",
+        "国士受害者",
         "门清流",
         "好调中",
-        "先手立直流",
-        "早巡立直",
+        "先发制人",
+        "神速立直",
         "里宝超人",
         "一发超人",
-        "配牌眷顾",
+        "生于罗马",
     ]
     for maximum in range(11):
         assert len(select_tags(existing, extra, maximum)) <= maximum
 
 
+@pytest.mark.parametrize(
+    "left,right,combined",
+    [
+        ("一击必杀", "高打点", "重炮手"),
+        ("高效打点", "局收支重视", "精打细算"),
+        ("略胜一筹", "棋差一着", "毫厘之间"),
+        ("深度门清", "默听流", "静默猎手"),
+        ("争一流", "避四流", "上分糕手"),
+    ],
+)
+def test_two_matching_tags_merge_before_display_slots_are_counted(left, right, combined):
+    extra = {"style": [], "luck": [], "achievement": []}
+    assert select_tags([left, right, "其他"], extra, 2) == [combined, "其他"]
+    assert select_tags([left], extra, 2) == [left]
+
+
 def test_new_traits_flow_into_ms_output_and_keep_existing_sample_and_mode_guards():
     rows = records(count=300)
     raw = sample_raw()
-    raw.update(里宝率=0.6, 一发率=0.5, 役满=1)
+    raw.update(里宝率=0.6, 一发率=0.5, 役满=1, _yakuman_win_names=("大三元",))
     sample = stats(300, raw=raw)
     tags = supplemental_tags(sample, rows, 42)
-    assert tags == ["役满达成", "里宝超人", "一发超人"]
-    assert "#役满达成 #里宝超人 #一发超人" in style_lines(sample, games=rows, account_id=42)[0]
+    assert tags == ["大三元", "里宝超人", "一发超人", "悬赏猎人"]
+    assert "#大三元 #里宝超人 #一发超人" in style_lines(sample, games=rows, account_id=42)[0]
     assert supplemental_tags(sample, rows, 42, mode=3) == []
     sample.games = 301
     assert supplemental_tags(sample, rows, 42) == []
     sample.games = 19
-    assert supplemental_tags(sample, rows[:19], 42) == ["役满达成"]
+    assert supplemental_tags(sample, rows[:19], 42) == ["大三元", "悬赏猎人"]
     sample.games = 300
     sample.raw["_hand_count"] = None
     assert supplemental_tags(sample, rows, 42) == []

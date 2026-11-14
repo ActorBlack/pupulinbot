@@ -24,6 +24,7 @@ def emit(value):
 def main():
     from seleniumbase import Driver
 
+    from .majsoul_replay import LOBBY_RENDER_ON_READY
     from .spectator_wire import decode_list
 
     profile = Path(sys.argv[1]).resolve()
@@ -31,6 +32,9 @@ def main():
     profile.chmod(0o700)
     driver = None
     records_only = "--records-only" in sys.argv
+    chromium_args = ["remote-debugging-port=0"]
+    if sys.platform.startswith("linux"):
+        chromium_args.extend(("use-gl=angle", "use-angle=swiftshader", "enable-unsafe-swiftshader"))
     try:
         driver = Driver(
             browser="chrome",
@@ -41,14 +45,17 @@ def main():
             enable_ws=True,
             page_load_strategy="eager",
             user_data_dir=str(profile),
-            chromium_arg="remote-debugging-port=0",
+            chromium_arg=",".join(chromium_args),
         )
         driver.set_page_load_timeout(40)
         driver.set_script_timeout(10)
         if not records_only:
             driver.execute_cdp_cmd(
                 "Page.addScriptToEvaluateOnNewDocument",
-                {"source": Path(__file__).with_name("spectator_bridge.js").read_text()},
+                {
+                    "source": Path(__file__).with_name("spectator_bridge.js").read_text()
+                    + LOBBY_RENDER_ON_READY
+                },
             )
             # Old Unity service-worker caches can stall navigation after upgrades.
             driver.execute_cdp_cmd("Network.enable", {})

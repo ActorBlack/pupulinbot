@@ -41,7 +41,7 @@ def test_group_command_access(group, user, vip2, mortal, monitor, manage):
             ),
         ),
         (mortal, ("mortal", "msreview", "msmortal", "mstable", "mortalstatus")),
-        (monitor, ("mswatch", "thwatch", "msstatus", "thstatus")),
+        (monitor, ("mswatch", "thwatch", "msstatus", "thstatus", "mslive", "thlive")),
         (manage, ("vip2",)),
     ]:
         for command in commands:

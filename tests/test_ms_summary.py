@@ -14,7 +14,7 @@ from pupulinbot.ms_summary import (
     projection,
     rank_progress,
 )
-from pupulinbot.paipuya import PaipuyaClient
+from pupulinbot.paipuya import PaipuyaClient, PaipuyaError
 
 NOW = datetime(2026, 11, 7, 10, tzinfo=UTC)
 LEVEL = {"id": 10502, "score": 3700, "delta": 85}
@@ -196,6 +196,56 @@ async def test_range_stats_uses_exact_bounds_keeps_game_count_and_caches():
     assert str(int(NOW.timestamp() * 1000) - 1) in client._get.call_args_list[0].args[0]
     await client.range_stats(42, start=start, end=NOW, modes=[12])
     assert client._get.await_count == 2
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_summary_names_yakuman_from_matching_room_and_player_highlights():
+    rows = games(2)
+    sample = stats(2)
+    sample.raw.update({"役满": 2, "_hand_count": 22})
+    client = PaipuyaClient("https://example.invalid")
+    client.query_history = AsyncMock(return_value=(rows, False))
+    client.range_stats = AsyncMock(return_value=sample)
+    client.metadata = AsyncMock(return_value=sample)
+
+    def highlight(row, name, *, account=42, mode=12, offset=0):
+        return {
+            "uuid": row.uuid,
+            "modeId": mode,
+            "startTime": row.started_at.timestamp() + offset,
+            "event": {
+                "type": "役满",
+                "player": account,
+                "fan": [{"count": 1, "役满": 1, "label": name}],
+            },
+        }
+
+    client._get = AsyncMock(
+        return_value=[
+            highlight(rows[0], "清老头", account=99),
+            highlight(rows[0], "天和", mode=9),
+            highlight(rows[0], "地和", offset=2),
+            highlight(rows[0], "大三元"),
+            highlight(rows[1], "国士无双"),
+            highlight(rows[1], "大三元"),
+            highlight(games(3)[2], "小四喜"),
+        ]
+    )
+    service = MahjongQueries(None, client, None)
+    options = parse_options("-r 玉南 -l 2")
+    text = await service.summary_query(Player(42, "测试"), options, client)
+    assert "#大三元 #国士无双" in text
+    assert text.count("#大三元") == 1
+    assert not any(tag in text for tag in ("#清老头", "#天和", "#地和", "#小四喜", "#役满达成"))
+    assert "_yakuman_win_names" not in sample.raw
+    await service.summary_query(Player(42, "测试"), options, client)
+    client._get.assert_awaited_once_with("recent_highlight_games", {"limit": 500, "mode": "12"})
+
+    client._get = AsyncMock(side_effect=PaipuyaError("服务不可用"))
+    client.cache.entries.clear()
+    fallback = await service.summary_query(Player(42, "测试"), options, client)
+    assert "#役满达成" not in fallback and "#大三元" not in fallback
     await client.close()
 
 

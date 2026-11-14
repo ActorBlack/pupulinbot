@@ -6,11 +6,12 @@ import json
 import re
 import time
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
-from .spectator_wire import fields, first
+from .spectator_wire import decode_list, fields, first
 
 LOBBY_URL = "https://game.maj-soul.com/1/"
 ORIGIN = LOBBY_URL + "?paipu="
@@ -66,6 +67,20 @@ LOBBY_RENDER_LIMIT = """
     window.__pupulinLobbyFrames = true;
     return true;
 })();
+"""
+
+# Leave the initial Unity load at full speed, then cap the lobby renderer.
+LOBBY_RENDER_ON_READY = f"""
+(() => {{
+    if (location.href !== {json.dumps(LOBBY_URL)}) return;
+    let attempts = 0;
+    const timer = setInterval(() => {{
+        const connected = window.__pupulinSpectator?.status().connected;
+        if ((connected && ({LOBBY_RENDER_LIMIT.strip().removesuffix(";")})) || ++attempts >= 180) {{
+            clearInterval(timer);
+        }}
+    }}, 1000);
+}})();
 """
 
 
@@ -143,9 +158,9 @@ async def replay_response(page, url, uuid):
     raise MajsoulConnectionLost
 
 
-async def command(connection, method, **params):
+async def command(connection, method, *, wait_seconds=5, **params):
     await connection.send(json.dumps({"id": 1, "method": method, "params": params}))
-    async with asyncio.timeout(5):
+    async with asyncio.timeout(wait_seconds):
         while True:
             response = json.loads(await connection.recv())
             if response.get("id") == 1:
@@ -258,18 +273,57 @@ class LobbyKeepalive:
         self.watch = None
         self.last_received = 0.0
 
+    async def open(self, browser, origin):
+        target = await official_tab(browser, renew=not self._online())
+        if self.target != target or not self._online():
+            await self.close()
+            ready = asyncio.Event()
+            self.target = target
+            self.watch = asyncio.create_task(self._watch_lobby(origin, target, ready))
+            async with asyncio.timeout(115):
+                await ready.wait()
+        return target if self._online() else None
+
+    async def observation(self, uuid):
+        async with chrome_browser(self.profile) as (browser, origin):
+            target = await self.open(browser, origin)
+            if target is None:
+                raise MajsoulConnectionLost
+            async with chrome_page(origin, target) as page:
+                return await request_observation(page, uuid)
+
+    async def public_heads(self, filters):
+        async with chrome_browser(self.profile) as (browser, origin):
+            target = await self.open(browser, origin)
+            if target is None:
+                return {"error": "not_ready"}
+            async with asyncio.timeout(40), chrome_page(origin, target) as page:
+                heads = []
+                next_request = time.monotonic()
+                for mode in filters:
+                    await asyncio.sleep(max(0, next_request - time.monotonic()))
+                    next_request = time.monotonic() + 1.05
+                    result = await command(
+                        page,
+                        "Runtime.evaluate",
+                        expression=f"window.__pupulinSpectator?.list({mode})",
+                        awaitPromise=True,
+                        returnByValue=True,
+                        wait_seconds=12,
+                    )
+                    response = result.get("result", {}).get("value") or {"error": "not_ready"}
+                    if "wire" in response:
+                        response = decode_list(response["wire"])
+                    if response.get("error"):
+                        return response
+                    heads.extend(response["data"]["live_list"])
+                return {"heads": heads}
+
     async def click(self):
         async with chrome_browser(self.profile) as (browser, origin):
             try:
-                target = await official_tab(browser, renew=not self._online())
-                if self.target != target or not self._online():
-                    await self.close()
-                    ready = asyncio.Event()
-                    self.target = target
-                    self.watch = asyncio.create_task(self._watch_lobby(origin, target, ready))
-                    async with asyncio.timeout(115):
-                        await ready.wait()
-                if self._online():
+                target = await self.open(browser, origin)
+                if target:
                     async with chrome_page(origin, target) as page:
                         if await click_lobby(page):
                             return True
@@ -294,7 +348,16 @@ class LobbyKeepalive:
         socket = None
         try:
             async with chrome_page(origin, target) as page:
-                await command(page, "Network.enable")
+                await command(page, "Page.enable", wait_seconds=15)
+                await command(
+                    page,
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    source=Path(__file__).with_name("spectator_bridge.js").read_text()
+                    + LOBBY_RENDER_ON_READY,
+                    wait_seconds=15,
+                )
+                await command(page, "Network.enable", wait_seconds=15)
+                await command(page, "Network.setBypassServiceWorker", bypass=True)
                 await page.send(
                     json.dumps({"id": 2, "method": "Page.navigate", "params": {"url": LOBBY_URL}})
                 )
@@ -359,3 +422,24 @@ class LobbyKeepalive:
             self.watch = None
         self.last_received = 0.0
         self.target = None
+
+
+async def request_observation(page, uuid):
+    previous = {"error": "not_ready"}
+    for alternate in ("false", "true"):
+        result = await command(
+            page,
+            "Runtime.evaluate",
+            expression=f"window.__pupulinSpectator?.observe({json.dumps(uuid)}, {alternate})",
+            awaitPromise=True,
+            returnByValue=True,
+            wait_seconds=15,
+        )
+        response = result.get("result", {}).get("value") or {"error": "not_ready"}
+        if "wire" not in response:
+            return previous if alternate == "true" else response
+        payload = fields(first(fields(bytes(response["wire"])), 2, b""))
+        if first(fields(first(payload, 1, b"")), 1) != 1004:
+            return response
+        previous = response
+    return previous

@@ -7,7 +7,11 @@ from .ms_level import delta_text
 def format_records(records: list[GameRecord], account_id: int) -> str:
     if not records:
         return "牌谱屋暂未收录该玩家的对局。"
-    lines = ["最近牌谱："]
+    return "\n".join(["最近牌谱：", *format_record_blocks(records, account_id)])
+
+
+def format_record_blocks(records: list[GameRecord], account_id: int) -> list[str]:
+    blocks = []
     for game in records:
         player = game.seat(account_id) or {}
         rank = player.get("rank") or "?"
@@ -29,8 +33,8 @@ def format_records(records: list[GameRecord], account_id: int) -> str:
         }.get(game.mode, game.mode)
         delta = delta_text(player)
         pt = "" if delta == "—" else "｜" + delta
-        lines.append(f"{time}｜{mode}｜{rank}位 {score}点{pt}\n{game.url}")
-    return "\n".join(lines)
+        blocks.append(f"{time}｜{mode}｜{rank}位 {score}点{pt}\n{game.url}")
+    return blocks
 
 
 def finish_message(nickname: str, game: GameRecord, account_id: int) -> str:

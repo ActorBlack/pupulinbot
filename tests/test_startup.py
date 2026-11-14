@@ -16,8 +16,9 @@ from nonebot.rule import TrieRule
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from types import SimpleNamespace
 for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats', 'ms4',
-                'msstyle', 'msrank', 'msstatus', 'mswatch',
-                'mslife', 'msreview', 'mstable', 'exmortal', 'thwatch', 'thstatus', 'thlast',
+                'msstyle', 'msstyle3', 'msrank', 'msstatus', 'mswatch', 'mslive',
+                'mslife', 'msreview', 'mstable', 'exmortal', 'extable',
+                'thwatch', 'thstatus', 'thlast',
                 'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank',
                 'thlive'):
     event = SimpleNamespace(get_type=lambda: 'message',
@@ -84,8 +85,12 @@ async def verify_group_policy():
     assert '已在授权' in await call_exmortal(admin, Message('add 123456'))
     assert '123456' in await call_exmortal(admin, Message('list'))
     assert not await db.is_vip2('123456')
-    assert '超级管理员' in await call_exmortal(ordinary, Message('del 123456'))
-    assert '已移除' in await call_exmortal(admin, Message('del ') + MessageSegment.at(123456))
+    for operation in ('add 234567', 'delete 123456', 'del 123456', 'list'):
+        assert '超级管理员' in await call_exmortal(ordinary, Message(operation))
+    assert not batches.capsolver_allowed('234567')
+    assert batches.capsolver_allowed('123456')
+    assert '已移除' in await call_exmortal(admin, Message('delete ') + MessageSegment.at(123456))
+    assert '123456' not in await call_exmortal(admin, Message('list'))
     assert not batches.capsolver_allowed('123456')
     assert not await db.capsolver_members()
     assert await db.is_vip2('234567')
@@ -103,9 +108,9 @@ async def verify_group_policy():
     for group in (706530575, 546573626):
         for caller in (285843647, 123456, 234567):
             commands = ('help', 'mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus', 'vip2',
-                        'exmortal',
+                        'exmortal', 'extable',
                         'msbind', 'ms2', 'mslife', 'thbind', 'th4', 'th3', 'thlife', 'thrank',
-                        'mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
+                        'mswatch', 'thwatch', 'msstatus', 'thstatus', 'mslive', 'thlive')
             for command in commands:
                 event = GroupMessageEvent.model_construct(
                     post_type='message', group_id=group, user_id=caller,
@@ -116,10 +121,11 @@ async def verify_group_policy():
                 allowed = await _apply_run_preprocessors(
                     bot=None, event=event, state=state, matcher=help_cmd(),
                 )
-                monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus', 'thlive')
+                monitoring = command in ('mswatch', 'thwatch', 'msstatus', 'thstatus', 'mslive',
+                                         'thlive')
                 mortal = command in ('mortal', 'msreview', 'msmortal', 'mstable', 'mortalstatus')
                 expected = caller == 285843647 or (
-                    command not in ('vip2', 'exmortal')
+                    command not in ('vip2', 'exmortal', 'extable')
                     and (not monitoring or (group != 706530575 and caller != 234567))
                     and (not mortal or group != 706530575 or caller == 234567)
                 )
@@ -252,6 +258,53 @@ async def verify_group_ranking_delivery():
         ]
 asyncio.run(verify_group_ranking_delivery())
 
+async def verify_recent_record_delivery():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import handle_event
+    from pupulinbot.ms_commands import MahjongQueries
+    from pupulinbot.tenhou_queries import TenhouQueries
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    records = ['最新一场\\nhttps://example.invalid/2', '上一场\\nhttps://example.invalid/1']
+    picture = b'recent table'
+    forward = AsyncMock(return_value={'message_id': 123})
+    cases = [
+        ('mslast', '雀魂最近对局', records),
+        ('msrecent', '雀魂最近对局', records),
+        ('thlast', '天凤最近对局', records),
+        ('mslast -i', '雀魂最近对局', picture),
+        ('thlast -i', '天凤最近对局', picture),
+    ]
+    with patch.object(bot, 'call_api', new=forward), \\
+         patch.object(MahjongQueries, 'query', new_callable=AsyncMock) as ms_query, \\
+         patch.object(TenhouQueries, 'query', new_callable=AsyncMock) as th_query:
+        for ordinal, (command, title, result) in enumerate(cases, 810):
+            ms_query.return_value = th_query.return_value = result
+            forward.reset_mock()
+            message = Message('/' + command)
+            await handle_event(bot, GroupMessageEvent.model_construct(
+                time=0, post_type='message', message_type='group', sub_type='normal',
+                self_id=100, group_id=1131357545, user_id=42, message_id=ordinal,
+                sender=SimpleNamespace(role='member'), to_me=False,
+                message=message, original_message=message, raw_message=str(message),
+            ))
+            forward.assert_awaited_once()
+            call = forward.await_args
+            assert call.args == ('send_group_forward_msg',)
+            assert call.kwargs['group_id'] == 1131357545 and call.kwargs['source'] == title
+            nodes = call.kwargs['messages']
+            if isinstance(result, list):
+                assert [node['data']['content'] for node in nodes] == [
+                    [{'type': 'text', 'data': {'text': record}}] for record in records
+                ]
+            else:
+                assert len(nodes) == 1
+                assert nodes[0]['data']['content'] == [
+                    {'type': 'image', 'data': {'file': MessageSegment.image(picture).data['file']}}
+                ]
+asyncio.run(verify_recent_record_delivery())
+
 async def verify_mortal_short_options():
     from unittest.mock import AsyncMock, patch
     from pupulinbot.plugin import ms_mortal, msmortal_cmd, paipuya, MahjongQueries
@@ -287,24 +340,30 @@ asyncio.run(verify_mortal_short_options())
 async def verify_exmortal_modes():
     from unittest.mock import AsyncMock, patch
     from nonebot.exception import FinishedException
-    from pupulinbot.plugin import capsolver_mortal, capsolver_cmd, paipuya, MahjongQueries
+    from pupulinbot.plugin import (
+        capsolver_mortal, capsolver_cmd, capsolver_table, extable_cmd, paipuya, MahjongQueries,
+    )
     from pupulinbot.models import Player
 
     event = GroupMessageEvent.model_construct(
         post_type='message', group_id=1131357545, user_id=285843647,
     )
     link = 'https://tenhou.net/4/?log=2026110806gm-00a9-0000-f946a576&tw=1'
-    async def invoke(text):
+    async def invoke(text, *, table=False):
         finish = AsyncMock(side_effect=FinishedException)
-        with patch.object(capsolver_cmd, 'finish', new=finish):
+        matcher, handler = (
+            (extable_cmd, capsolver_table) if table else (capsolver_cmd, capsolver_mortal)
+        )
+        with patch.object(matcher, 'finish', new=finish):
             try:
-                await capsolver_mortal(event, Message(text))
+                await handler(event, Message(text))
             except FinishedException:
                 return finish.call_args.args[0]
         raise AssertionError('Missing exmortal command completion')
     with patch.object(batches, 'capsolver_enabled', True), \
          patch.object(batches, 'online', object()), patch.object(batches, 'start') as start:
-        for text, seats in ((link, [1]), (link+' 3', [3]), ('table '+link, [0,1,2,3]),
+        for text, seats in ((link, [1]), (link+' 3', [3]), ('dboqr0kj4ak3gig8n0tg@2', [2]),
+                            ('261110-306acb95-44c1-4b6a-86df-b8a92b950cd1 3', [3]),
                             ('links '+link+' dboqr0kj4ak3gig8n0tg@2', [1,2])):
             reply = await invoke(text)
             job_id = start.call_args.args[0]
@@ -312,6 +371,13 @@ async def verify_exmortal_modes():
             job = batches.load(job_id, '1131357545', '285843647')
             assert job['verification'] == 'capsolver'
             assert [row['seat'] for row in job['rows']] == seats
+        reply = await invoke(link, table=True)
+        job_id = start.call_args.args[0]
+        assert f'exmortal status {job_id}' in reply
+        job = batches.load(job_id, '1131357545', '285843647')
+        assert job['verification'] == 'capsolver'
+        assert job['kind'] == 'table'
+        assert [row['seat'] for row in job['rows']] == [0, 1, 2, 3]
         job.update(status='capsolver_failed', message=f'发送 exmortal resume {job_id} 可继续。')
         batches.save(job)
         assert f'发送 exmortal resume {job_id}' in await invoke(f'status {job_id}')
@@ -319,14 +385,15 @@ async def verify_exmortal_modes():
         assert f'exmortal status {job_id}' in await invoke(f'resume {job_id}')
         start.assert_called_once_with(job_id, '1131357545', '285843647')
         start.reset_mock()
-        assert '1–100' in await invoke('batch 101')
+        assert 'extable' in await invoke('table ' + link)
+        assert '默认 10 场' in await invoke('batch 101')
         start.assert_not_called()
         create_job = AsyncMock(return_value={'id':'ex-test','rows':[]})
         player = Player(42,'测试 玩家')
         with patch.object(MahjongQueries,'player',new=AsyncMock(return_value=player)) as resolve, \
              patch.object(paipuya,'history',new=AsyncMock(return_value=([],False))) as history, \
              patch.object(batches,'create',new=create_job):
-            reply = await invoke('batch "测试 玩家" -l 3 -r 玉南 start=2026-11-01')
+            reply = await invoke('"测试 玩家" -l 3 -r 玉南 start=2026-11-01')
             assert 'exmortal status ex-test' in reply and 'exmortal report ex-test' in reply
             assert resolve.await_args.args[0].player == '测试 玩家'
             assert history.await_args.args == (42,3)
@@ -337,7 +404,21 @@ async def verify_exmortal_modes():
             )
             history.reset_mock()
             create_job.reset_mock()
-            assert '1–100' in await invoke('batch "测试 玩家" -l 101')
+            await invoke('applePie')
+            assert resolve.await_args.args[0].player == 'applePie'
+            assert history.await_args.args == (42,10)
+            create_job.assert_awaited_once_with(
+                10, '1131357545', '285843647', player, games=[], verification='capsolver'
+            )
+            await invoke('-l 5')
+            assert not resolve.await_args.args[0].player
+            assert history.await_args.args == (42,5)
+            await invoke('abcdefghijklmnopqrst -l 2')
+            assert resolve.await_args.args[0].player == 'abcdefghijklmnopqrst'
+            assert history.await_args.args == (42,2)
+            history.reset_mock()
+            create_job.reset_mock()
+            assert '1–100' in await invoke('"测试 玩家" -l 101')
             history.assert_not_awaited()
             create_job.assert_not_awaited()
 asyncio.run(verify_exmortal_modes())
@@ -753,6 +834,7 @@ for command in ('雀魂绑定', '绑定雀魂', '雀魂解绑', '解绑雀魂', 
         env={
             **os.environ,
             "PUPULIN_DATABASE": str(tmp_path / "startup.db"),
+            "COMMAND_START": '["", "/"]',
             "SUPERUSERS": '["285843647"]',
         },
         capture_output=True,

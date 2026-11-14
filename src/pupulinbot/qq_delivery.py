@@ -1,4 +1,4 @@
-"""Deliver image messages through OneBot."""
+"""Deliver group messages through OneBot."""
 
 import asyncio
 
@@ -8,6 +8,15 @@ from nonebot.exception import AdapterException
 
 async def send_ranking_forward(bot, group_id, title, pages):
     """Send the ranking pages in order as nodes of a single QQ forward."""
+    return await send_group_forward(
+        bot, group_id, title, pages, failure_message="排行的合并消息发送失败，请稍后重试。"
+    )
+
+
+async def send_group_forward(
+    bot, group_id, title, items, *, failure_message="合并消息发送失败，请稍后重试。"
+):
+    """Send each text block or image as a node in one QQ forward."""
     nodes = [
         {
             "type": "node",
@@ -15,11 +24,13 @@ async def send_ranking_forward(bot, group_id, title, pages):
                 "name": title,
                 "uin": str(bot.self_id),
                 "content": [
-                    {"type": "image", "data": {"file": MessageSegment.image(page).data["file"]}}
+                    {"type": "image", "data": {"file": MessageSegment.image(item).data["file"]}}
+                    if isinstance(item, bytes)
+                    else {"type": "text", "data": {"text": item}}
                 ],
             },
         }
-        for page in pages
+        for item in items
     ]
     try:
         result = await bot.call_api(
@@ -28,7 +39,7 @@ async def send_ranking_forward(bot, group_id, title, pages):
     except (AdapterException, TimeoutError):
         result = None
     if not isinstance(result, dict) or not result.get("message_id"):
-        return "排行的合并消息发送失败，请稍后重试。"
+        return failure_message
 
 
 async def send_verified_image(bot, group, message: Message):

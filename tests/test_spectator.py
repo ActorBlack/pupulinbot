@@ -13,6 +13,7 @@ import pytest
 from pupulinbot.live import LiveServiceError
 from pupulinbot.majsoul_replay import (
     LOBBY_RENDER_LIMIT,
+    LOBBY_RENDER_ON_READY,
     LOBBY_URL,
     RECORD_RPC,
     MajsoulConnectionLost,
@@ -21,6 +22,7 @@ from pupulinbot.majsoul_replay import (
     fetch_replay_head,
     official_tab,
     replay_response,
+    request_observation,
 )
 from pupulinbot.models import Player
 from pupulinbot.ms_commands import MahjongQueries
@@ -97,6 +99,46 @@ async def test_all_subscribers_share_one_scan_and_failures_are_not_idle():
     with pytest.raises(LiveServiceError, match="请登录"):
         await client.current_game(1)
     await client.close()
+
+
+async def test_manual_scan_reuses_replay_lobby_without_enabling_start_monitor(tmp_path):
+    client = BrowserSpectatorClient(tmp_path, records_enabled=True)
+    latest = head(24)
+    latest["start_time"] = int(datetime.now(UTC).timestamp()) - 300
+    client.record_lobby.public_heads = AsyncMock(
+        side_effect=[ReplayBrowserUnavailable, {"heads": [latest]}]
+    )
+    client.start = AsyncMock()
+    assert await client.current_game(1) is None
+    client.record_lobby.public_heads.assert_not_awaited()
+    first, second = await asyncio.gather(client.public_games(), client.public_games())
+    assert first[1].uuid == second[1].uuid == UUID
+    assert len(first[1].players) == 3
+    assert client.record_lobby.public_heads.await_count == 2
+    client.start.assert_awaited_once()
+    await client.close()
+
+
+async def test_live_index_retains_tables_that_leave_the_current_list():
+    client = BrowserSpectatorClient("unused", records_enabled=True)
+    latest = head(24)
+    latest["start_time"] = int(datetime.now(UTC).timestamp()) - 300
+    client.record_lobby.public_heads = AsyncMock(side_effect=[{"heads": [latest]}, {"heads": []}])
+    assert (await client._load())[1].uuid == UUID
+    assert await client._load() == {}
+    assert client.recently_listed_games()[1].uuid == UUID
+    await client.close()
+
+
+async def test_observation_retries_alternate_lobby_on_not_logged_in(monkeypatch):
+    # Wrapper.data contains an error message with code 1004.
+    rejected = {"wire": list(b"\x12\x05\x0a\x03\x08\xec\x07")}
+    accepted = {"wire": [], "route": "wss://route-2.maj-soul.com"}
+    send = AsyncMock(side_effect=[{"result": {"value": r}} for r in (rejected, accepted)])
+    monkeypatch.setattr("pupulinbot.majsoul_replay.command", send)
+    assert await request_observation(None, UUID) == accepted
+    assert send.await_args_list[0].kwargs["expression"].endswith(", false)")
+    assert send.await_args_list[1].kwargs["expression"].endswith(", true)")
 
 
 @pytest.mark.asyncio
@@ -285,6 +327,40 @@ assert.deepEqual(received, [0, 0, 1000]);
 assert.equal(setTimeout, originalTimer);
 """
     subprocess.run([node, "-e", setup + LOBBY_RENDER_LIMIT + checks], check=True, timeout=10)
+
+
+def test_lobby_frame_limit_waits_for_unity():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js required")
+    setup = """
+const assert = require('node:assert/strict');
+global.window = globalThis;
+global.location = {href: 'https://game.maj-soul.com/1/'};
+let tick, cleared = false;
+global.setInterval = (fn, interval) => {
+    assert.equal(interval, 1000);
+    tick = fn;
+    return 1;
+};
+global.clearInterval = id => { assert.equal(id, 1); cleared = true; };
+window.requestAnimationFrame = () => 1;
+window.cancelAnimationFrame = () => {};
+"""
+    checks = """
+tick();
+assert.equal(window.__pupulinLobbyFrames, undefined);
+assert.equal(cleared, false);
+window.unityInstance = {};
+tick();
+assert.equal(window.__pupulinLobbyFrames, undefined);
+assert.equal(cleared, false);
+window.__pupulinSpectator = {status: () => ({connected:true})};
+tick();
+assert.equal(window.__pupulinLobbyFrames, true);
+assert.equal(cleared, true);
+"""
+    subprocess.run([node, "-e", setup + LOBBY_RENDER_ON_READY + checks], check=True, timeout=10)
 
 
 @pytest.mark.asyncio

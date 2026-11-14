@@ -213,8 +213,12 @@ async def test_last_compatibility_limits_default_binding_and_group_isolation(sto
     source = client()
     service = TenhouQueries(store, source)
     await store.add("group", "manager", "applePie")
-    result = await service.query("thlast", "", "user", "group")
+    (result,) = await service.query("thlast", "", "user", "group")
     assert "applePie(49200)" in result and "https://tenhou.net/4/?log=" in result
+    results = await service.query("thlast", "applePie -l 5", "user", "group")
+    assert len(results) == 2
+    assert "f946a573" in results[0] and "f946a570" in results[1]
+    assert all("applePie(49200)" in block for block in results)
     with pytest.raises(TenhouError, match="thbind"):
         await service.query("thlast", "", "user", "othergroup")
     source.user_history.reset_mock()
@@ -256,12 +260,22 @@ async def test_group_rank_uses_current_group_members_with_bindings(store, monkey
         return original(draw, xy, label, *args, **kwargs)
 
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    import pupulinbot.tenhou_queries as module
+
+    rank_history = module.rank_history
+
+    def with_peak(*args, **kwargs):
+        return {**rank_history(*args, **kwargs), "high_grade": 18}
+
+    monkeypatch.setattr(module, "rank_history", with_peak)
     (result,) = await service.query("thrank", "", "user", "group", member_ids=members)
-    assert Image.open(io.BytesIO(result)).size == (680, 274)
+    assert Image.open(io.BytesIO(result)).size == (840, 274)
     assert text.count(((48, 219), "applePie")) == 1
     assert ((48, 60), "本群天凤四麻排行") in text
-    assert ((500, 150), "推算积分") in text
-    assert ((526, 219), "/") in text
+    assert ((462, 150), "最高段位") in text
+    assert ((462, 219), "九段") in text
+    assert ((660, 150), "推算积分") in text
+    assert ((686, 219), "/") in text
     source.user_history.assert_awaited_once_with("applePie")
     source.phoenix_stats.assert_not_awaited()
     assert len(await service.ranking("sanma", members)) == 1
@@ -278,7 +292,7 @@ async def test_group_rank_pages_include_all_bound_members(store):
     source.user_history.side_effect = history
     pages = await TenhouQueries(store, source).ranking("", members)
     assert len(pages) == 2
-    assert [Image.open(io.BytesIO(page)).size for page in pages] == [(680, 1490), (680, 274)]
+    assert [Image.open(io.BytesIO(page)).size for page in pages] == [(840, 1490), (840, 274)]
 
 
 @pytest.mark.asyncio

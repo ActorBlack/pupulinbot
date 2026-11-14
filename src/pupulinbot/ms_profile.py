@@ -11,6 +11,7 @@ from .ms_sample import number
 from .ms_style import analyze_style
 from .ms_summary import format_level, rank_progress, ratio, scoring_metrics
 from .ms_tags import supplemental_tags
+from .ms_trait_tags import is_named_yakuman_tag
 from .profile_header import draw_profile_header
 from .rank_assets import rank_badge
 from .typography import profile_face as face
@@ -154,7 +155,23 @@ def profile_content(player, stats, *, scope=None, games=()):
 
 def render_profile(player, stats, *, scope=None, games=()):
     content = profile_content(player, stats, scope=scope, games=games)
-    size = (SIZE[0], SIZE[1] + (110 if content["extra_tags"] else 0))
+    tag_lines = []
+    line = []
+    line_width = 0
+    tag_font = face(22)
+    gap = tag_font.getlength(" ")
+    for tag in content["extra_tags"]:
+        label = f"#{tag}"
+        width = tag_font.getlength(label)
+        if line and line_width + width > 1472:
+            tag_lines.append(line)
+            line = []
+            line_width = 0
+        line.append((label, line_width, is_named_yakuman_tag(tag)))
+        line_width += width + gap
+    if line:
+        tag_lines.append(line)
+    size = (SIZE[0], SIZE[1] + (110 + 38 * max(0, len(tag_lines) - 2) if tag_lines else 0))
     image = Image.new("RGBA", size, "#f2f5fa")
     shadow = Image.new("RGBA", size)
     sd = ImageDraw.Draw(shadow)
@@ -245,18 +262,9 @@ def render_profile(player, stats, *, scope=None, games=()):
             if index < len(rows) - 1:
                 draw.line((x + 28, y + 26, x + 468, y + 26), fill="#edf1f6")
     text(64, 1108, "好友码 " + content["friend"], 20, "#8b99ae")
-    if content["extra_tags"]:
-        line, y = "", 1159
-        for tag in content["extra_tags"]:
-            candidate = (line + " #" + tag).strip()
-            if draw.textlength(candidate, font=face(22)) > 1472 and line:
-                text(64, y, line, 22, "#7561a8")
-                y += 38
-                line = "#" + tag
-            else:
-                line = candidate
-        if line:
-            text(64, y, line, 22, "#7561a8")
+    for i, line in enumerate(tag_lines):
+        for label, offset, gold in line:
+            text(64 + offset, 1159 + i * 38, label, 22, "#986b1d" if gold else "#7561a8")
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()

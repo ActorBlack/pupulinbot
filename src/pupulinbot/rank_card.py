@@ -17,6 +17,7 @@ RANK_COLORS = {
 }
 TENHOU_COLORS = {grade_name(grade): rank_theme(grade)[0] for grade in range(21)}
 PAGE_SIZE = 20
+CARD_WIDTH = 840
 
 
 def render_rank_pages(mode, standings, *, tenhou=False):
@@ -34,30 +35,51 @@ def render_rank_pages(mode, standings, *, tenhou=False):
 
 def render_ranking(mode, standings, *, page=None, tenhou=False):
     height = 210 + len(standings) * 64
-    image = Image.new("RGB", (680, height), "#f2f5fa")
+    image = Image.new("RGB", (CARD_WIDTH, height), "#f2f5fa")
     draw = ImageDraw.Draw(image)
     ink, muted = "#22324b", "#7f8da3"
     draw.rounded_rectangle((24, 40, 30, 82), radius=3, fill="#4479d7")
     title = f"本群{'天凤' if tenhou else ''}{mode}排行"
     draw.text((48, 60), title, font=face(34, "title"), fill=ink, anchor="lm")
     if page:
-        draw.text((632, 60), page, font=face(23, "number"), fill=muted, anchor="rm")
-    draw.rounded_rectangle((24, 116, 656, height - 28), radius=20, fill="white")
+        draw.text((792, 60), page, font=face(23, "number"), fill=muted, anchor="rm")
+    draw.rounded_rectangle((24, 116, 816, height - 28), radius=20, fill="white")
     draw.text((48, 150), "游戏昵称", font=face(23, "bold"), fill=muted, anchor="lm")
     draw.text((302, 150), "段位", font=face(23, "bold"), fill=muted, anchor="lm")
+    draw.text((462, 150), "最高段位", font=face(23, "bold"), fill=muted, anchor="lm")
     draw.text(
-        (500, 150),
+        (660, 150),
         "推算积分" if tenhou else "PT / 魂珠",
         font=face(20, "bold"),
         fill=muted,
         anchor="rm",
     )
-    draw.text((632, 150), "上限", font=face(23, "bold"), fill=muted, anchor="rm")
-    draw.line((48, 180, 632, 180), fill="#e6ecf4", width=2)
-    for index, (name, level, points, cap) in enumerate(standings):
+    draw.text((792, 150), "上限", font=face(23, "bold"), fill=muted, anchor="rm")
+    draw.line((48, 180, 792, 180), fill="#e6ecf4", width=2)
+
+    def draw_rank(level, x, y):
+        major = None
+        color = muted
+        if level != "—":
+            if tenhou:
+                color = TENHOU_COLORS.get(level.split("+", 1)[0], muted)
+            else:
+                color = RANK_COLORS.get(level[:1], "#3872c6")
+                major = {"初": 1, "士": 2, "杰": 3, "豪": 4, "圣": 5, "魂": 7}[level[:1]]
+                minor = int(level.removeprefix("魂天Lv")) if major == 7 else int(level[1:])
+                badge = rank_badge(major, minor, 3 if mode == "三麻" else 4, 50)
+                if badge is not None:
+                    image.paste(badge, (x - 52, y - 25), badge)
+        size = 28
+        while size > 17 and draw.textlength(level, font=face(size, "bold")) > 95:
+            size -= 1
+        draw.text((x, y), level, font=face(size, "bold"), fill=color, anchor="lm")
+        return major
+
+    for index, (name, level, peak, points, cap) in enumerate(standings):
         y = 219 + index * 64
         if index % 2:
-            draw.rounded_rectangle((36, y - 28, 644, y + 28), radius=10, fill="#f7f9fd")
+            draw.rounded_rectangle((36, y - 28, 804, y + 28), radius=10, fill="#f7f9fd")
         name_size = 28
         name_width = 246 if tenhou else 200
         while name_size > 14 and draw.textlength(name, font=face(name_size, "bold")) > name_width:
@@ -68,36 +90,24 @@ def render_ranking(mode, standings, *, page=None, tenhou=False):
                 name = name[:-1]
             name += "…"
         draw.text((48, y), name, font=name_font, fill=ink, anchor="lm")
-        major = None
-        if tenhou:
-            color = TENHOU_COLORS.get(level.split("+", 1)[0], muted)
-        else:
-            color = RANK_COLORS.get(level[:1], "#3872c6")
-            major = {"初": 1, "士": 2, "杰": 3, "豪": 4, "圣": 5, "魂": 7}.get(level[:1])
-            minor = int(level.removeprefix("魂天Lv")) if major == 7 else int(level[1:])
-            badge = rank_badge(major, minor, 3 if mode == "三麻" else 4, 50)
-            if badge is not None:
-                image.paste(badge, (250, y - 25), badge)
-        size = 28
-        while size > 17 and draw.textlength(level, font=face(size, "bold")) > 95:
-            size -= 1
-        draw.text((302, y), level, font=face(size, "bold"), fill=color, anchor="lm")
+        major = draw_rank(level, 302, y)
+        draw_rank(peak, 462, y)
         number = None if tenhou else game_number(points, 24)
         if number is not None:
-            image.paste(number, (500 - number.width, y - 12), number)
+            image.paste(number, (660 - number.width, y - 12), number)
             if major == 7:
                 orb = ui_sprite("ui_hpoint_l")
                 if orb is not None:
                     orb = orb.resize((14, 17), Image.Resampling.LANCZOS)
-                    image.paste(orb, (480 - number.width, y - 8), orb)
+                    image.paste(orb, (640 - number.width, y - 8), orb)
         else:
-            draw.text((500, y), points, font=face(28, "number"), fill=ink, anchor="rm")
-        draw.text((526, y), "/", font=face(26, "number"), fill="#b1bdcd", anchor="mm")
+            draw.text((660, y), points, font=face(28, "number"), fill=ink, anchor="rm")
+        draw.text((686, y), "/", font=face(26, "number"), fill="#b1bdcd", anchor="mm")
         number = None if tenhou else game_number(cap, 24, color="#8f9eac")
         if number is not None:
-            image.paste(number, (632 - number.width, y - 12), number)
+            image.paste(number, (792 - number.width, y - 12), number)
         else:
-            draw.text((632, y), cap, font=face(28, "number"), fill=muted, anchor="rm")
+            draw.text((792, y), cap, font=face(28, "number"), fill=muted, anchor="rm")
     output = io.BytesIO()
     image.save(output, format="PNG", optimize=True)
     return output.getvalue()
