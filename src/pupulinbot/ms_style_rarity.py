@@ -24,6 +24,8 @@ PALETTES = {
     "orange": ("#fff3ea", "#eed3be", "#f8e5d5", "#ffdab7", "#7c451f"),
     "gold": ("#fff5d8", "#e3c98d", "#faecbe", "#fff0ca", "#634822"),
     "combination": ("#f1ebe0", "#d2c9b9", "#526e89", "#fff7e8", "#253a50"),
+    "yakuman": ("#b9e6d9", "#a1ccbc", "#b9e6d9", "#e0faf0", "#1d564a"),
+    "yakuman_victim": ("#ebc4ce", "#d6a4b3", "#ebc4ce", "#fff2f5", "#783c51"),
     "easter_egg": ("#f8f2fa", "#e2d3e9", "#eee2f3", "#f8edff", "#624773"),
 }
 

@@ -20,7 +20,7 @@ from .ms_style_radar import (
 )
 from .ms_style_rarity import PALETTES, TIERS, rarity_tier
 from .ms_tags import supplemental_tags
-from .ms_trait_tags import COMBINATION_TAGS, is_named_yakuman_tag
+from .ms_trait_tags import COMBINATION_TAGS, yakuman_tag_groups
 from .typography import profile_face as face
 
 SIZE = (1600, 1270)
@@ -40,7 +40,13 @@ BONUS_START = {
 BONUS_CAP_DEVIATION = 5.0
 BONUS_CAP_THRESHOLD = NORMAL.cdf(BONUS_CAP_DEVIATION)
 STYLE_TAG_LIMIT = 15
-TAG_DISPLAY_ORDER = (*(tier for _, tier in TIERS), "combination", "easter_egg")
+TAG_DISPLAY_ORDER = (
+    *(tier for _, tier in TIERS),
+    "combination",
+    "yakuman",
+    "yakuman_victim",
+    "easter_egg",
+)
 
 # Outline in clockwise order, midtone, shadow, outline color.
 TAG_STONES = {
@@ -69,6 +75,8 @@ TAG_GRADIENTS = {
         (218, (250, 228, 172)),
         (254, (255, 242, 205)),
     ),
+    "yakuman": ((0, (185, 230, 217)), (108, (214, 241, 232)), (254, (242, 251, 248))),
+    "yakuman_victim": ((0, (235, 196, 206)), (108, (245, 220, 228)), (254, (252, 241, 244))),
     "easter_egg": (
         (0, (253, 229, 238)),
         (65, (255, 239, 221)),
@@ -109,6 +117,35 @@ def _draw_tag_gradient(draw, x, y, stops):
             draw.line((x + dx, y + max(0, dx - 245), x + dx, y + min(37, dx + 28)), fill=color)
 
 
+def _draw_yakuman_stone(draw, cx, cy, *, cracked, shine):
+    stone = (
+        (cx - 5, cy - 10),
+        (cx + 5, cy - 10),
+        (cx + 10, cy - 3),
+        (cx + 7, cy + 4),
+        (cx, cy + 11),
+        (cx - 7, cy + 4),
+        (cx - 10, cy - 3),
+    )
+    fill, edge, light, shadow = (
+        ("#bd7189", "#99536c", "#d899ac", "#a05a74")
+        if cracked
+        else ("#48a992", "#287d6c", "#85d0ba", "#247f70")
+    )
+    center = (cx, cy + 1)
+    draw.polygon(stone, fill=fill, outline=edge)
+    if cracked:
+        draw.polygon((stone[2], stone[3], stone[4], center), fill=shadow)
+    draw.polygon((stone[0], stone[1], stone[2], center, stone[6]), fill=light)
+    if cracked:
+        draw.line(
+            (cx + 2, cy - 9, cx - 3, cy - 2, cx + 2, cy + 2, cx - 2, cy + 8), fill=shine, width=2
+        )
+    else:
+        draw.polygon((stone[2], stone[3], stone[4], center), fill=shadow)
+        draw.line((cx - 7, cy - 4, cx - 4, cy - 8, cx + 3, cy - 8), fill=shine)
+
+
 def _draw_tag_plate(draw, x, y, tier):
     plate, edge, socket, accent, _ = PALETTES[tier]
     outline = (
@@ -123,7 +160,7 @@ def _draw_tag_plate(draw, x, y, tier):
         _draw_tag_gradient(draw, x, y, TAG_GRADIENTS[tier])
     else:
         draw.polygon(outline, fill=plate)
-    if tier != "easter_egg":
+    if tier not in {"easter_egg", "yakuman", "yakuman_victim"}:
         draw.polygon(
             (outline[0], (x + 47, y), (x + 35, y + 37), outline[4], outline[5]), fill=socket
         )
@@ -150,6 +187,8 @@ def _draw_tag_plate(draw, x, y, tier):
         draw.line((*rim, rim[0]), fill="#69488a", width=1)
         draw.line((cx - 5, cy - 4, cx, cy - 9), fill="#f7fcff")
         draw.point((cx + 1, cy - 8), fill="#fff7fb")
+    elif tier in {"yakuman", "yakuman_victim"}:
+        _draw_yakuman_stone(draw, cx, cy, cracked=tier == "yakuman_victim", shine=accent)
     elif tier == "combination":
         left = ((cx - 4, cy - 9), (cx + 5, cy), (cx - 4, cy + 9), (cx - 13, cy))
         right = ((cx + 4, cy - 9), (cx + 13, cy), (cx + 4, cy + 9), (cx - 5, cy))
@@ -501,10 +540,13 @@ def render_style(player, stats, games, options, *, current_level=None):
         visible_tags = list(dict.fromkeys(tags))[:STYLE_TAG_LIMIT]
         if not visible_tags:
             text(736, 1012, "暂无达成标签" if stats else "标签数据不足", 21, MUTED)
+        wins, victims = yakuman_tag_groups()
         ranked_tags = []
         for tag in visible_tags:
-            if is_named_yakuman_tag(tag):
-                tier = "gold"
+            if tag in wins:
+                tier = "yakuman"
+            elif tag in victims:
+                tier = "yakuman_victim"
             else:
                 tier = "combination" if tag in COMBINATION_TAGS else rarity_tier(tag)
             ranked_tags.append((tag, tier))

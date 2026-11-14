@@ -201,6 +201,8 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "普普林",
         "略胜一筹",
         "大三元",
+        "四暗刻",
+        "大三元受害者",
         "副露进攻",
     ]
     tiers = {
@@ -233,9 +235,11 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "一击必杀",
         "日常踩雷",
         "无声快刀",
-        "国士受害者",
-        "大三元",
         "重炮手",
+        "大三元",
+        "四暗刻",
+        "国士受害者",
+        "大三元受害者",
         "普普林",
     ]
 
