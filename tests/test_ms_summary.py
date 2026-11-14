@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from pupulinbot.db import Database
 from pupulinbot.models import GameRecord, Player
 from pupulinbot.ms_commands import MahjongQueries
 from pupulinbot.ms_options import parse_options
@@ -246,6 +247,57 @@ async def test_summary_names_yakuman_from_matching_room_and_player_highlights():
     client.cache.entries.clear()
     fallback = await service.summary_query(Player(42, "测试"), options, client)
     assert "#役满达成" not in fallback and "#大三元" not in fallback
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_archived_yakuman_names_survive_feed_expiry_and_restart(tmp_path):
+    db = Database(tmp_path / "bot.db")
+    await db.initialize()
+    rows = games(2)
+    played = rows[0]
+    archived = (
+        played.uuid,
+        played.started_at.timestamp(),
+        42,
+        ("大三元", "字一色"),
+    )
+    client = PaipuyaClient("https://example.invalid", highlight_store=db)
+    entry = {
+        "uuid": archived[0],
+        "startTime": archived[1],
+        "modeId": 12,
+        "event": {
+            "type": "役满",
+            "player": archived[2],
+            "fan": [{"count": 1, "役满": 1, "label": name} for name in archived[3]],
+        },
+    }
+    client._get = AsyncMock(return_value=[entry, entry])
+    await client.refresh_yakuman_highlights(12)
+    await client.close()
+    await db.save_yakuman_highlights(9, [(*archived[:3], ("天和",))])
+    await db.save_yakuman_highlights(
+        12, [(rows[1].uuid, rows[1].started_at.timestamp() + 2, 42, ("地和",))]
+    )
+    assert len(await db.yakuman_highlights(12, [played.uuid])) == 2
+    client = PaipuyaClient("https://example.invalid", highlight_store=Database(db.path))
+    client._get = AsyncMock(side_effect=[[], TimeoutError()])
+    sample = stats(2)
+    sample.raw.update({"役满": 1, "_hand_count": 22})
+    service = MahjongQueries(None, client, None)
+    options = parse_options("-r 玉南 -l 2")
+    for _ in range(2):
+        enriched = await service.with_yakuman_names(
+            Player(42, "测试"), sample, rows, options, client
+        )
+        text = format_summary(
+            Player(42, "测试"), rows, False, options, {"sample": enriched}, now=NOW
+        )
+        assert "#大三元 #字一色" in text
+        assert "#地和" not in text and "#天和" not in text and "#役满达成" not in text
+        client.cache.entries.clear()
+    assert client._get.await_count == 2
     await client.close()
 
 

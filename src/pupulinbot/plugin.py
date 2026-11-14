@@ -267,7 +267,12 @@ paipuya_access = PaipuyaAccess(
     library=settings.hashwx_library,
     rate_limit_file=settings.paipuya_rate_limit_file,
 )
-paipuya = PaipuyaClient(settings.paipuya_base_url, settings.paipuya_timeout, access=paipuya_access)
+paipuya = PaipuyaClient(
+    settings.paipuya_base_url,
+    settings.paipuya_timeout,
+    access=paipuya_access,
+    highlight_store=db,
+)
 sanma = PaipuyaClient(
     settings.paipuya_sanma_base_url, settings.paipuya_timeout, "三麻", access=paipuya_access
 )
@@ -396,6 +401,20 @@ batches = BatchReviews(
 @scheduler.scheduled_job("interval", seconds=15, id="pupulin_mortal_retry", max_instances=1)
 async def retry_mortal_jobs():
     await batches.retry_due(allowed=mortal_allowed)
+
+
+if settings.paipuya_api_token:
+
+    @scheduler.scheduled_job(
+        "interval", minutes=10, id="pupulin_yakuman_highlights", max_instances=1, coalesce=True
+    )
+    async def archive_majsoul_yakuman_highlights():
+        for mode in paipuya.modes:
+            try:
+                async with asyncio.timeout(15):
+                    await paipuya.refresh_yakuman_highlights(mode)
+            except (PaipuyaError, TimeoutError):
+                logger.warning("雀魂役满高光刷新失败（房间 %s）", mode)
 
 
 if settings.majsoul_record_browser and settings.majsoul_record_keepalive:

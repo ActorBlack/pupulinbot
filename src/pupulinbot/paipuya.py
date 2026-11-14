@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
@@ -33,11 +34,13 @@ class PaipuyaClient:
         mode: str = "四麻",
         *,
         access: PaipuyaAccess | None = None,
+        highlight_store=None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.mode = mode
         self.access = access or PaipuyaAccess()
+        self.highlight_store = highlight_store
         self.cache = QueryCache()
         self.last_success = None
         self.last_error = None
@@ -208,39 +211,76 @@ class PaipuyaClient:
             await self._http.aclose()
             self._http = None
 
-    async def recent_yakuman_names(self, account_id, games, *, mode):
-        """Match the public room highlights to the player's exact sample."""
-        sample = {g.uuid: g.started_at.timestamp() for g in games if g.mode == str(mode)}
-        if mode not in self.modes or self.mode != "四麻" or not sample:
+    async def refresh_yakuman_highlights(self, mode):
+        if mode not in self.modes or self.mode != "四麻":
             return ()
 
         async def load():
             rows = await self._get("recent_highlight_games", {"limit": 500, "mode": str(mode)})
             if not isinstance(rows, list):
                 raise PaipuyaError("牌谱屋高光响应格式错误")
-            return rows
+            highlights = []
+            for row in rows:
+                if not isinstance(row, dict) or number(row.get("modeId")) != mode:
+                    continue
+                uuid, event = row.get("uuid"), row.get("event")
+                started = number(row.get("startTime"))
+                if (
+                    not isinstance(uuid, str)
+                    or not uuid
+                    or started is None
+                    or not isinstance(event, dict)
+                    or event.get("type") != "役满"
+                ):
+                    continue
+                winner = number(event.get("player"))
+                names = yakuman_names(event.get("fan"))
+                if winner is not None and winner > 0 and winner.is_integer() and names:
+                    highlights.append((uuid, started, int(winner), names))
+            if self.highlight_store is not None:
+                try:
+                    await self.highlight_store.save_yakuman_highlights(mode, highlights)
+                except sqlite3.Error:
+                    logger.warning("雀魂役满高光存档暂不可写（房间 %s）", mode, exc_info=True)
+            return tuple(highlights)
 
-        rows = await self.cache.get(("recent_highlight_games", mode), 600, load)
-        names = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            uuid = row.get("uuid")
-            if not isinstance(uuid, str) or uuid not in sample or number(row.get("modeId")) != mode:
-                continue
-            started = number(row.get("startTime"))
-            event = row.get("event")
-            if (
-                started is None
-                or abs(started - sample[uuid]) > 1
-                or not isinstance(event, dict)
-                or event.get("type") != "役满"
-                or number(event.get("player")) != account_id
-            ):
-                continue
-            for name in yakuman_names(event.get("fan")):
-                names[name] = None
-        return tuple(names)
+        return await self.cache.get(("recent_highlight_games", mode), 600, load)
+
+    async def yakuman_highlights(self, games, *, mode):
+        """Match saved and current highlights against the exact sample."""
+        sample = {g.uuid: g.started_at.timestamp() for g in games if g.mode == str(mode)}
+        if mode not in self.modes or self.mode != "四麻" or not sample:
+            return ()
+
+        matches = {}
+        if self.highlight_store is not None:
+            try:
+                saved = await self.highlight_store.yakuman_highlights(mode, sample)
+            except sqlite3.Error:
+                saved = ()
+                logger.warning("雀魂役满高光存档暂不可读（房间 %s）", mode, exc_info=True)
+            for uuid, started, winner, name in saved:
+                if abs(started - sample[uuid]) <= 1:
+                    matches.setdefault((uuid, winner), {})[name] = None
+        try:
+            async with asyncio.timeout(3 if self.highlight_store is not None else None):
+                current = await self.refresh_yakuman_highlights(mode)
+        except (PaipuyaError, TimeoutError):
+            if not matches:
+                raise
+        else:
+            for uuid, started, winner, names in current:
+                if uuid in sample and abs(started - sample[uuid]) <= 1:
+                    matches.setdefault((uuid, winner), {}).update(dict.fromkeys(names))
+        return tuple((uuid, winner, tuple(names)) for (uuid, winner), names in matches.items())
+
+    async def recent_yakuman_names(self, account_id, games, *, mode):
+        highlights = await self.yakuman_highlights(games, mode=mode)
+        return tuple(
+            dict.fromkeys(
+                name for _, winner, names in highlights if winner == account_id for name in names
+            )
+        )
 
     async def search_player(self, nickname: str) -> list[Player]:
         data = await self._get(

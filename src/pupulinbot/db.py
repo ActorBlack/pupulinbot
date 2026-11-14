@@ -68,6 +68,11 @@ CREATE TABLE IF NOT EXISTS reviews(
   result TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS majsoul_yakuman_highlights(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL,
+  winner INTEGER NOT NULL, name TEXT NOT NULL,
+  PRIMARY KEY(mode, uuid, winner, name)
+);
 """
 
 
@@ -196,6 +201,28 @@ class Database:
                 (qq_id, account_id, nickname),
             )
             await db.commit()
+
+    async def save_yakuman_highlights(self, mode, highlights):
+        if highlights:
+            async with self.connect() as db:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO majsoul_yakuman_highlights VALUES (?, ?, ?, ?, ?)",
+                    (
+                        (mode, uuid, started, winner, name)
+                        for uuid, started, winner, names in highlights
+                        for name in names
+                    ),
+                )
+                await db.commit()
+
+    async def yakuman_highlights(self, mode, uuids):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT uuid, started_at, winner, name FROM majsoul_yakuman_highlights "
+                "WHERE mode=? AND uuid IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                (mode, json.dumps(list(uuids))),
+            ) as cursor:
+                return await cursor.fetchall()
 
     async def assign_daily_identity(self, qq_id: str, candidate: str) -> tuple[str, bool]:
         async with self.connect() as db:
