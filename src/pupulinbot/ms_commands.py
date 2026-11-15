@@ -24,6 +24,8 @@ from .ms_style import style_lines
 from .ms_style_chart import render_style
 from .ms_style_radar import SANMA_STYLE_ROOMS
 from .ms_summary import format_summary
+from .ms_trait_tags import recent_deal_in_game, yakuman_names
+from .ms_yakuman import backfill_yakuman
 from .paipuya import PaipuyaError
 from .qq_delivery import send_group_forward
 
@@ -48,10 +50,11 @@ QUERY_ALIASES = {"mslast": ("msrecent",), "msvs": ("mswith",)}
 
 
 class MahjongQueries:
-    def __init__(self, db, four, three, *, live=None, admins=()):
+    def __init__(self, db, four, three, *, live=None, admins=(), replay_browser=None):
         self.db, self.clients = db, {4: four, 3: three}
         self.gate = asyncio.Semaphore(2)
         self.live = live
+        self.replay_browser = replay_browser
         self.admins = frozenset(str(user) for user in admins)
 
     async def player(self, options, user_id):
@@ -219,7 +222,9 @@ class MahjongQueries:
                     self.sample_stats(player, games, options, client),
                     self.rank_metadata(player, client),
                 )
-                stats = await self.with_yakuman_names(player, stats, games, options, client)
+                stats = await self.with_yakuman_names(
+                    player, stats, games, options, client, backfill=command == "msstyle"
+                )
                 return await asyncio.to_thread(
                     render_style, player, stats, games, options, current_level=identity.get("level")
                 )
@@ -293,29 +298,80 @@ class MahjongQueries:
             )
         )
 
-    async def with_yakuman_names(self, player, stats, games, options, client):
-        load = getattr(client, "recent_yakuman_names", None)
+    async def with_yakuman_names(self, player, stats, games, options, client, *, backfill=False):
         if (
-            not callable(load)
-            or options.mode != 4
+            options.mode != 4
             or len(options.modes or ()) != 1
             or not games
             or stats is None
             or stats.games != len(games)
         ):
             return stats
+        mode = options.modes[0]
+        sample = {
+            game.uuid: game
+            for game in games
+            if game.ended_at and game.mode == str(mode) and game.seat(player.account_id)
+        }
+        if len(sample) != stats.games:
+            return stats
+
         count = number(stats.raw.get("役满"))
-        if count is None or not count.is_integer() or count < 1:
-            return stats
-        try:
-            async with asyncio.timeout(5):
-                names = await load(player.account_id, games, mode=options.modes[0])
-        except (PaipuyaError, TimeoutError):
-            return stats
-        if not names:
+        has_wins = count is not None and count.is_integer() and count >= 1
+        browser = self.replay_browser
+        verify = browser is not None and browser.records_enabled
+        highlights = ()
+        if (has_wins or verify) and callable(load := getattr(client, "yakuman_highlights", None)):
+            try:
+                async with asyncio.timeout(5):
+                    highlights = await load(sample.values(), mode=mode)
+            except (PaipuyaError, TimeoutError):
+                pass
+
+        evidence = {}
+        if has_wins:
+            by_game = {
+                uuid: names for uuid, winner, names in highlights if winner == player.account_id
+            }
+            if backfill and verify and self.db is not None:
+                recovered = await backfill_yakuman(
+                    self.db,
+                    client,
+                    browser,
+                    sample,
+                    mode=mode,
+                    account_id=player.account_id,
+                    total=int(count),
+                    archived=highlights,
+                )
+                by_game.update(recovered)
+            names = tuple(dict.fromkeys(name for tags in by_game.values() for name in tags))
+            if names:
+                evidence["_yakuman_win_names"] = names
+
+        if verify:
+            candidates = {}
+            loss = recent_deal_in_game(stats.raw, sample.values())
+            if loss and yakuman_names(stats.raw["最近大铳"].get("fans")):
+                candidates[loss.uuid] = loss
+            for uuid, winner, _ in highlights:
+                if winner != player.account_id:
+                    candidates[uuid] = sample[uuid]
+            confirmed = {}
+            try:
+                async with asyncio.timeout(18):
+                    for game in candidates.values():
+                        victims = await browser.yakuman_victims(game)
+                        if names := victims.get(player.account_id):
+                            confirmed[game.uuid] = names
+            except TimeoutError:
+                pass
+            if confirmed:
+                evidence["_yakuman_victim_replays"] = confirmed
+        if not evidence:
             return stats
         enriched = copy(stats)
-        enriched.raw = {**stats.raw, "_yakuman_win_names": names}
+        enriched.raw = {**stats.raw, **evidence}
         return enriched
 
     async def rank_metadata(self, player, client):

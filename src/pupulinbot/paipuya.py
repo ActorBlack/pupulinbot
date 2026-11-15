@@ -511,6 +511,32 @@ class PaipuyaClient:
 
         return await self.cache.get(("range_stats", account_id, lower, upper, selected), 30, load)
 
+    async def yakuman_count(self, account_id, start, end, *, mode):
+        """Count yakuman in an inclusive slice of finished games with one API request."""
+        lower, upper = round(start.timestamp() * 1000), round(end.timestamp() * 1000)
+        if mode not in self.modes or lower > upper:
+            raise PaipuyaError("役满查询房间或日期范围无效")
+
+        async def load():
+            data = await self._get(
+                f"player_extended_stats/{account_id}/{lower}/{upper}", {"mode": str(mode)}
+            )
+            if not isinstance(data, dict) or data.get("played_modes") != [mode]:
+                raise PaipuyaError("役满统计响应格式错误")
+            hands, count = number(data.get("count")), number(data.get("役满", 0))
+            if (
+                hands is None
+                or not hands.is_integer()
+                or hands < 1
+                or count is None
+                or not count.is_integer()
+                or not 0 <= count <= hands
+            ):
+                raise PaipuyaError("役满统计响应格式错误")
+            return int(count)
+
+        return await self.cache.get(("yakuman_count", account_id, lower, upper, mode), 300, load)
+
     async def promotion(self, game, account_id):
         from .promotion import majsoul_promotion
 

@@ -1,6 +1,6 @@
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Container
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS majsoul_yakuman_highlights(
   mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL,
   winner INTEGER NOT NULL, name TEXT NOT NULL,
   PRIMARY KEY(mode, uuid, winner, name)
+);
+CREATE TABLE IF NOT EXISTS majsoul_yakuman_replay_wins(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL,
+  winner INTEGER NOT NULL, win_count INTEGER NOT NULL CHECK(win_count > 0),
+  PRIMARY KEY(mode, uuid, winner)
 );
 """
 
@@ -205,15 +210,46 @@ class Database:
     async def save_yakuman_highlights(self, mode, highlights):
         if highlights:
             async with self.connect() as db:
-                await db.executemany(
-                    "INSERT OR IGNORE INTO majsoul_yakuman_highlights VALUES (?, ?, ?, ?, ?)",
-                    (
-                        (mode, uuid, started, winner, name)
-                        for uuid, started, winner, names in highlights
-                        for name in names
-                    ),
-                )
+                await self._insert_yakuman_highlights(db, mode, highlights)
                 await db.commit()
+
+    @staticmethod
+    async def _insert_yakuman_highlights(db, mode, highlights):
+        await db.executemany(
+            "INSERT OR IGNORE INTO majsoul_yakuman_highlights VALUES (?, ?, ?, ?, ?)",
+            (
+                (mode, uuid, started, winner, name)
+                for uuid, started, winner, names in highlights
+                for name in names
+            ),
+        )
+
+    async def save_yakuman_replay(self, mode, uuid, started, winner, count, names):
+        async with self.connect() as db:
+            await db.execute(
+                """INSERT INTO majsoul_yakuman_replay_wins VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(mode, uuid, winner) DO UPDATE SET
+                    started_at=excluded.started_at, win_count=excluded.win_count""",
+                (mode, uuid, started, winner, count),
+            )
+            await db.execute(
+                "DELETE FROM majsoul_yakuman_highlights WHERE mode=? AND uuid=? AND winner=?",
+                (mode, uuid, winner),
+            )
+            await self._insert_yakuman_highlights(db, mode, [(uuid, started, winner, names)])
+            await db.commit()
+
+    async def yakuman_replay_wins(self, mode, uuids, winner):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT r.uuid, r.started_at, r.win_count, h.name "
+                "FROM majsoul_yakuman_replay_wins r "
+                "LEFT JOIN majsoul_yakuman_highlights h USING(mode, uuid, winner, started_at) "
+                "WHERE r.mode=? AND r.winner=? AND r.uuid IN (SELECT value FROM json_each(?)) "
+                "ORDER BY h.rowid",
+                (mode, winner, json.dumps(list(uuids))),
+            ) as cursor:
+                return await cursor.fetchall()
 
     async def yakuman_highlights(self, mode, uuids):
         async with self.connect() as db:
@@ -224,7 +260,9 @@ class Database:
             ) as cursor:
                 return await cursor.fetchall()
 
-    async def assign_daily_identity(self, qq_id: str, candidate: str) -> tuple[str, bool]:
+    async def assign_daily_identity(
+        self, qq_id: str, candidate: str, *, valid_identities: Container[str] | None = None
+    ) -> tuple[str, bool]:
         async with self.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             today = datetime.now(BEIJING_TZ).date().isoformat()
@@ -232,7 +270,11 @@ class Database:
                 "SELECT identity, assigned_on FROM daily_identities WHERE qq_id=?", (qq_id,)
             ) as cursor:
                 row = await cursor.fetchone()
-            if row is not None and row["assigned_on"] == today:
+            if (
+                row is not None
+                and row["assigned_on"] == today
+                and (valid_identities is None or row["identity"] in valid_identities)
+            ):
                 return row["identity"], False
             await db.execute(
                 """INSERT INTO daily_identities (qq_id, assigned_on, identity) VALUES (?, ?, ?)
@@ -242,6 +284,17 @@ class Database:
             )
             await db.commit()
             return candidate, True
+
+    async def reset_daily_identities(self) -> int:
+        async with self.connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            today = datetime.now(BEIJING_TZ).date().isoformat()
+            async with db.execute(
+                "DELETE FROM daily_identities WHERE assigned_on=?", (today,)
+            ) as cursor:
+                count = cursor.rowcount
+            await db.commit()
+            return count
 
     async def group_reaction_overrides(self) -> dict[tuple[int, str], bool]:
         async with self.connect() as db:

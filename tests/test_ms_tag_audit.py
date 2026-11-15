@@ -11,7 +11,13 @@ from test_ms_trait_tags import classify, sample_raw
 from pupulinbot.models import Player
 from pupulinbot.ms_charts import render_profile
 from pupulinbot.ms_tags import MAX_TAGS, reference_for, supplemental_tags
-from pupulinbot.ms_trait_tags import efficiency_metrics, select_tags, trait_tags, yakuman_victim
+from pupulinbot.ms_trait_tags import (
+    efficiency_metrics,
+    select_tags,
+    trait_tags,
+    yakuman_names,
+    yakuman_victim,
+)
 
 
 @pytest.mark.parametrize(
@@ -174,19 +180,13 @@ def loss_record(game, *, count=0, limit=1):
 def test_yakuman_victim_requires_confirmed_fans_and_sample_uuid_and_time():
     rows = records()
     raw = {"最近大铳": loss_record(rows[0])}
-    assert yakuman_victim(raw, rows)
+    assert not yakuman_victim(raw, rows)
+    raw["_yakuman_victim_replays"] = {rows[0].uuid: ("国士无双", "不明役种")}
+    assert yakuman_victim(raw, rows) == ("国士无双",)
     assert "国士受害者" in supplemental_tags(stats(raw=raw), rows, 42)
-    raw["最近大铳"]["id"] = "outside-selected-sample"
-    assert not yakuman_victim(raw, rows)
-    raw["最近大铳"] = loss_record(rows[0])
-    raw["最近大铳"]["start_time"] -= 10000
-    assert not yakuman_victim(raw, rows)
-    raw["最近大铳"] = loss_record(rows[0], count=13, limit=0)
-    assert not yakuman_victim(raw, rows)  # Total han cannot identify a named yakuman.
-    raw["最近大铳"] = loss_record(rows[0], count=12, limit=0)
-    assert not yakuman_victim(raw, rows)
+    assert not yakuman_victim(raw, rows[1:])
     rows[0].players[0]["score"] = -48000
-    assert not yakuman_victim({}, rows)  # Final scores cannot identify a hand's yaku.
+    assert not yakuman_victim({}, rows)
 
 
 @pytest.mark.parametrize(
@@ -197,19 +197,17 @@ def test_bad_yakuman_loss_fan_evidence_does_not_create_achievement(fans):
     rows = records()
     loss = loss_record(rows[0])
     loss["fans"] = fans
-    assert not yakuman_victim({"最近大铳": loss}, rows)
+    assert not yakuman_names(loss["fans"])
 
 
 def test_named_yakuman_can_share_one_slot_per_category():
     rows = records(count=1)
-    loss = loss_record(rows[0])
-    loss["fans"].extend([{"label": "四暗刻", "count": 1, "役满": 1}, loss["fans"][0]])
     raw = sample_raw()
     raw.update(
         {
             "役满": 2,
             "流满": 1,
-            "最近大铳": loss,
+            "_yakuman_victim_replays": {rows[0].uuid: ("国士无双", "四暗刻", "国士无双")},
             "_yakuman_win_names": ("大三元", "字一色"),
         }
     )
@@ -222,10 +220,8 @@ def test_named_yakuman_can_share_one_slot_per_category():
         "四暗刻受害者",
         "门清流",
     ]
-    loss["fans"] = [{"label": "混一色", "count": 13, "役满": 0}]
-    assert yakuman_victim(raw, rows) == ()
-    loss["fans"] = [{"count": 1, "役满": 1}]
-    assert yakuman_victim(raw, rows) == ()
+    assert yakuman_names([{"label": "混一色", "count": 13, "役满": 0}]) == ()
+    assert yakuman_names([{"count": 1, "役满": 1}]) == ()
 
 
 def test_double_riichi_counter_has_no_display_label():
@@ -245,9 +241,15 @@ def test_real_achievement_can_appear_in_one_game_without_style_sample(key, label
 
 def test_yakuman_victim_only_needs_one_matched_record_not_hand_count():
     rows = records(count=1)
-    sample = stats(1, raw={"_hand_count": None, "最近大铳": loss_record(rows[0])})
+    sample = stats(
+        1,
+        raw={
+            "_hand_count": None,
+            "_yakuman_victim_replays": {rows[0].uuid: ("国士无双",)},
+        },
+    )
     assert supplemental_tags(sample, rows, 42) == ["国士受害者"]
-    sample.raw["最近大铳"]["id"] = "not-in-sample"
+    sample.raw["_yakuman_victim_replays"] = {"not-in-sample": ("国士无双",)}
     assert supplemental_tags(sample, rows, 42) == []
 
 

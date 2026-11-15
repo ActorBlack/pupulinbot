@@ -259,6 +259,12 @@ def render_style(player, stats, games, options, *, current_level=None):
     actual.update(composite_metrics(actual))
     progress = rank_progress(current_level)
     rank = progress or rank_identity(current_level)
+    reference_grade = rank
+    if reference_grade is None:
+        for game in reversed(finished):
+            reference_grade = rank_identity(game.seat(player.account_id).get("level"))
+            if reference_grade is not None:
+                break
     rooms = {str(g.mode) for g in finished}
     selected = {str(mode) for mode in (options.modes or ())}
     scope = selected or rooms
@@ -266,17 +272,20 @@ def render_style(player, stats, games, options, *, current_level=None):
     room_name = MODE_NAMES.get(room, "")
     if sanma:
         room_name = room_name.removeprefix("三麻").replace("王", "王座")
-    reference = comparison_reference(room, rank)
+    reference = comparison_reference(room, reference_grade)
     if reference:
         actual["和立牌平均巡目"] = speed_turns(actual, reference.speed_win_weight)
     baseline = reference.metrics if reference else {}
     reference_ranks = reference.rank_rates if reference else []
     reference_rank = rank_identity(reference.level) if reference else None
-    fallback = bool(reference_rank and rank_label(reference_rank) != rank_label(rank))
+    fallback = bool(reference_rank and rank_label(reference_rank) != rank_label(reference_grade))
     mean_label = "基准均值" if fallback else "同段均值"
-    reference_label = (
-        f"{room_name}{rank_label(reference_rank)}均值 = 50" if reference else "暂无房间基准"
-    )
+    if reference:
+        reference_label = f"{room_name}{rank_label(reference_rank)}均值 = 50"
+        if rank is None and not fallback:
+            reference_label += "（按样本段位）"
+    else:
+        reference_label = "段位数据缺失" if reference_grade is None else "暂无房间基准"
     hands = number(raw.get("_hand_count"))
     if hands is not None and (not hands.is_integer() or hands < count):
         hands = None

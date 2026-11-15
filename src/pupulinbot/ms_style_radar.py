@@ -161,6 +161,8 @@ def _reference_data(players=4):
 
 def comparison_reference(room, rank):
     """Use the current grade or the highest grade with a usable room baseline."""
+    if rank is None:
+        return None
     is_sanma = any(room == str(mode) for pair in ROOMS[3].values() for mode in pair)
     if is_sanma and int(room) not in SANMA_STYLE_ROOMS:
         return None
@@ -179,7 +181,7 @@ def comparison_reference(room, rank):
     if not cohorts:
         return None
     prefix = 20000 if is_sanma else 10000
-    level = prefix + rank["major"] * 100 + rank["star"] if rank else None
+    level = prefix + rank["major"] * 100 + rank["star"]
     if level not in cohorts:
         level = max(cohorts)
     cohort = cohorts[level]

@@ -19,6 +19,7 @@ from pupulinbot.majsoul_observe import (
     watch_uuid,
 )
 from pupulinbot.majsoul_rounds import MajsoulRoundResults
+from pupulinbot.models import GameRecord
 
 UUID = "261113-510ble96-8620-41e0-8a5d-68a63d8bf487"
 
@@ -321,3 +322,67 @@ async def test_groups_without_watchlists_share_stream_and_deduplicate(tmp_path, 
     assert all("荒牌流局" in call.args[1] for call in send.await_args_list)
     assert "未开启" in service.status("1")
     browser.observation.assert_awaited_once_with(UUID)
+
+
+@pytest.mark.parametrize("use_actions", [False, True])
+async def test_replay_verifies_yakuman_dealer_tsumo_and_ron_payer(use_actions):
+    from pupulinbot.majsoul_replay import replay_victims, replay_wins
+
+    def win(seat, *, tsumo=False, yakuman=True, fan=37):
+        return blob(
+            1,
+            integer(4, seat)
+            + integer(5, tsumo)
+            + integer(10, yakuman)
+            + blob(12, integer(2, 1) + integer(3, fan)),
+        )
+
+    events = [
+        # West is the dealer. Only West is the victim of South's tsumo.
+        wrapped("RecordNewRound", integer(2, 2)),
+        wrapped("RecordHule", win(1, tsumo=True) + packed(3, -8000, 32000, -16000, -8000)),
+        # Deal-in in the next round, including a multi-yakuman hand.
+        wrapped("RecordNewRound", integer(2, 3)),
+        wrapped("RecordDiscardTile", integer(1, 0)),
+        wrapped("RecordHule", win(2, fan=42) + win(1, fan=38)),
+        # East wins as dealer. No one was the dealer victim here.
+        wrapped("RecordNewRound", b""),
+        wrapped(
+            "RecordHule", win(0, tsumo=True, fan=35) + packed(3, 48000, -16000, -16000, -16000)
+        ),
+        # A counted yakuman and an unknown fan ID do not create named tags.
+        wrapped("RecordNewRound", integer(2, 1)),
+        wrapped(
+            "RecordHule", win(3, tsumo=True, yakuman=False) + packed(3, -8000, -16000, -8000, 32000)
+        ),
+        wrapped("RecordNewRound", integer(2, 3)),
+        wrapped("RecordHule", win(0, tsumo=True, fan=999) + packed(3, 32000, -8000, -8000, -16000)),
+        # Responsibility payment by a nondealer leaves the dealer unaffected.
+        wrapped("RecordNewRound", integer(2, 3)),
+        wrapped("RecordHule", win(0, tsumo=True, fan=50) + packed(3, 32000, -32000, 0, 0)),
+    ]
+    if use_actions:
+        payload = integer(2, 210715) + b"".join(blob(3, blob(3, e)) for e in events)
+    else:
+        payload = b"".join(blob(1, e) for e in events)
+    head = blob(1, UUID.encode()) + integer(2, 100) + integer(3, 200)
+    head += b"".join(
+        blob(11, integer(1, 40 + seat) + integer(2, seat)) for seat in reversed(range(4))
+    )
+    data = wrapped("GameDetailRecords", payload)
+    packet = blob(2, blob(3, head) + blob(4, data))
+    assert await replay_victims(packet, UUID, 100) == {42: ("大三元",), 40: ("国士无双", "四暗刻")}
+    assert await replay_victims(packet, UUID, 98) is None
+    assert await replay_victims(packet, "other-replay", 100) is None
+    game = GameRecord(
+        UUID,
+        datetime.fromtimestamp(100, UTC),
+        datetime.fromtimestamp(200, UTC),
+        "12",
+        [{"account_id": player} for player in (41, 43, 40, 42)],
+        {},
+    )
+    assert await replay_wins(packet, game, 41) == (2, ("大三元", "四暗刻"))
+    assert await replay_wins(packet, game, 43) == (0, ())
+    game.players[0]["account_id"] = 99
+    assert await replay_wins(packet, game, 42) is None

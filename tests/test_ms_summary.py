@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from pupulinbot import ms_commands
 from pupulinbot.db import Database
 from pupulinbot.models import GameRecord, Player
 from pupulinbot.ms_commands import MahjongQueries
@@ -302,6 +303,93 @@ async def test_archived_yakuman_names_survive_feed_expiry_and_restart(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_msstyle_backfills_missing_names_and_reuses_verified_replays(tmp_path, monkeypatch):
+    db = Database(tmp_path / "bot.db")
+    await db.initialize()
+    rows = games(79)
+    older, newer = rows[12], rows[66]
+    wins = {older.uuid: (1, ("纯正九莲宝灯",)), newer.uuid: (2, ("四暗刻", "字一色"))}
+    sample = stats(len(rows))
+    sample.raw["役满"] = 3
+    await db.save_yakuman_highlights(
+        12, [(newer.uuid, newer.started_at.timestamp(), 42, ("四暗刻",))]
+    )
+
+    async def request(path, params):
+        if path == "recent_highlight_games":
+            return []
+        prefix, account, low, high = path.split("/")
+        assert (prefix, account, params) == ("player_extended_stats", "42", {"mode": "12"})
+        selected = [g for g in rows if int(low) <= g.started_at.timestamp() * 1000 <= int(high)]
+        assert selected
+        count = sum(wins[g.uuid][0] for g in selected if g.uuid in wins)
+        return {
+            "count": len(selected) * 10,
+            "played_modes": [12],
+            **({"役满": count} if count else {}),
+        }
+
+    def client_for(store):
+        client = PaipuyaClient("https://example.invalid", highlight_store=store)
+        client.resolve = AsyncMock(return_value=Player(42, "测试"))
+        client.query_history = AsyncMock(return_value=(rows, False))
+        client.range_stats = AsyncMock(return_value=sample)
+        client.metadata = AsyncMock(return_value=sample)
+        client._get = AsyncMock(side_effect=request)
+        return client
+
+    browser = SimpleNamespace(
+        records_enabled=True, yakuman_wins=AsyncMock(side_effect=lambda game, _: wins[game.uuid])
+    )
+    monkeypatch.setattr(
+        ms_commands, "render_style", lambda player, stats, *_, **__: stats.raw["_yakuman_win_names"]
+    )
+    client = client_for(db)
+    service = MahjongQueries(db, client, None, replay_browser=browser)
+    command = "42 -r 玉南 start=2026-11-03 end=2026-11-07"
+    expected = {"四暗刻", "字一色", "纯正九莲宝灯"}
+    assert set(await service.query("msstyle", command, 1, 2)) == expected
+    assert {call.args[0].uuid for call in browser.yakuman_wins.await_args_list} == set(wins)
+    assert 3 < client._get.await_count < 20
+    assert "_yakuman_win_names" not in sample.raw
+    await client.close()
+
+    # A fresh process has neither browser nor API caches, and the recent feed is empty.
+    store = Database(db.path)
+    client = client_for(store)
+    browser.yakuman_wins.reset_mock()
+    service = MahjongQueries(store, client, None, replay_browser=browser)
+    assert set(await service.query("msstyle", command, 1, 2)) == expected
+    client._get.assert_awaited_once_with("recent_highlight_games", {"limit": 500, "mode": "12"})
+    browser.yakuman_wins.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_msstyle_retries_unverified_replay_without_losing_other_labels(tmp_path):
+    db = Database(tmp_path / "bot.db")
+    await db.initialize()
+    rows = games(2)
+    sample = stats(2)
+    sample.raw["役满"] = 2
+    browser = SimpleNamespace(
+        records_enabled=True,
+        yakuman_wins=AsyncMock(side_effect=[(1, ("四暗刻",)), None, (1, ("大三元",))]),
+    )
+    client = PaipuyaClient("https://example.invalid", highlight_store=db)
+    client.yakuman_count = AsyncMock(return_value=1)
+    client._get = AsyncMock(return_value=[])
+    service = MahjongQueries(db, client, None, replay_browser=browser)
+    args = (Player(42, "测试"), sample, rows, parse_options("-r 玉南"), client)
+    first = await service.with_yakuman_names(*args, backfill=True)
+    assert first.raw["_yakuman_win_names"] == ("四暗刻",)
+    second = await service.with_yakuman_names(*args, backfill=True)
+    assert second.raw["_yakuman_win_names"] == ("四暗刻", "大三元")
+    assert [call.args[0].uuid for call in browser.yakuman_wins.await_args_list] == ["1", "0", "0"]
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_rank_metadata_does_not_wait_for_or_pollute_hand_stats_cache():
     client = PaipuyaClient("https://example.invalid")
     client._get = AsyncMock(return_value={"count": 2193, "level": LEVEL})
@@ -456,3 +544,28 @@ async def test_ms_without_records_does_not_fall_back_to_jade_south():
     assert await service.query("ms", "y024", 1, 2) == "y024: 暂无已结算收录对局"
     client.history.assert_awaited_once_with(42, 1, modes=None)
     service.summary_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_victims_require_replay_verification_in_selected_sample():
+    rows = games(2)
+    sample = stats(2)
+    sample.raw["最近大铳"] = {
+        "id": rows[0].uuid,
+        "start_time": rows[0].started_at.timestamp(),
+        "fans": [{"count": 1, "役满": 1, "label": "国士无双"}],
+    }
+    browser = SimpleNamespace(
+        records_enabled=True, yakuman_victims=AsyncMock(side_effect=[{}, {42: ("大三元",)}])
+    )
+    client = SimpleNamespace(
+        yakuman_highlights=AsyncMock(return_value=[(rows[1].uuid, 77, ("大三元",))]),
+    )
+    service = MahjongQueries(None, client, None, replay_browser=browser)
+    options = parse_options("-r 玉南 -l 2")
+    enriched = await service.with_yakuman_names(Player(42, "测试"), sample, rows, options, client)
+    assert "_yakuman_victim_replays" not in sample.raw
+    assert enriched.raw["_yakuman_victim_replays"] == {rows[1].uuid: ("大三元",)}
+    assert browser.yakuman_victims.await_count == 2
+    text = format_summary(Player(42, "测试"), rows, False, options, {"sample": enriched}, now=NOW)
+    assert "#大三元受害者" in text and "#国士受害者" not in text

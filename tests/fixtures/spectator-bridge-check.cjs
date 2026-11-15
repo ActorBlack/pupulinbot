@@ -9,6 +9,13 @@ class Socket extends EventTarget {
 global.window = global;
 global.location = {href: 'https://game.maj-soul.com/1/'};
 global.WebSocket = Socket;
+let resourceVersion = null;
+global.localStorage = {
+    getItem(key) {
+        assert.equal(key, 'prev_res_version');
+        return resourceVersion;
+    },
+};
 vm.runInThisContext(fs.readFileSync(process.argv[2], 'utf8'));
 (async () => {
     const s = new WebSocket('wss://route-2.maj-soul.com/gateway');
@@ -47,6 +54,18 @@ vm.runInThisContext(fs.readFileSync(process.argv[2], 'utf8'));
     receive([3, packet[1], packet[2], 18, 0]);
     assert.deepEqual(await observation, {wire: [18, 0], route: 'wss://route-2.maj-soul.com'});
     assert.deepEqual(await __pupulinSpectator.observe('bad'), {error: 'invalid_uuid'});
+    assert.deepEqual(await __pupulinSpectator.record('bad'), {error: 'invalid_uuid'});
+    assert.deepEqual(await __pupulinSpectator.record(uuid), {error: 'version_unavailable'});
+    resourceVersion = '0.16.257.W.4.0.45';
+    const recording = __pupulinSpectator.record(uuid);
+    await new Promise(resolve => setImmediate(resolve));
+    const recordPacket = s.sent.at(-1);
+    assert.ok(Buffer.from(recordPacket).includes(Buffer.from('.lq.Lobby.fetchGameRecord')));
+    assert.ok(Buffer.from(recordPacket).includes(Buffer.from(uuid)));
+    assert.ok(Buffer.from(recordPacket).includes(Buffer.from('WebGL_2022-0.16.257')));
+    receive([3, recordPacket[1], recordPacket[2], 18, 0]);
+    assert.deepEqual(await recording, {wire: [18, 0]});
+    assert.equal(received.length, 0, 'replay reply must not reach official client');
     const pending = __pupulinSpectator.list(212);
     s.readyState = 3;
     s.dispatchEvent(new Event('close'));

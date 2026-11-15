@@ -1,5 +1,5 @@
 /* Read-only spectator calls on the official client's existing authenticated socket.
- * Never reads login payloads or storage. Application request IDs are tracked only
+ * Never reads login payloads or credentials. Application request IDs are tracked only
  * to prevent collisions; spectator replies are hidden from the game client.
  */
 (() => {
@@ -115,6 +115,21 @@
                 return {error: 'invalid_uuid'};
             }
             return request('fetchOBToken', field(1, new TextEncoder().encode(uuid)), true, alternate);
+        },
+        async record(uuid, alternate = false) {
+            if (typeof uuid !== 'string' || !/^[0-9]{6}-[a-z0-9-]{12,80}$/i.test(uuid)) {
+                return {error: 'invalid_uuid'};
+            }
+            // The running Unity client supplies the current resource version.
+            // /1/version.json still describes the retired web client.
+            let version;
+            try { version = localStorage.getItem('prev_res_version')?.match(/\d+\.\d+\.\d+/)?.[0]; }
+            catch (_) { return {error: 'version_unavailable'}; }
+            if (!version) return {error: 'version_unavailable'};
+            const encoder = new TextEncoder();
+            const recordVersion = 'WebGL_2022-' + version;
+            const payload = [...field(1, encoder.encode(uuid)), ...field(2, encoder.encode(recordVersion))];
+            return request('fetchGameRecord', payload, false, alternate);
         },
         status() { return {sockets: sockets.length, connected: sockets.some(s => s.socket.readyState === NativeSocket.OPEN)}; }
     }});

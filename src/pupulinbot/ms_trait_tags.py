@@ -8,7 +8,7 @@ import math
 from datetime import UTC, datetime
 from functools import lru_cache
 
-from .majsoul_rounds import yaku_names
+from .majsoul_rounds import yakuman_yaku
 from .ms_sample import number
 
 # key: (denominator, minimum events, high/low offsets, category, high/low names)
@@ -203,8 +203,7 @@ def build_trait_reference(levels):
 
 @lru_cache(maxsize=1)
 def yakuman_tag_groups():
-    names = yaku_names()
-    wins = frozenset(names[str(key)] for key in range(35, 51))
+    wins = frozenset(yakuman_yaku().values())
     losses = frozenset(_victim_tag(name) for name in wins)
     return wins, losses
 
@@ -236,16 +235,33 @@ def yakuman_names(fans):
     return tuple(dict.fromkeys(names))
 
 
-def yakuman_victim(raw, games):
-    """Return the roles in a real large deal-in matched to this exact sample."""
+def recent_deal_in_game(raw, games):
+    """Locate the exact sample replay indicated by the large deal-in statistic."""
     loss = raw.get("最近大铳")
     if not isinstance(loss, dict) or not isinstance(loss.get("id"), str):
-        return ()
+        return None
     game = next((game for game in games if game.uuid == loss["id"]), None)
     timestamp = number(loss.get("start_time"))
     if game is None or timestamp is None or abs(timestamp - game.started_at.timestamp()) > 1:
+        return None
+    return game
+
+
+def yakuman_victim(raw, games):
+    """Return replay-verified names associated with the selected sample."""
+    verified = raw.get("_yakuman_victim_replays")
+    if not isinstance(verified, dict):
         return ()
-    return yakuman_names(loss.get("fans"))
+    allowed, _ = yakuman_tag_groups()
+    return tuple(
+        dict.fromkeys(
+            name
+            for game in games
+            if isinstance(names := verified.get(game.uuid), (tuple, list))
+            for name in names
+            if isinstance(name, str) and name in allowed
+        )
+    )
 
 
 def achievement_tags(raw, games, counts=None):

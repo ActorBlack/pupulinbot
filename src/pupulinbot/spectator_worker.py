@@ -24,7 +24,7 @@ def emit(value):
 def main():
     from seleniumbase import Driver
 
-    from .majsoul_replay import LOBBY_RENDER_ON_READY
+    from .majsoul_replay import LOBBY_RENDER_LIMIT
     from .spectator_wire import decode_list
 
     profile = Path(sys.argv[1]).resolve()
@@ -52,10 +52,7 @@ def main():
         if not records_only:
             driver.execute_cdp_cmd(
                 "Page.addScriptToEvaluateOnNewDocument",
-                {
-                    "source": Path(__file__).with_name("spectator_bridge.js").read_text()
-                    + LOBBY_RENDER_ON_READY
-                },
+                {"source": Path(__file__).with_name("spectator_bridge.js").read_text()},
             )
             # Old Unity service-worker caches can stall navigation after upgrades.
             driver.execute_cdp_cmd("Network.enable", {})
@@ -63,6 +60,7 @@ def main():
             driver.get(URL)
         emit({"status": "opened"})
         last_request = 0.0
+        limited = False
         for line in sys.stdin:
             try:
                 request = json.loads(line)
@@ -96,6 +94,8 @@ def main():
                     if response.get("error"):
                         emit(response)
                         break
+                    if not limited:
+                        limited = driver.execute_script("return " + LOBBY_RENDER_LIMIT)
                     heads.extend(response["data"]["live_list"])
                 else:
                     emit({"heads": heads})

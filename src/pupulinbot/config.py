@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     spectator_browser_profile: Path = Path("data/majsoul-spectator")
     majsoul_record_browser: bool = False
     majsoul_record_keepalive: bool = False
+    majsoul_record_idle_seconds: int = Field(default=0, ge=0)
     majsoul_live_index: bool = False
     live_api_url: str | None = None
     live_api_token: str | None = None

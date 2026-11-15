@@ -16,6 +16,86 @@ def yaku_names():
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+@lru_cache(maxsize=1)
+def yakuman_yaku():
+    names = yaku_names()
+    return {key: names[str(key)] for key in range(35, 51)}
+
+
+def replay_rounds(data):
+    name, payload = wrapper(data)
+    if name != "GameDetailRecords":
+        raise ValueError("invalid replay details")
+    detail = fields(payload)
+    records = (
+        [first(fields(action), 3, b"") for action in detail[3]]
+        if detail.get(3)
+        else detail.get(1, [])
+    )
+    return map(wrapper, filter(None, records))
+
+
+def named_yakuman(win):
+    names = []
+    for entry in win.get(12, []):
+        fan = fields(entry)
+        yaku = yakuman_yaku().get(first(fan, 3))
+        if yaku and first(fan, 2) in range(1, 13):
+            names.append(yaku)
+    return names
+
+
+def replay_yakuman_wins(data, seat):
+    """Count a player's yakuman wins and read the distinct official fan names."""
+    count, names = 0, {}
+    for name, body in replay_rounds(data):
+        if name != "RecordHule":
+            continue
+        for entry in fields(body).get(1, []):
+            win = fields(entry)
+            if first(win, 4) == seat and first(win, 10) == 1:
+                count += 1
+                names.update(dict.fromkeys(named_yakuman(win)))
+    return count, tuple(names)
+
+
+def replay_yakuman_victims(data, accounts):
+    """Read actual payers and named yakuman from a four-player replay."""
+    victims = {}
+    dealer = source = None
+    for name, body in replay_rounds(data):
+        if name == "RecordNewRound":
+            seat = first(fields(body), 2)
+            dealer, source = (seat if seat in range(4) else None), None
+        elif name in {"RecordDiscardTile", "RecordAnGangAddGang"}:
+            source = first(fields(body), 1)
+        elif name in {"RecordDealTile", "RecordChiPengGang"}:
+            source = None
+        elif name == "RecordHule":
+            if dealer is not None:
+                settlement = fields(body)
+                changes = int32s(settlement, 3)
+                for data in settlement.get(1, []):
+                    win = fields(data)
+                    winner = first(win, 4)
+                    if winner not in range(4) or first(win, 10) != 1:
+                        continue
+                    tsumo = first(win, 5)
+                    if tsumo not in (0, 1):
+                        continue
+                    payer = dealer if tsumo else source
+                    if payer not in range(4) or payer == winner:
+                        continue
+                    if tsumo and (len(changes) != 4 or changes[payer] >= 0):
+                        continue
+                    for yaku in named_yakuman(win):
+                        victims.setdefault(accounts[payer], {})[yaku] = None
+            dealer = source = None
+        elif name in {"RecordNoTile", "RecordLiuJu"}:
+            dealer = source = None
+    return {account: tuple(names) for account, names in victims.items()}
+
+
 def int32s(message, key):
     numbers = []
     for value in message.get(key, []):

@@ -3,7 +3,7 @@ import base64
 import logging
 import re
 from collections import deque
-from random import choices, randint
+from random import choice, randint
 
 import httpx
 from nonebot import get_driver, on_command, require
@@ -88,7 +88,16 @@ DEFAULT_GROUP_REACTION_GROUPS = {
 DAILY_IDENTITY_REPLIES = {
     "落黑": "今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！",
     "落白": "今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！",
-    "路人": "今天你是路人，你可以选择吃瓜，或者拱火，或者劝阿落好好学习/认真麻酱。",
+    "Fars": "今天你是Fars，一只无忧无虑的小猪。",
+    "y024": "今天你是y024，去打一个Rating 99的谱吧。",
+    "阿落": "今天你是阿落，你去上学了。",
+    "井棋风": "今天你是井棋风，好厉害。",
+    "胖丁": "今天你是胖丁，呃我才是胖丁。",
+    "星若明檀": "今天你是星若明檀，去打王座吧。",
+    "火龙果": "今天你是火龙果，去B站开播吧。",
+    "梦幻情怀": "今天你是梦幻情怀，副露率不得低于40%。",
+    "诺夜": "今天你是诺夜，去参与四象战并获得冠军。",
+    "有木加奈": "今天你是有木加奈，去找到一个开子并给角田写举报信。",
 }
 logger = logging.getLogger(__name__)
 repeat_stops: dict[int, RepeatStop] = {}
@@ -113,6 +122,18 @@ async def handle_group_reactions(bot: Bot, event: Event):
     original = event.original_message
     is_plain_text = all(segment.type == "text" for segment in original)
     text = original.extract_plain_text() if is_plain_text else ""
+    if text.strip() == "/idreset":
+        if str(event.user_id) not in superusers:
+            return
+        replied_message_ids.append(key)
+        try:
+            count = await db.reset_daily_identities()
+            await bot.send_group_msg(
+                group_id=event.group_id, message=Message(f"已重置今日身份（{count} 人）。")
+            )
+        except Exception:
+            logger.exception("重置今日身份失败")
+        return
     toggle = re.fullmatch(r"(jqf|fudu|alsz|fssz) (on|off)", text)
     if toggle:
         feature, action = toggle.groups()
@@ -190,8 +211,10 @@ async def handle_group_reactions(bot: Bot, event: Event):
                 reply = "泥才是小🐷"
             message = Message(MessageSegment.text(reply))
         elif feature is None:
-            candidate = choices(("落黑", "落白", "路人"), weights=(30, 30, 40))[0]
-            identity, assigned = await db.assign_daily_identity(str(event.user_id), candidate)
+            candidate = choice(tuple(DAILY_IDENTITY_REPLIES))
+            identity, assigned = await db.assign_daily_identity(
+                str(event.user_id), candidate, valid_identities=DAILY_IDENTITY_REPLIES
+            )
             reply = (
                 DAILY_IDENTITY_REPLIES[identity] if assigned else f"忘记今天你是{identity}了吗？"
             )
@@ -280,6 +303,7 @@ majsoul_browser = BrowserSpectatorClient(
     settings.spectator_browser_profile,
     enabled=settings.spectator_browser and not settings.live_api_url,
     records_enabled=settings.majsoul_record_browser,
+    record_idle_seconds=settings.majsoul_record_idle_seconds,
 )
 majsoul_rounds = MajsoulLiveWatch(db, majsoul_browser, send_observation_message)
 live = (
@@ -490,7 +514,14 @@ watch_commands = WatchCommands(
 )
 auto_review_tasks: set[asyncio.Task] = set()
 install_commands(
-    MahjongQueries(db, paipuya, sanma, live=live, admins=settings.admin_users | superusers)
+    MahjongQueries(
+        db,
+        paipuya,
+        sanma,
+        live=live,
+        admins=settings.admin_users | superusers,
+        replay_browser=majsoul_browser,
+    )
 )
 
 bind_cmd = on_command("msbind", priority=10, block=True)

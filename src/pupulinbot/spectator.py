@@ -7,9 +7,11 @@ import os
 import signal
 import sys
 import time
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 from websockets.exceptions import WebSocketException
 
 from .live import LiveGame, LiveServiceError
@@ -82,14 +84,17 @@ def parse_head(head, *, now=None):
 
 
 class BrowserSpectatorClient:
-    def __init__(self, profile, *, enabled=False, records_enabled=False):
+    def __init__(self, profile, *, enabled=False, records_enabled=False, record_idle_seconds=0):
         self.profile, self.enabled = Path(profile), enabled
         self.records_enabled = records_enabled
         self.process = None
         self.cache = QueryCache(capacity=1)
+        self.replay_yakuman_cache = QueryCache(capacity=256)
         self.recent_public = {}
         self.lock = asyncio.Lock()
         self.record_lock = asyncio.Lock()
+        self.record_idle_seconds = record_idle_seconds
+        self.record_idle_task = None
         self.record_lobby = LobbyKeepalive(self.profile)
         self.last_error = None
         self.last_success = None
@@ -159,11 +164,30 @@ class BrowserSpectatorClient:
             await self._stop()
             raise
 
+    @asynccontextmanager
+    async def record_session(self):
+        async with self.record_lock:
+            if self.record_idle_task is not None:
+                self.record_idle_task.cancel()
+                self.record_idle_task = None
+            try:
+                yield
+            finally:
+                if self.record_idle_seconds and not self.enabled and self.opened:
+                    self.record_idle_task = asyncio.create_task(self.stop_idle_record_browser())
+
+    async def stop_idle_record_browser(self):
+        await asyncio.sleep(self.record_idle_seconds)
+        async with self.record_lock, self.lock:
+            self.record_idle_task = None
+            await self.record_lobby.close()
+            await self._stop()
+
     async def record_head(self, url, uuid):
         if not self.records_enabled or time.monotonic() < self.record_session_retry_at:
             return None
         try:
-            async with asyncio.timeout(165), self.record_lock:
+            async with asyncio.timeout(165), self.record_session():
                 if time.monotonic() < self.record_session_retry_at:
                     return None
                 # The replay replaces the lobby before signing in.
@@ -187,10 +211,49 @@ class BrowserSpectatorClient:
             self.record_session_retry_at = time.monotonic() + 30
             return None
 
+    async def yakuman_victims(self, game):
+        return (await self._replay_yakuman(game, (), self.record_lobby.yakuman_victims)) or {}
+
+    async def yakuman_wins(self, game, account_id):
+        return await self._replay_yakuman(game, (account_id,), self.record_lobby.yakuman_wins)
+
+    async def _replay_yakuman(self, game, accounts, read):
+        if not self.records_enabled:
+            return None
+
+        async def load():
+            async with asyncio.timeout(160), self.record_session():
+                try:
+                    result = await read(game, *accounts)
+                except ReplayBrowserUnavailable:
+                    await self.start()
+                    result = await read(game, *accounts)
+                if result is None:
+                    raise MajsoulConnectionLost
+                return result
+
+        key = (game.uuid, game.started_at, accounts)
+        try:
+            return await self.replay_yakuman_cache.get(key, 86400, load)
+        except (
+            ReplayBrowserUnavailable,
+            MajsoulConnectionLost,
+            LiveServiceError,
+            httpx.HTTPError,
+            OSError,
+            TimeoutError,
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            WebSocketException,
+        ):
+            return None
+
     async def keep_record_session(self):
         if not self.records_enabled:
             return False
-        async with self.record_lock:
+        async with self.record_session():
             try:
                 return await self.record_lobby.click()
             except ReplayBrowserUnavailable:
@@ -201,7 +264,7 @@ class BrowserSpectatorClient:
         if not (self.enabled or self.records_enabled):
             raise LiveServiceError("雀魂官方观战未配置。")
         try:
-            async with asyncio.timeout(140), self.record_lock:
+            async with asyncio.timeout(140), self.record_session():
                 if self.enabled:
                     if not self.opened:
                         await self.start()
@@ -239,7 +302,7 @@ class BrowserSpectatorClient:
                 async with self.lock:
                     result = await self._request({"filters": FILTERS}, 55)
             else:
-                async with asyncio.timeout(220), self.record_lock:
+                async with asyncio.timeout(220), self.record_session():
                     try:
                         result = await self.record_lobby.public_heads(FILTERS)
                     except ReplayBrowserUnavailable:
@@ -322,6 +385,11 @@ class BrowserSpectatorClient:
 
     async def close(self):
         await self.cache.close()
-        await self.record_lobby.close()
-        async with self.lock:
+        await self.replay_yakuman_cache.close()
+        async with self.record_lock, self.lock:
+            if self.record_idle_task is not None:
+                self.record_idle_task.cancel()
+                await asyncio.gather(self.record_idle_task, return_exceptions=True)
+                self.record_idle_task = None
+            await self.record_lobby.close()
             await self._stop()

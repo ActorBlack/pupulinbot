@@ -7,10 +7,13 @@ import re
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import httpx
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
+from .majsoul_rounds import replay_yakuman_victims, replay_yakuman_wins
 from .spectator_wire import decode_list, fields, first
 
 LOBBY_URL = "https://game.maj-soul.com/1/"
@@ -69,20 +72,6 @@ LOBBY_RENDER_LIMIT = """
 })();
 """
 
-# Leave the initial Unity load at full speed, then cap the lobby renderer.
-LOBBY_RENDER_ON_READY = f"""
-(() => {{
-    if (location.href !== {json.dumps(LOBBY_URL)}) return;
-    let attempts = 0;
-    const timer = setInterval(() => {{
-        const connected = window.__pupulinSpectator?.status().connected;
-        if ((connected && ({LOBBY_RENDER_LIMIT.strip().removesuffix(";")})) || ++attempts >= 180) {{
-            clearInterval(timer);
-        }}
-    }}, 1000);
-}})();
-"""
-
 
 class ReplayBrowserUnavailable(RuntimeError):
     pass
@@ -92,13 +81,21 @@ class MajsoulConnectionLost(RuntimeError):
     pass
 
 
-def decode_record(wire, uuid):
+def replay_response_fields(wire, uuid):
     response = fields(first(fields(wire), 2, b""))
     if first(fields(first(response, 1, b"")), 1):
         return None
     head = fields(first(response, 3, b""))
     if first(head, 1, b"").decode() != uuid:
         return None
+    return response, head
+
+
+def decode_record(wire, uuid):
+    match = replay_response_fields(wire, uuid)
+    if match is None:
+        return None
+    _, head = match
     accounts = [fields(data) for data in head.get(11, [])]
     result = fields(first(head, 12, b""))
     return {
@@ -114,6 +111,69 @@ def decode_record(wire, uuid):
         ],
         "result_seats": [first(fields(player), 1) for player in result.get(1, [])],
     }
+
+
+async def replay_details(wire, uuid, started_at, expected_accounts=None):
+    match = replay_response_fields(wire, uuid)
+    if match is None:
+        return None
+    response, head = match
+    if not first(head, 3) or abs(first(head, 2) - started_at) > 1:
+        return None
+    accounts = {}
+    for data in head.get(11, []):
+        account = fields(data)
+        seat, account_id = first(account, 2), first(account, 1)
+        if seat not in range(4) or seat in accounts or not account_id:
+            return None
+        accounts[seat] = account_id
+    if len(accounts) != 4 or len(set(accounts.values())) != 4:
+        return None
+    if expected_accounts is not None and set(accounts.values()) != expected_accounts:
+        return None
+
+    data = first(response, 4, b"")
+    if not data:
+        url = first(response, 5, b"").decode()
+        target = urlsplit(url)
+        host = target.hostname or ""
+        if (
+            target.scheme != "https"
+            or not host.endswith((".maj-soul.com", ".mahjongsoul.com", ".majsoul.com"))
+            or target.username is not None
+            or target.password is not None
+            or target.fragment
+        ):
+            return None
+        async with (
+            httpx.AsyncClient(timeout=8, follow_redirects=False) as client,
+            client.stream("GET", url) as replay,
+        ):
+            replay.raise_for_status()
+            buffer = bytearray()
+            async for chunk in replay.aiter_bytes():
+                if len(buffer) + len(chunk) > 4 * 1024 * 1024:
+                    return None
+                buffer.extend(chunk)
+            data = bytes(buffer)
+    return data, accounts
+
+
+async def replay_victims(wire, uuid, started_at):
+    details = await replay_details(wire, uuid, started_at)
+    return replay_yakuman_victims(*details) if details is not None else None
+
+
+async def replay_wins(wire, game, account_id):
+    expected_accounts = {p["account_id"] for p in game.players}
+    if account_id not in expected_accounts:
+        return None
+    details = await replay_details(wire, game.uuid, game.started_at.timestamp(), expected_accounts)
+    if details is None:
+        return None
+    data, accounts = details
+    seat = next(seat for seat, player in accounts.items() if player == account_id)
+    return replay_yakuman_wins(data, seat)
 
 
 async def replay_response(page, url, uuid):
@@ -292,6 +352,25 @@ class LobbyKeepalive:
             async with chrome_page(origin, target) as page:
                 return await request_observation(page, uuid)
 
+    async def replay_wire(self, uuid):
+        async with chrome_browser(self.profile) as (browser, origin):
+            target = await self.open(browser, origin)
+            if target is None:
+                raise MajsoulConnectionLost
+            async with chrome_page(origin, target) as page:
+                result = await request_lobby(page, "record", uuid)
+        if "wire" in result:
+            return bytes(result["wire"])
+        return None
+
+    async def yakuman_victims(self, game):
+        wire = await self.replay_wire(game.uuid)
+        return await replay_victims(wire, game.uuid, game.started_at.timestamp()) if wire else None
+
+    async def yakuman_wins(self, game, account_id):
+        wire = await self.replay_wire(game.uuid)
+        return await replay_wins(wire, game, account_id) if wire else None
+
     async def public_heads(self, filters):
         async with chrome_browser(self.profile) as (browser, origin):
             target = await self.open(browser, origin)
@@ -352,8 +431,7 @@ class LobbyKeepalive:
                 await command(
                     page,
                     "Page.addScriptToEvaluateOnNewDocument",
-                    source=Path(__file__).with_name("spectator_bridge.js").read_text()
-                    + LOBBY_RENDER_ON_READY,
+                    source=Path(__file__).with_name("spectator_bridge.js").read_text(),
                     wait_seconds=15,
                 )
                 await command(page, "Network.enable", wait_seconds=15)
@@ -401,6 +479,11 @@ class LobbyKeepalive:
                             socket = request
                             self.last_received = time.monotonic()
                             ready.set()
+                            # Unity must render normally through startup and authentication.
+                            with suppress(ValueError, TimeoutError):
+                                await command(
+                                    page, "Runtime.evaluate", expression=LOBBY_RENDER_LIMIT
+                                )
         except (
             OSError,
             ValueError,
@@ -425,12 +508,16 @@ class LobbyKeepalive:
 
 
 async def request_observation(page, uuid):
+    return await request_lobby(page, "observe", uuid)
+
+
+async def request_lobby(page, method, uuid):
     previous = {"error": "not_ready"}
     for alternate in ("false", "true"):
         result = await command(
             page,
             "Runtime.evaluate",
-            expression=f"window.__pupulinSpectator?.observe({json.dumps(uuid)}, {alternate})",
+            expression=f"window.__pupulinSpectator?.{method}({json.dumps(uuid)}, {alternate})",
             awaitPromise=True,
             returnByValue=True,
             wait_seconds=15,

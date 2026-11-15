@@ -275,7 +275,6 @@ def test_radar_centers_exact_current_grade_in_each_room():
     ("room", "player_level", "baseline_level"),
     [
         ("12", 10702, 10701),
-        ("12", None, 10701),
         ("9", 10702, 10501),
         ("16", 10717, 10720),
         ("15", 10716, 10720),
@@ -290,6 +289,34 @@ def test_radar_falls_back_to_highest_usable_grade_in_the_same_room(
     fallback = comparison_reference(room, rank_identity(player_level))
     assert fallback.level == baseline_level
     assert fallback == comparison_reference(room, rank_identity(baseline_level))
+
+
+@pytest.mark.parametrize(
+    ("recorded_level", "expected"),
+    [(10303, "金东杰3均值 = 50（按样本段位）"), (None, "段位数据缺失")],
+)
+def test_style_uses_recorded_gold_east_grade_when_current_grade_is_missing(
+    monkeypatch, recorded_level, expected
+):
+    from PIL import ImageDraw
+
+    from pupulinbot.ms_style_chart import render_style
+    from pupulinbot.ms_style_radar import comparison_reference
+
+    assert comparison_reference("8", None) is None
+    records = [replace(game, mode="8") for game in games(2)]
+    records[-1].seat(42)["level"] = recorded_level
+    drawn = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, value, *args, **kwargs):
+        drawn.append(value)
+        return original(draw, xy, value, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
+    render_style(Player(42, "测试"), stats(2), records, parse_options("-r 金东"))
+    assert expected in drawn
+    assert "金东圣1均值 = 50" not in drawn
 
 
 def test_radar_bonus_uses_unrounded_extremes_and_caps_at_150():

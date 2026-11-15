@@ -770,9 +770,9 @@ async def verify_daily_identity():
     async def dispatch(update):
         assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
 
-    candidates = [['落黑'], ['路人'], ['落白'], ['路人'], ['落白']]
+    candidates = ['落黑', 'y024', '落白', 'Fars', '落白', '井棋风']
     with patch.object(bot, 'send_group_msg', new=send), \\
-         patch('pupulinbot.plugin.choices', side_effect=candidates) as choose, \\
+         patch('pupulinbot.plugin.choice', side_effect=candidates) as choose, \\
          patch('pupulinbot.db.datetime') as clock:
         clock.now.side_effect = lambda tz: now.astimezone(tz)
         for message_id, message in enumerate((
@@ -793,6 +793,7 @@ async def verify_daily_identity():
         with patch('pupulinbot.plugin.db', reopened):
             await dispatch(event(68, group=706530575))
             await dispatch(event(69, user=43))
+            await db.assign_daily_identity('44', '路人')
             await dispatch(event(70, user=44))
             now = datetime(2026, 11, 12, 16, 0, tzinfo=UTC)
             await dispatch(event(71))
@@ -802,8 +803,18 @@ async def verify_daily_identity():
         )
         assert results[0][0] == results[1][0]
         assert sum(assigned for _, assigned in results) == 1
+        reset = Message('/idreset')
+        await dispatch(event(72, reset, user=43))
+        await dispatch(event(73, reset, user=285843647))
+        await dispatch(event(73, reset, user=285843647))
+        async with db.connect() as conn:
+            async with conn.execute('SELECT qq_id FROM daily_identities ORDER BY qq_id') as rows:
+                assert [row['qq_id'] for row in await rows.fetchall()] == ['43', '44']
+        await dispatch(event(74))
 
-    assert choose.call_args_list == [call(('落黑', '落白', '路人'), weights=(30, 30, 40))] * 5
+    identities = ('落黑', '落白', 'Fars', 'y024', '阿落', '井棋风', '胖丁', '星若明檀',
+                  '火龙果', '梦幻情怀', '诺夜', '有木加奈')
+    assert choose.call_args_list == [call(identities)] * 6
     replies = [
         (item.kwargs['group_id'], str(item.kwargs['message'])) for item in send.await_args_list
     ]
@@ -811,8 +822,10 @@ async def verify_daily_identity():
         (1131357545, '今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！'),
         (706530575, '忘记今天你是落黑了吗？'),
         (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
-        (1131357545, '今天你是路人，你可以选择吃瓜，或者拱火，或者劝阿落好好学习/认真麻酱。'),
+        (1131357545, '今天你是Fars，一只无忧无虑的小猪。'),
         (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
+        (1131357545, '已重置今日身份（2 人）。'),
+        (1131357545, '今天你是井棋风，好厉害。'),
     ]
 asyncio.run(verify_daily_identity())
 

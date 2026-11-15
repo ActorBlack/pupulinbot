@@ -13,7 +13,6 @@ import pytest
 from pupulinbot.live import LiveServiceError
 from pupulinbot.majsoul_replay import (
     LOBBY_RENDER_LIMIT,
-    LOBBY_RENDER_ON_READY,
     LOBBY_URL,
     RECORD_RPC,
     MajsoulConnectionLost,
@@ -329,38 +328,29 @@ assert.equal(setTimeout, originalTimer);
     subprocess.run([node, "-e", setup + LOBBY_RENDER_LIMIT + checks], check=True, timeout=10)
 
 
-def test_lobby_frame_limit_waits_for_unity():
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node.js required")
-    setup = """
-const assert = require('node:assert/strict');
-global.window = globalThis;
-global.location = {href: 'https://game.maj-soul.com/1/'};
-let tick, cleared = false;
-global.setInterval = (fn, interval) => {
-    assert.equal(interval, 1000);
-    tick = fn;
-    return 1;
-};
-global.clearInterval = id => { assert.equal(id, 1); cleared = true; };
-window.requestAnimationFrame = () => 1;
-window.cancelAnimationFrame = () => {};
-"""
-    checks = """
-tick();
-assert.equal(window.__pupulinLobbyFrames, undefined);
-assert.equal(cleared, false);
-window.unityInstance = {};
-tick();
-assert.equal(window.__pupulinLobbyFrames, undefined);
-assert.equal(cleared, false);
-window.__pupulinSpectator = {status: () => ({connected:true})};
-tick();
-assert.equal(window.__pupulinLobbyFrames, true);
-assert.equal(cleared, true);
-"""
-    subprocess.run([node, "-e", setup + LOBBY_RENDER_ON_READY + checks], check=True, timeout=10)
+async def test_idle_record_browser_stops_after_last_lookup(monkeypatch):
+    client = BrowserSpectatorClient("unused", records_enabled=True, record_idle_seconds=0.01)
+    client.opened = True
+    stopped = asyncio.Event()
+
+    async def stop():
+        client.opened = False
+        stopped.set()
+
+    monkeypatch.setattr(client, "_stop", stop)
+    client.record_lobby.close = AsyncMock()
+    try:
+        async with client.record_session():
+            await asyncio.sleep(0.02)
+            assert not stopped.is_set()
+        async with client.record_session():
+            await asyncio.sleep(0.02)
+            assert not stopped.is_set()
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        client.record_lobby.close.assert_awaited_once()
+        assert client.record_idle_task is None
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -476,3 +466,19 @@ async def test_replay_response_correlates_uuid_and_socket_before_reading_head():
         "Network.enable",
         "Page.navigate",
     ]
+
+
+async def test_yakuman_verification_starts_records_session_on_demand_and_reuses_replay():
+    client = BrowserSpectatorClient("unused", records_enabled=True)
+    replay = SimpleNamespace(uuid=UUID, started_at=datetime.now(UTC))
+    client.record_lobby.yakuman_victims = AsyncMock(
+        side_effect=[ReplayBrowserUnavailable, {42: ("大三元",)}]
+    )
+    client.start = AsyncMock()
+    try:
+        assert await client.yakuman_victims(replay) == {42: ("大三元",)}
+        assert await client.yakuman_victims(replay) == {42: ("大三元",)}
+        client.start.assert_awaited_once()
+        assert client.record_lobby.yakuman_victims.await_count == 2
+    finally:
+        await client.close()
