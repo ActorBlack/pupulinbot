@@ -564,7 +564,10 @@ def render_style(player, stats, games, options, *, current_level=None):
             row, column = divmod(index, 3)
             x, y = 736 + column * 270, 1000 + row * 43
             _draw_tag_plate(draw, x, y, tier)
-            text(x + 52, y + 18, tag, 22, PALETTES[tier][-1], "bold", "lm", width=190)
+            size = 22
+            while size > 16 and draw.textlength(tag, font=face(size, "bold")) > 190:
+                size -= 1
+            text(x + 52, y + 18, tag, size, PALETTES[tier][-1], "bold", "lm", width=190)
     text(37, 1240, "数据来源  雀魂牌谱屋", 16, MUTED)
     output = io.BytesIO()
     image.save(output, "PNG")

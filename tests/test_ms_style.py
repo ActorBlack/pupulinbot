@@ -203,6 +203,8 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "大三元",
         "四暗刻",
         "大三元受害者",
+        "纯正九莲宝灯受害者",
+        "国士无双十三面受害者",
         "副露进攻",
     ]
     tiers = {
@@ -219,6 +221,7 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
 
     def capture(draw, xy, value, *args, **kwargs):
         if value in tags:
+            assert draw.textlength(value, font=kwargs["font"]) <= 190
             drawn.append(value)
         return original(draw, xy, value, *args, **kwargs)
 
@@ -240,6 +243,8 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "四暗刻",
         "国士受害者",
         "大三元受害者",
+        "纯正九莲宝灯受害者",
+        "国士无双十三面受害者",
         "普普林",
     ]
 
