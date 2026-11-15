@@ -547,7 +547,9 @@ async def test_ms_without_records_does_not_fall_back_to_jade_south():
 
 
 @pytest.mark.asyncio
-async def test_named_victims_require_replay_verification_in_selected_sample():
+async def test_named_victims_combine_exact_deal_in_and_verified_replay(tmp_path):
+    db = Database(tmp_path / "bot.db")
+    await db.initialize()
     rows = games(2)
     sample = stats(2)
     sample.raw["最近大铳"] = {
@@ -556,16 +558,23 @@ async def test_named_victims_require_replay_verification_in_selected_sample():
         "fans": [{"count": 1, "役满": 1, "label": "国士无双"}],
     }
     browser = SimpleNamespace(
-        records_enabled=True, yakuman_victims=AsyncMock(side_effect=[{}, {42: ("大三元",)}])
+        records_enabled=True, yakuman_victims=AsyncMock(return_value={42: ("大三元",)})
     )
     client = SimpleNamespace(
         yakuman_highlights=AsyncMock(return_value=[(rows[1].uuid, 77, ("大三元",))]),
     )
-    service = MahjongQueries(None, client, None, replay_browser=browser)
+    service = MahjongQueries(db, client, None, replay_browser=browser)
     options = parse_options("-r 玉南 -l 2")
     enriched = await service.with_yakuman_names(Player(42, "测试"), sample, rows, options, client)
     assert "_yakuman_victim_replays" not in sample.raw
     assert enriched.raw["_yakuman_victim_replays"] == {rows[1].uuid: ("大三元",)}
-    assert browser.yakuman_victims.await_count == 2
+    browser.yakuman_victims.assert_awaited_once_with(rows[1])
     text = format_summary(Player(42, "测试"), rows, False, options, {"sample": enriched}, now=NOW)
-    assert "#大三元受害者" in text and "#国士受害者" not in text
+    assert "#大三元受害者" in text and "#国士受害者" in text
+
+    new_process = MahjongQueries(Database(db.path), client, None)
+    restored = await new_process.with_yakuman_names(
+        Player(42, "测试"), sample, rows, options, client
+    )
+    text = format_summary(Player(42, "测试"), rows, False, options, {"sample": restored}, now=NOW)
+    assert "#大三元受害者" in text and "#国士受害者" in text

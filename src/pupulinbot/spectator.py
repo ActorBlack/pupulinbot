@@ -212,7 +212,7 @@ class BrowserSpectatorClient:
             return None
 
     async def yakuman_victims(self, game):
-        return (await self._replay_yakuman(game, (), self.record_lobby.yakuman_victims)) or {}
+        return await self._replay_yakuman(game, (), self.record_lobby.yakuman_victims)
 
     async def yakuman_wins(self, game, account_id):
         return await self._replay_yakuman(game, (account_id,), self.record_lobby.yakuman_wins)

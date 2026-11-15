@@ -180,6 +180,13 @@ def loss_record(game, *, count=0, limit=1):
 def test_yakuman_victim_requires_confirmed_fans_and_sample_uuid_and_time():
     rows = records()
     raw = {"最近大铳": loss_record(rows[0])}
+    assert yakuman_victim(raw, rows) == ("国士无双",)
+    assert "国士受害者" in supplemental_tags(stats(raw=raw), rows, 42)
+    assert not yakuman_victim(raw, rows[1:])
+    raw["最近大铳"]["start_time"] -= 2
+    assert not yakuman_victim(raw, rows)
+    raw["最近大铳"] = loss_record(rows[0])
+    raw["_yakuman_victim_replays"] = {rows[0].uuid: ()}
     assert not yakuman_victim(raw, rows)
     raw["_yakuman_victim_replays"] = {rows[0].uuid: ("国士无双", "不明役种")}
     assert yakuman_victim(raw, rows) == ("国士无双",)

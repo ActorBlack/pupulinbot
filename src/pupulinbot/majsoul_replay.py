@@ -159,8 +159,8 @@ async def replay_details(wire, uuid, started_at, expected_accounts=None):
     return data, accounts
 
 
-async def replay_victims(wire, uuid, started_at):
-    details = await replay_details(wire, uuid, started_at)
+async def replay_victims(wire, uuid, started_at, *, expected_accounts=None):
+    details = await replay_details(wire, uuid, started_at, expected_accounts)
     return replay_yakuman_victims(*details) if details is not None else None
 
 
@@ -365,7 +365,14 @@ class LobbyKeepalive:
 
     async def yakuman_victims(self, game):
         wire = await self.replay_wire(game.uuid)
-        return await replay_victims(wire, game.uuid, game.started_at.timestamp()) if wire else None
+        if not wire:
+            return None
+        return await replay_victims(
+            wire,
+            game.uuid,
+            game.started_at.timestamp(),
+            expected_accounts={p["account_id"] for p in game.players},
+        )
 
     async def yakuman_wins(self, game, account_id):
         wire = await self.replay_wire(game.uuid)

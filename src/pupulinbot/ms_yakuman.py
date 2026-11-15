@@ -4,9 +4,58 @@ import asyncio
 import logging
 import sqlite3
 
+from .ms_trait_tags import recent_deal_in_game, yakuman_names
 from .paipuya import PaipuyaError
 
 logger = logging.getLogger(__name__)
+
+
+async def victim_replays(db, browser, sample, *, mode, account_id, raw, highlights):
+    verified = {}
+    if db is not None:
+        try:
+            for uuid, started, payers in await db.yakuman_replay_victims(mode, sample):
+                if (
+                    isinstance(payers, dict)
+                    and abs(started - sample[uuid].started_at.timestamp()) <= 1
+                ):
+                    verified[uuid] = payers.get(str(account_id), ())
+        except (sqlite3.Error, ValueError):
+            logger.warning("雀魂役满受害者存档暂不可读", exc_info=True)
+    if browser is None or not browser.records_enabled:
+        return verified
+
+    loss = recent_deal_in_game(raw, sample.values())
+    if loss and yakuman_names(raw["最近大铳"].get("fans")):
+        # The indexed large deal-in already identifies the payer and named hand.
+        # Existing official evidence still takes precedence in the tag selector.
+        known_loss = loss.uuid
+    else:
+        known_loss = None
+    candidates = {
+        uuid
+        for uuid, winner, _ in highlights
+        if uuid in sample and winner != account_id and uuid != known_loss and uuid not in verified
+    }
+    ordered = sorted(candidates, key=lambda uuid: sample[uuid].started_at, reverse=True)
+    try:
+        async with asyncio.timeout(145):
+            for uuid in ordered[:4]:
+                game = sample[uuid]
+                payers = await browser.yakuman_victims(game)
+                if payers is None:
+                    continue
+                verified[uuid] = payers.get(account_id, ())
+                if db is not None:
+                    try:
+                        await db.save_yakuman_replay_victims(
+                            mode, uuid, game.started_at.timestamp(), payers
+                        )
+                    except sqlite3.Error:
+                        logger.warning("雀魂役满受害者存档暂不可写", exc_info=True)
+    except TimeoutError:
+        pass
+    return verified
 
 
 async def backfill_yakuman(db, client, browser, sample, *, mode, account_id, total, archived):

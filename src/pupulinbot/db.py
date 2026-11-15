@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS majsoul_yakuman_replay_wins(
   winner INTEGER NOT NULL, win_count INTEGER NOT NULL CHECK(win_count > 0),
   PRIMARY KEY(mode, uuid, winner)
 );
+CREATE TABLE IF NOT EXISTS majsoul_yakuman_replay_victims(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL, payers TEXT NOT NULL,
+  PRIMARY KEY(mode, uuid)
+);
 """
 
 
@@ -259,6 +263,27 @@ class Database:
                 (mode, json.dumps(list(uuids))),
             ) as cursor:
                 return await cursor.fetchall()
+
+    async def save_yakuman_replay_victims(self, mode, uuid, started_at, payers):
+        async with self.connect() as db:
+            await db.execute(
+                """INSERT INTO majsoul_yakuman_replay_victims VALUES (?, ?, ?, ?)
+                ON CONFLICT(mode, uuid) DO UPDATE SET
+                    started_at=excluded.started_at, payers=excluded.payers""",
+                (mode, uuid, started_at, json.dumps(payers, ensure_ascii=False)),
+            )
+            await db.commit()
+
+    async def yakuman_replay_victims(self, mode, uuids):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT uuid, started_at, payers FROM majsoul_yakuman_replay_victims "
+                "WHERE mode=? AND uuid IN (SELECT value FROM json_each(?))",
+                (mode, json.dumps(list(uuids))),
+            ) as cursor:
+                return [
+                    (uuid, started, json.loads(payers)) async for uuid, started, payers in cursor
+                ]
 
     async def assign_daily_identity(
         self, qq_id: str, candidate: str, *, valid_identities: Container[str] | None = None

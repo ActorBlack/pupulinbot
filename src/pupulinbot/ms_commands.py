@@ -24,8 +24,7 @@ from .ms_style import style_lines
 from .ms_style_chart import render_style
 from .ms_style_radar import SANMA_STYLE_ROOMS
 from .ms_summary import format_summary
-from .ms_trait_tags import recent_deal_in_game, yakuman_names
-from .ms_yakuman import backfill_yakuman
+from .ms_yakuman import backfill_yakuman, victim_replays
 from .paipuya import PaipuyaError
 from .qq_delivery import send_group_forward
 
@@ -349,25 +348,17 @@ class MahjongQueries:
             if names:
                 evidence["_yakuman_win_names"] = names
 
-        if verify:
-            candidates = {}
-            loss = recent_deal_in_game(stats.raw, sample.values())
-            if loss and yakuman_names(stats.raw["最近大铳"].get("fans")):
-                candidates[loss.uuid] = loss
-            for uuid, winner, _ in highlights:
-                if winner != player.account_id:
-                    candidates[uuid] = sample[uuid]
-            confirmed = {}
-            try:
-                async with asyncio.timeout(18):
-                    for game in candidates.values():
-                        victims = await browser.yakuman_victims(game)
-                        if names := victims.get(player.account_id):
-                            confirmed[game.uuid] = names
-            except TimeoutError:
-                pass
-            if confirmed:
-                evidence["_yakuman_victim_replays"] = confirmed
+        confirmed = await victim_replays(
+            self.db,
+            browser,
+            sample,
+            mode=mode,
+            account_id=player.account_id,
+            raw=stats.raw,
+            highlights=highlights,
+        )
+        if confirmed:
+            evidence["_yakuman_victim_replays"] = confirmed
         if not evidence:
             return stats
         enriched = copy(stats)

@@ -248,10 +248,13 @@ def recent_deal_in_game(raw, games):
 
 
 def yakuman_victim(raw, games):
-    """Return replay-verified names associated with the selected sample."""
+    """Use official replay roles and Paipuya's exact, role-labelled deal-in."""
     verified = raw.get("_yakuman_victim_replays")
     if not isinstance(verified, dict):
-        return ()
+        verified = {}
+    loss = recent_deal_in_game(raw, games)
+    if loss and loss.uuid not in verified:
+        verified = {**verified, loss.uuid: yakuman_names(raw["最近大铳"].get("fans"))}
     allowed, _ = yakuman_tag_groups()
     return tuple(
         dict.fromkeys(
