@@ -205,6 +205,7 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "大三元受害者",
         "纯正九莲宝灯受害者",
         "国士无双十三面受害者",
+        "暗杀星",
         "副露进攻",
     ]
     tiers = {
@@ -214,6 +215,7 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "日常踩雷": "orange",
         "一击必杀": "purple",
         "普普林": "easter_egg",
+        "暗杀星": "easter_egg",
         "略胜一筹": "green",
     }
     drawn = []
@@ -227,6 +229,7 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
 
     monkeypatch.setattr(ImageDraw.ImageDraw, "text", capture)
     monkeypatch.setattr(ms_style_chart, "supplemental_tags", lambda *args, **kwargs: tags)
+    assert ms_style_chart.rarity_tier("暗杀星") == "easter_egg"
     monkeypatch.setattr(ms_style_chart, "rarity_tier", tiers.__getitem__)
     ms_style_chart.render_style(
         Player(42, "测试"), stats(100), games(), parse_options("-r 玉南 -l 100")
@@ -245,6 +248,7 @@ def test_style_displays_tags_in_ascending_rarity_with_stable_ties(monkeypatch):
         "大三元受害者",
         "纯正九莲宝灯受害者",
         "国士无双十三面受害者",
+        "暗杀星",
         "普普林",
     ]
 

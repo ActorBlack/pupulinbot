@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 
 TARGET_SAMPLES = 5000
+RAINBOW_TAGS = frozenset({"普普林", "暗杀星"})
 # Lower bounds in basis points, checked from most to least common.
 TIERS = (
     (900, "gray"),
@@ -67,7 +68,7 @@ def tier_for_count(hits, samples=TARGET_SAMPLES):
 
 
 def rarity_tier(tag):
-    if tag == "普普林":
+    if tag in RAINBOW_TAGS:
         return "easter_egg"
     calibration = rarity_counts()
     if calibration is None:

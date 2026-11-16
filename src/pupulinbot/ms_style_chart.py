@@ -18,7 +18,7 @@ from .ms_style_radar import (
     metric_value,
     speed_turns,
 )
-from .ms_style_rarity import PALETTES, TIERS, rarity_tier
+from .ms_style_rarity import PALETTES, RAINBOW_TAGS, TIERS, rarity_tier
 from .ms_tags import supplemental_tags
 from .ms_trait_tags import COMBINATION_TAGS, yakuman_tag_groups
 from .typography import profile_face as face
@@ -556,10 +556,12 @@ def render_style(player, stats, games, options, *, current_level=None):
                 tier = "yakuman"
             elif tag in victims:
                 tier = "yakuman_victim"
+            elif tag in COMBINATION_TAGS and tag not in RAINBOW_TAGS:
+                tier = "combination"
             else:
-                tier = "combination" if tag in COMBINATION_TAGS else rarity_tier(tag)
+                tier = rarity_tier(tag)
             ranked_tags.append((tag, tier))
-        ranked_tags.sort(key=lambda item: TAG_DISPLAY_ORDER.index(item[1]))
+        ranked_tags.sort(key=lambda item: (TAG_DISPLAY_ORDER.index(item[1]), item[0] == "普普林"))
         for index, (tag, tier) in enumerate(ranked_tags):
             row, column = divmod(index, 3)
             x, y = 736 + column * 270, 1000 + row * 43

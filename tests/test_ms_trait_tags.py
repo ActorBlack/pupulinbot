@@ -246,12 +246,19 @@ def test_selection_limits_total_ten_luck_three_and_achievements_three():
         ("略胜一筹", "棋差一着", "毫厘之间"),
         ("深度门清", "默听流", "静默猎手"),
         ("争一流", "避四流", "上分糕手"),
+        ("无声快刀", "静默猎手", "暗杀星"),
     ],
 )
 def test_two_matching_tags_merge_before_display_slots_are_counted(left, right, combined):
     extra = {"style": [], "luck": [], "achievement": []}
     assert select_tags([left, right, "其他"], extra, 2) == [combined, "其他"]
     assert select_tags([left], extra, 2) == [left]
+
+
+def test_assassin_combination_uses_the_newly_formed_hunter_before_the_tag_limit():
+    extra = {"style": [], "luck": [], "achievement": []}
+    assert select_tags(["无声快刀", "默听流", "深度门清"], extra, 1) == ["暗杀星"]
+    assert select_tags(["默听流", "深度门清"], extra, 1) == ["静默猎手"]
 
 
 def test_new_traits_flow_into_ms_output_and_keep_existing_sample_and_mode_guards():

@@ -404,6 +404,7 @@ TAG_COMBINATIONS = (
     ("略胜一筹", "棋差一着", "毫厘之间"),
     ("深度门清", "默听流", "静默猎手"),
     ("争一流", "避四流", "上分糕手"),
+    ("无声快刀", "静默猎手", "暗杀星"),
 )
 COMBINATION_TAGS = frozenset(
     ("进退自如", "追立冒险家", *(combined for _, _, combined in TAG_COMBINATIONS))
