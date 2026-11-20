@@ -4,6 +4,7 @@ from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from nonebot.consts import PREFIX_KEY
 from nonebot.exception import IgnoredException
 
+from .monitor_permissions import delegated_monitor
 from .ms_commands import QUERY_ALIASES, QUERY_COMMANDS
 from .tenhou_commands import QUERY_COMMANDS as TENHOU_QUERIES
 
@@ -17,6 +18,7 @@ PUBLIC_COMMANDS = frozenset(
         "msunbind",
         "msstats",
         "msrank",
+        "taghelp",
         *QUERY_COMMANDS,
         *TENHOU_QUERIES,
         *(alias for aliases in QUERY_ALIASES.values() for alias in aliases),
@@ -42,6 +44,7 @@ def check_group_command(
     monitor_owner=None,
     vip2=False,
     capsolver_users=(),
+    monitor_delegates=None,
 ):
     if not isinstance(event, GroupMessageEvent):
         return
@@ -57,7 +60,10 @@ def check_group_command(
     if command == "vip2":
         raise IgnoredException("仅 Bot 超级管理员可管理二级会员")
     if command in MONITOR_COMMANDS:
-        if not monitor_allowed(restricted, vip2, maintainer=user == monitor_owner):
+        delegated = command in {"mswatch", "thwatch", "thlive"} and delegated_monitor(
+            event.group_id, user, monitor_delegates or {}
+        )
+        if not monitor_allowed(restricted, vip2, maintainer=user == monitor_owner or delegated):
             raise IgnoredException("当前账号无监控命令权限")
         return
     if restricted and command not in PUBLIC_COMMANDS and not (vip2 and command in MORTAL_COMMANDS):

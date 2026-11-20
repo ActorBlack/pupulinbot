@@ -488,7 +488,7 @@ async def test_sanma_style_uses_its_exact_room_sample_and_rank():
         history=AsyncMock(return_value=(records, False)),
         range_stats=AsyncMock(return_value=sample),
         metadata=AsyncMock(return_value=SimpleNamespace(raw={"level": current})),
-        recent_yakuman_names=AsyncMock(),
+        yakuman_highlights=AsyncMock(),
     )
     service = MahjongQueries(None, None, sanma)
     with patch("pupulinbot.ms_commands.render_style", return_value=b"png") as render:
@@ -497,7 +497,7 @@ async def test_sanma_style_uses_its_exact_room_sample_and_rank():
     assert render.call_args.args[3].modes == [24]
     assert render.call_args.kwargs["current_level"] == current
     assert sanma.range_stats.call_args.kwargs["modes"] == [24]
-    sanma.recent_yakuman_names.assert_not_called()
+    sanma.yakuman_highlights.assert_not_called()
 
 
 def test_sanma_radar_has_independent_room_and_grade_references():
@@ -597,3 +597,24 @@ def test_sanma_style_renders_gold_radar_table_and_insight():
     assert image.getpixel((362, round(558 - 180 * bonus / 100))) == ImageColor.getrgb(BONUS_LINE)
     assert image.getpixel((813, 377)) == ImageColor.getrgb(BONUS_FILL)
     assert image.getpixel((742, 1016)) == ImageColor.getrgb(BONUS_FILL)
+
+
+@pytest.mark.parametrize("name", ["纯正九莲宝灯", "四暗刻单骑", "国士无双十三面", "大四喜"])
+def test_double_yakuman_keep_jade_and_rose_with_distinct_backgrounds(name):
+    from PIL import Image, ImageDraw
+
+    from pupulinbot.ms_style_chart import _draw_tag_plate
+    from pupulinbot.ms_style_rarity import PALETTES, yakuman_tier
+
+    for tag, regular in ((name, "yakuman"), (name + "受害者", "yakuman_victim")):
+        tier = yakuman_tier(tag)
+        assert tier == regular + "_double"
+        assert PALETTES[tier][-1] == PALETTES[regular][-1]
+        images = []
+        for style in (regular, tier):
+            image = Image.new("RGB", (255, 38), "white")
+            _draw_tag_plate(ImageDraw.Draw(image), 0, 0, style)
+            images.append(image)
+        assert images[0].getpixel((145, 18)) != images[1].getpixel((145, 18))
+    assert yakuman_tier("四暗刻") == "yakuman"
+    assert yakuman_tier("四暗刻受害者") == "yakuman_victim"

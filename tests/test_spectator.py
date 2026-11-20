@@ -298,16 +298,35 @@ global.location = {href: 'https://game.maj-soul.com/1/'};
 global.unityInstance = {};
 let nextId = 0;
 const pending = new Map();
+let now = 0, nextTimer = 0;
+const timers = new Map();
+global.performance = {now: () => now};
+global.setTimeout = (callback, delay) => {
+    timers.set(++nextTimer, {callback, at: now + delay});
+    return nextTimer;
+};
+global.clearTimeout = id => timers.delete(id);
 window.requestAnimationFrame = callback => {pending.set(++nextId, callback); return nextId;};
 window.cancelAnimationFrame = id => pending.delete(id);
+let drawCalls = 0;
+window.WebGLRenderingContext = class {drawArrays() {drawCalls++;} flush() {return 'live';}};
 const originalTimer = setTimeout;
 function frame(time) {
+    now = time;
+    for (const [id, timer] of [...timers.entries()]) {
+        if (timer.at <= time) {timers.delete(id); timer.callback();}
+    }
     const batch = [...pending.values()];
     pending.clear();
     batch.forEach(callback => callback(time));
 }
 """
     checks = """
+const gl = new WebGLRenderingContext();
+gl.drawArrays();
+assert.equal(drawCalls, 0);
+assert.equal(gl.flush(), 'live');
+assert.equal(window.__pupulinLobbyDrawCalls.length, 1);
 const received = [];
 requestAnimationFrame(t => received.push(t));
 requestAnimationFrame(t => received.push(t));
@@ -316,10 +335,12 @@ assert.deepEqual(received, [0, 0]);
 const cancelled = requestAnimationFrame(() => {throw new Error('cancelled callback ran');});
 requestAnimationFrame(t => received.push(t));
 frame(50);
+assert.equal(pending.size, 0);
 cancelAnimationFrame(cancelled);
 frame(100);
 assert.deepEqual(received, [0, 0]);
 frame(200);
+assert.equal(pending.size, 0);
 assert.deepEqual(received, [0, 0]);
 frame(1000);
 assert.deepEqual(received, [0, 0, 1000]);
@@ -482,3 +503,61 @@ async def test_yakuman_verification_starts_records_session_on_demand_and_reuses_
         assert client.record_lobby.yakuman_victims.await_count == 2
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_persistent_record_head_reuses_lobby_without_reloading_replay(monkeypatch):
+    client = BrowserSpectatorClient("unused", records_enabled=True, record_keepalive=True)
+    head = {"uuid": UUID}
+    client.record_lobby.replay_wire = AsyncMock(return_value=b"official-head")
+    client.record_lobby.close = AsyncMock()
+    old_fetch = AsyncMock()
+    monkeypatch.setattr("pupulinbot.spectator.fetch_replay_head", old_fetch)
+    monkeypatch.setattr("pupulinbot.spectator.decode_record", lambda wire, uuid: head)
+    assert await client.record_head(f"https://game.maj-soul.com/1/?paipu={UUID}", UUID) == head
+    old_fetch.assert_not_awaited()
+    client.record_lobby.close.assert_not_awaited()
+    client.record_lobby.replay_wire.assert_awaited_once_with(UUID)
+
+
+@pytest.mark.asyncio
+async def test_persistent_record_session_starts_browser_on_demand(monkeypatch):
+    client = BrowserSpectatorClient("unused", records_enabled=True, record_keepalive=True)
+    client.start = AsyncMock()
+    client.record_lobby.click = AsyncMock(side_effect=[ReplayBrowserUnavailable(), True])
+    assert await client.keep_record_session()
+    client.start.assert_awaited_once()
+    assert client.record_lobby.click.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persistent_record_session_reconnects_once_without_creating_replay_tab(monkeypatch):
+    client = BrowserSpectatorClient("unused", records_enabled=True, record_keepalive=True)
+    client.record_lobby.replay_wire = AsyncMock(side_effect=[MajsoulConnectionLost(), b"head"])
+    client.record_lobby.close = AsyncMock()
+    client.start = AsyncMock()
+    monkeypatch.setattr("pupulinbot.spectator.decode_record", lambda wire, uuid: {"uuid": uuid})
+    assert await client.record_head(f"https://game.maj-soul.com/1/?paipu={UUID}", UUID) == {
+        "uuid": UUID
+    }
+    client.record_lobby.close.assert_awaited_once()
+    client.start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_official_replay_quota_keeps_lobby_and_suppresses_more_reads():
+    import time
+
+    from pupulinbot.majsoul_replay import MajsoulReplayRateLimited
+
+    client = BrowserSpectatorClient("unused", records_enabled=True, record_keepalive=True)
+    client.record_lobby.replay_retry_at = time.monotonic() + 600
+    client.record_lobby.replay_wire = AsyncMock(side_effect=MajsoulReplayRateLimited)
+    client.record_lobby.close = AsyncMock()
+    client.start = AsyncMock()
+    url = f"https://game.maj-soul.com/1/?paipu={UUID}"
+    assert await client.record_head(url, UUID) is None
+    assert await client.record_head(url, UUID) is None
+    client.record_lobby.replay_wire.assert_awaited_once()
+    client.record_lobby.close.assert_not_awaited()
+    client.start.assert_not_awaited()

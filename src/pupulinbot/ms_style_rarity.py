@@ -4,8 +4,18 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+DOUBLE_YAKUMAN_NAMES = frozenset({"纯正九莲宝灯", "四暗刻单骑", "国士无双十三面", "大四喜"})
+
+
+def yakuman_tier(tag):
+    victim = tag.endswith("受害者")
+    name = tag.removesuffix("受害者")
+    base = "yakuman_victim" if victim else "yakuman"
+    return base + "_double" if name in DOUBLE_YAKUMAN_NAMES else base
+
+
 TARGET_SAMPLES = 5000
-RAINBOW_TAGS = frozenset({"普普林", "暗杀星"})
+RAINBOW_TAGS = frozenset({"普普林", "暗杀星", "惊鸿", "魔术师", "炎凉", "潜龙"})
 # Lower bounds in basis points, checked from most to least common.
 TIERS = (
     (900, "gray"),
@@ -27,6 +37,8 @@ PALETTES = {
     "combination": ("#f1ebe0", "#d2c9b9", "#526e89", "#fff7e8", "#253a50"),
     "yakuman": ("#b9e6d9", "#a1ccbc", "#b9e6d9", "#e0faf0", "#1d564a"),
     "yakuman_victim": ("#ebc4ce", "#d6a4b3", "#ebc4ce", "#fff2f5", "#783c51"),
+    "yakuman_double": ("#b3e3d5", "#8fbaa9", "#b3e3d5", "#fff7d6", "#1d564a"),
+    "yakuman_victim_double": ("#e9bed1", "#b894bc", "#e9bed1", "#fff2f7", "#783c51"),
     "easter_egg": ("#f8f2fa", "#e2d3e9", "#eee2f3", "#f8edff", "#624773"),
 }
 
@@ -60,6 +72,14 @@ def _read_counts(path, *, complete):
         type(count) is not int or not 0 <= count <= samples for count in counts.values()
     ):
         return None
+    counts = dict(counts)
+    for previous, current in (
+        ("速攻流", "闪电战"),
+        ("立直引战", "众矢之的"),
+        ("爱撞大运", "偶失荆州"),
+    ):
+        if previous in counts:
+            counts.setdefault(current, counts.pop(previous))
     return samples, counts
 
 
@@ -74,5 +94,7 @@ def rarity_tier(tag):
     if calibration is None:
         return "gray"
     samples, counts = calibration
-    hits = counts.get(tag, 0)
+    hits = counts.get(tag)
+    if hits is None and tag == "狂战士":
+        hits = counts.get("高和高铳")
     return tier_for_count(hits, samples) if hits else "gray"

@@ -15,7 +15,7 @@ from .tenhou import CN, LOG_ID, grade_name, rule_name, table_scores
 from .tenhou_card import rank_theme
 from .tenhou_options import ROOMS
 from .tenhou_profile import history_rank
-from .tenhou_queries import value
+from .tenhou_queries import cached_label, value
 from .typography import profile_face as face
 
 INK, MUTED = "#1d2c44", "#536982"
@@ -45,7 +45,9 @@ class Canvas:
                 text = text[:-2] + "…" if len(text) > 1 else ""
         self.draw.text((x, y), text, font=face(size, style), fill=color, anchor=anchor)
 
-    def png(self):
+    def png(self, cached_at=None):
+        if note := cached_label(cached_at):
+            self.text(self.image.width - 42, self.image.height - 28, note, 18, MUTED, anchor="rm")
         output = io.BytesIO()
         self.image.save(output, format="PNG", optimize=True)
         return output.getvalue()
@@ -293,10 +295,10 @@ def render_profile(view):
     if view["tag"]:
         c.text(1500, foot + 86, "#" + view["tag"], 23, "#288772", "bold", "rm", width=370)
     c.text(64, foot + 150, "水表网 nodocchi　段位积分为公开历史推定", 18, "#8b99ae")
-    return c.png()
+    return c.png(view.get("cached_at"))
 
 
-def render_recent(name, rows, mode, *, pt_deltas=None):
+def render_recent(name, rows, mode, *, pt_deltas=None, cached_at=None):
     last = rows[-1]
     room = ROOMS[int(last["playerlevel"])] + ("东" if int(last["playlength"]) == 1 else "南")
     c = Canvas((1600, 286 + 78 * len(rows)))
@@ -338,7 +340,7 @@ def render_recent(name, rows, mode, *, pt_deltas=None):
         if match:
             c.text(285, y + 26, match[1], 16, MUTED, "number", width=500)
     c.text(42, c.image.height - 26, "水表网 nodocchi", 18, MUTED)
-    return c.png()
+    return c.png(cached_at)
 
 
 def render_life(view):
@@ -492,7 +494,7 @@ def render_life(view):
         18,
         MUTED,
     )
-    return c.png()
+    return c.png(view.get("cached_at"))
 
 
 def render_style(view):
@@ -602,4 +604,4 @@ def render_style(view):
     )
     c.text(362, 934, "防守和速度按较低放铳率、较早和牌计分", 18, MUTED, anchor="mm")
     c.text(42, 1012, "水表网 nodocchi", 18, MUTED)
-    return c.png()
+    return c.png(view.get("cached_at"))

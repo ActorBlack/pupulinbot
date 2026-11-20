@@ -7,6 +7,7 @@ from nonebot import on_command
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.params import CommandArg
 
+from .monitor_permissions import delegated_monitor
 from .qq_delivery import send_group_forward, send_ranking_forward
 from .qq_members import GroupMembersError, group_member_ids
 from .tenhou import CN, TenhouError, validate_name
@@ -32,14 +33,14 @@ QUERY_COMMANDS = (
 )
 
 
-async def manage_watch(store, client, text, user_id, group_id, *, manager=None):
+async def manage_watch(store, client, text, user_id, group_id, *, manager=None, delegates=None):
     parts = text.strip().split(maxsplit=1)
     action = parts[0] if parts else ""
     name = parts[1].strip() if len(parts) > 1 else ""
     if action not in {"on", "off"}:
         raise TenhouError("用法：thwatch on <昵称> / off <昵称> / off all / list")
-    if not manager or str(user_id) != str(manager):
-        raise TenhouError("仅 Bot 负责人可修改监控名单。")
+    if str(user_id) != str(manager) and not delegated_monitor(group_id, user_id, delegates or {}):
+        raise TenhouError("仅 Bot 负责人或本群授权成员可修改监控名单。")
     if not name:
         raise TenhouError("用法：thwatch on <昵称> / off <昵称>；清空用 off all")
     if action == "off":
@@ -50,15 +51,15 @@ async def manage_watch(store, client, text, user_id, group_id, *, manager=None):
     names = {r["name"] for r in existing}
     if name in names:
         return f"本群已监控：{name}"
-    if len(names) >= 10:
-        raise TenhouError("本群最多监控10位天凤玩家，请先移除不用的监控。")
     if not await client.history(name):
         raise TenhouError("nodocchi 未找到该昵称的公开战绩，请检查大小写和日文字符。")
-    await store.add(group_id, manager, name)
+    await store.add(group_id, manager or str(user_id), name)
     return f"已添加本群天凤监控：{name}"
 
 
-def install_tenhou_commands(store, client, monitor, live, *, manager=None, superusers=()):
+def install_tenhou_commands(
+    store, client, monitor, live, *, manager=None, superusers=(), delegates=None
+):
     watch = on_command("thwatch", priority=10, block=True)
     status = on_command("thstatus", priority=10, block=True)
     rounds = on_command("thlive", priority=10, block=True, force_whitespace=True)
@@ -80,6 +81,8 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
             )
             health = (row["error"] or "结算源正常") if row["checked_at"] else "待检查"
             lines.append(f"{row['name']}　{checked}（{health}）")
+        if source_status := getattr(client, "source_status", ""):
+            lines.append(source_status)
         lines.append(
             "开局源：" + (monitor.live_error or ("正常" if monitor.live_checked else "待检查"))
         )
@@ -100,6 +103,7 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                 event.user_id,
                 event.group_id,
                 manager=manager,
+                delegates=delegates,
             )
         except TenhouError as exc:
             result = str(exc)
@@ -122,6 +126,7 @@ def install_tenhou_commands(store, client, monitor, live, *, manager=None, super
                     user,
                     manager=(
                         user == manager
+                        or delegated_monitor(group, user, delegates or {})
                         or user in superusers
                         or event.sender.role in {"owner", "admin"}
                     ),

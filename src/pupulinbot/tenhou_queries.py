@@ -117,12 +117,20 @@ def make_view(
         phoenix_scope=("三" if options.mode == 3 else "四")
         + "鳳"
         + ("东" if length == 1 else "南"),
+        cached_at=data.get("_cached_at"),
     )
     return add_phoenix(view, phoenix, phoenix_error, percentiles)
 
 
 def add_phoenix(view, phoenix=None, error=None, percentiles=None):
     phoenix = phoenix or {}
+    timestamps = [
+        number(stamp)
+        for stamp in (view.get("cached_at"), phoenix.get("_cached_at"))
+        if number(stamp) is not None
+    ]
+    if timestamps:
+        view["cached_at"] = min(timestamps)
     win, deal = (number(phoenix.get(k)) for k in ("agariC", "houjuuC"))
     win_pt, deal_pt = (number(phoenix.get(k)) for k in ("agariVT", "houjuuVT"))
     difference = (
@@ -166,6 +174,8 @@ def matchup_text(view, opponent):
         f"{view['name']} vs {opponent}（{mode}{view['scope']}）",
         f"本人查询 {view['count']} 场，同桌 {len(common)} 场",
     ]
+    if note := cached_label(view.get("cached_at")):
+        lines.append(note)
     if not common:
         return "\n".join([*lines, "未找到同桌记录。"])
     ranks = [(history_rank(row, view["name"]), history_rank(row, opponent)) for row in common]
@@ -188,6 +198,13 @@ def matchup_text(view, opponent):
         if match := LOG_ID.search(row.get("url") or ""):
             lines.append(f"https://tenhou.net/4/?log={match[1]}")
     return "\n".join(lines)
+
+
+def cached_label(stamp):
+    stamp = number(stamp)
+    if stamp is None:
+        return ""
+    return "资料缓存 " + datetime.fromtimestamp(stamp, CN).strftime("%m-%d %H:%M")
 
 
 def value(number_, *, percent=False, signed=False, decimals=1):
@@ -265,6 +282,8 @@ def summary_text(view, *, detailed=False):
             lines.append(
                 "凤凰桌统计：暂时不可用" if view["phoenix_error"] else "凤凰桌统计：暂无收录"
             )
+    if note := cached_label(view.get("cached_at")):
+        lines.append(note)
     return "\n".join(lines)
 
 
@@ -392,7 +411,12 @@ class TenhouQueries:
                     from .tenhou_query_card import render_recent
 
                     return await asyncio.to_thread(
-                        render_recent, name, rows, options.mode, pt_deltas=view["pt_deltas"]
+                        render_recent,
+                        name,
+                        rows,
+                        options.mode,
+                        pt_deltas=view["pt_deltas"],
+                        cached_at=view.get("cached_at"),
                     )
                 blocks = []
                 for row, delta in reversed(list(zip(rows, view["pt_deltas"], strict=True))):
@@ -400,6 +424,8 @@ class TenhouQueries:
                     if delta is not None:
                         block += f"\n本场推算 PT {delta:+g}"
                     blocks.append(block)
+                if blocks and (note := cached_label(view.get("cached_at"))):
+                    blocks[0] += "\n" + note
                 return blocks
             if command == "thvs":
                 return matchup_text(view, options.name)

@@ -1,6 +1,6 @@
 import json
 import time
-from collections.abc import AsyncIterator, Container
+from collections.abc import AsyncIterator, Container, Iterable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -67,6 +67,21 @@ CREATE TABLE IF NOT EXISTS reviews(
   uuid TEXT PRIMARY KEY, status TEXT NOT NULL, requester TEXT NOT NULL,
   result TEXT, error TEXT, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS majsoul_game_win_counts(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, account_id INTEGER NOT NULL,
+  started_at REAL NOT NULL, win_count INTEGER NOT NULL CHECK(win_count >= 0),
+  PRIMARY KEY(mode, uuid, account_id)
+);
+CREATE TABLE IF NOT EXISTS majsoul_passerby_games(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, account_id INTEGER NOT NULL,
+  started_at REAL NOT NULL, qualified INTEGER NOT NULL CHECK(qualified IN (0,1)),
+  PRIMARY KEY(mode, uuid, account_id)
+);
+CREATE TABLE IF NOT EXISTS majsoul_replay_winds(
+  mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL,
+  max_wind INTEGER NOT NULL CHECK(max_wind BETWEEN 0 AND 3),
+  PRIMARY KEY(mode, uuid)
 );
 CREATE TABLE IF NOT EXISTS majsoul_yakuman_highlights(
   mode INTEGER NOT NULL, uuid TEXT NOT NULL, started_at REAL NOT NULL,
@@ -285,8 +300,76 @@ class Database:
                     (uuid, started, json.loads(payers)) async for uuid, started, payers in cursor
                 ]
 
+    async def game_win_counts(self, mode, account_id, uuids):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT uuid, started_at, win_count FROM majsoul_game_win_counts "
+                "WHERE mode=? AND account_id=? AND uuid IN (SELECT value FROM json_each(?))",
+                (mode, account_id, json.dumps(list(uuids))),
+            ) as cursor:
+                return await cursor.fetchall()
+
+    async def save_game_win_count(self, game, account_id, count):
+        async with self.connect() as db:
+            await db.execute(
+                """INSERT INTO majsoul_game_win_counts VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(mode, uuid, account_id) DO UPDATE SET
+                    started_at=excluded.started_at, win_count=excluded.win_count""",
+                (int(game.mode), game.uuid, account_id, game.started_at.timestamp(), count),
+            )
+            await db.commit()
+
+    async def passerby_games(self, mode, account_id, uuids):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT uuid, started_at, qualified FROM majsoul_passerby_games "
+                "WHERE mode=? AND account_id=? AND uuid IN (SELECT value FROM json_each(?))",
+                (mode, account_id, json.dumps(list(uuids))),
+            ) as cursor:
+                return await cursor.fetchall()
+
+    async def save_passerby_game(self, game, account_id, qualified):
+        async with self.connect() as db:
+            await db.execute(
+                """INSERT INTO majsoul_passerby_games VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(mode, uuid, account_id) DO UPDATE SET
+                    started_at=excluded.started_at, qualified=excluded.qualified""",
+                (
+                    int(game.mode),
+                    game.uuid,
+                    account_id,
+                    game.started_at.timestamp(),
+                    int(qualified),
+                ),
+            )
+            await db.commit()
+
+    async def replay_winds(self, mode, uuids):
+        async with self.connect() as db:
+            async with db.execute(
+                "SELECT uuid, started_at, max_wind FROM majsoul_replay_winds "
+                "WHERE mode=? AND uuid IN (SELECT value FROM json_each(?))",
+                (mode, json.dumps(list(uuids))),
+            ) as cursor:
+                return await cursor.fetchall()
+
+    async def save_replay_wind(self, game, wind):
+        async with self.connect() as db:
+            await db.execute(
+                """INSERT INTO majsoul_replay_winds VALUES (?, ?, ?, ?)
+                ON CONFLICT(mode, uuid) DO UPDATE SET
+                    started_at=excluded.started_at, max_wind=excluded.max_wind""",
+                (int(game.mode), game.uuid, game.started_at.timestamp(), wind),
+            )
+            await db.commit()
+
     async def assign_daily_identity(
-        self, qq_id: str, candidate: str, *, valid_identities: Container[str] | None = None
+        self,
+        qq_id: str,
+        candidate: str,
+        *,
+        valid_identities: Container[str] | None = None,
+        overwrite: bool = False,
     ) -> tuple[str, bool]:
         async with self.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
@@ -296,7 +379,8 @@ class Database:
             ) as cursor:
                 row = await cursor.fetchone()
             if (
-                row is not None
+                not overwrite
+                and row is not None
                 and row["assigned_on"] == today
                 and (valid_identities is None or row["identity"] in valid_identities)
             ):
@@ -310,12 +394,14 @@ class Database:
             await db.commit()
             return candidate, True
 
-    async def reset_daily_identities(self) -> int:
+    async def reset_daily_identities(self, qq_ids: Iterable[str]) -> int:
         async with self.connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             today = datetime.now(BEIJING_TZ).date().isoformat()
             async with db.execute(
-                "DELETE FROM daily_identities WHERE assigned_on=?", (today,)
+                "DELETE FROM daily_identities WHERE assigned_on=? "
+                "AND qq_id IN (SELECT value FROM json_each(?))",
+                (today, json.dumps(list(qq_ids))),
             ) as cursor:
                 count = cursor.rowcount
             await db.commit()

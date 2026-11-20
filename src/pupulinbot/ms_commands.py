@@ -18,7 +18,9 @@ from .ms_charts import render_history, render_profile
 from .ms_extra import matchup, render_comparison
 from .ms_ids import account_to_friend, friend_to_account
 from .ms_options import MODE_NAMES, ROOMS, TZ, parse_options
+from .ms_passerby import match_achievement_games
 from .ms_recent import render_recent
+from .ms_replay_tags import west_rounds
 from .ms_sample import number
 from .ms_style import style_lines
 from .ms_style_chart import render_style
@@ -359,6 +361,21 @@ class MahjongQueries:
         )
         if confirmed:
             evidence["_yakuman_victim_replays"] = confirmed
+        winds = await west_rounds(
+            self.db,
+            browser if backfill else None,
+            sample,
+            mode=mode,
+        )
+        if winds:
+            evidence["_replay_winds"] = winds
+        matches = await match_achievement_games(
+            self.db, client, sample, mode=mode, account_id=player.account_id, scan=backfill
+        )
+        if matches["passerby"]:
+            evidence["_passerby_replays"] = matches["passerby"]
+        if matches["single_win_first"]:
+            evidence["_single_win_first_replays"] = matches["single_win_first"]
         if not evidence:
             return stats
         enriched = copy(stats)

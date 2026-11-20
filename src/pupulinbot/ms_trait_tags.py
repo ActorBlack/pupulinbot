@@ -267,6 +267,10 @@ def yakuman_victim(raw, games):
     )
 
 
+def passerby_requirement(count):
+    return max(2, (count + 49) // 50)
+
+
 def achievement_tags(raw, games, counts=None):
     tags = []
     if counts is not None:
@@ -283,6 +287,16 @@ def achievement_tags(raw, games, counts=None):
         hands = counts["hands"]
         if hands is not None and _counter(raw, "流满", hands + 1e-6):
             tags.append("流局满贯")
+    passive = raw.get("_passerby_replays")
+    if isinstance(passive, (list, tuple)) and len(
+        {game.uuid for game in games if game.uuid in passive}
+    ) >= passerby_requirement(len(games)):
+        tags.append("吃瓜群众")
+    single = raw.get("_single_win_first_replays")
+    if isinstance(single, (list, tuple)) and len(
+        {game.uuid for game in games if game.uuid in single}
+    ) >= passerby_requirement(len(games)):
+        tags.append("一鸣惊人")
     losses = yakuman_victim(raw, games)
     if losses:
         tags.append(tuple(_victim_tag(name) for name in losses))
@@ -399,6 +413,19 @@ def trait_tags(
 
 
 TAG_COMBINATIONS = (
+    ("门清流", "重炮手", "稳健防守", "潜龙"),
+    ("咫尺天涯", "悬崖勒马", "如履薄冰"),
+    ("如履薄冰", "毫厘之间", "炎凉"),
+    ("闪电战", "神速立直", "电光石火"),
+    ("先发制人", "神速立直", "先声夺人"),
+    ("零点逃生", "悬崖勒马", "绝处逢生"),
+    ("悬赏猎人", "被炸仙人", "福祸相依"),
+    ("白手起家", "越挫越勇", "百折不挠"),
+    ("中庸之道", "毫厘之间", "执两用中"),
+    ("进退自如", "精打细算", "副露流", "魔术师"),
+    ("闪电战", "副露进攻", "副露流", "惊鸿"),
+    ("副露进攻", "副露防守", "进退自如"),
+    ("后发制人", "全自动放铳", "追立冒险家"),
     ("一击必杀", "高打点", "重炮手"),
     ("高效打点", "局收支重视", "精打细算"),
     ("略胜一筹", "棋差一着", "毫厘之间"),
@@ -406,12 +433,33 @@ TAG_COMBINATIONS = (
     ("争一流", "避四流", "上分糕手"),
     ("无声快刀", "静默猎手", "暗杀星"),
 )
-COMBINATION_TAGS = frozenset(
-    ("进退自如", "追立冒险家", *(combined for _, _, combined in TAG_COMBINATIONS))
-)
+COMBINATION_TAGS = frozenset(("进退自如", "追立冒险家", *(rule[-1] for rule in TAG_COMBINATIONS)))
 
 
-def select_tags(existing, extra, maximum, *, easter_egg=None):
+def combine_tags(styles, rules):
+    """Resolve shared and nested evidence before choosing visible labels."""
+    positions = {tag: index for index, tag in enumerate(styles)}
+    while True:
+        previous = positions.copy()
+        for *children, combined in rules:
+            if combined in positions:
+                for child in children:
+                    positions[child] = min(
+                        positions.get(child, positions[combined]), positions[combined]
+                    )
+            if all(child in positions for child in children):
+                position = min(positions[child] for child in children)
+                positions[combined] = min(positions.get(combined, position), position)
+        if previous == positions:
+            break
+    hidden = {child for *children, combined in rules if combined in positions for child in children}
+    return sorted(
+        (tag for tag in positions if tag not in hidden),
+        key=lambda tag: (positions[tag], tag),
+    )
+
+
+def select_tags(existing, extra, maximum, *, easter_egg=None, combination_rules=TAG_COMBINATIONS):
     """Reserve display slots for achievements, luck and an optional easter egg."""
     if maximum <= 0:
         return []
@@ -423,11 +471,12 @@ def select_tags(existing, extra, maximum, *, easter_egg=None):
     styles = list(
         dict.fromkeys(existing[:base_priority] + extra["style"] + existing[base_priority:])
     )
-    for left, right, combined in TAG_COMBINATIONS:
-        if left in styles and right in styles:
-            first, second = sorted((styles.index(left), styles.index(right)))
-            styles[first] = combined
-            del styles[second]
+    luck_evidence = set(extra["luck"])
+    resolved = combine_tags(styles + list(dict.fromkeys(extra["luck"])), combination_rules)
+    consumed_luck = set(luck) - set(resolved)
+    luck = [tag for tag in luck if tag not in consumed_luck]
+    slots += len(consumed_luck)
+    styles = [tag for tag in resolved if tag not in luck_evidence]
     # A group reserves one slot even when several distinct yaku are visible.
     visible_achievements = [
         name for group in achievements for name in ((group,) if isinstance(group, str) else group)

@@ -17,6 +17,7 @@ from datetime import datetime
 from decimal import Decimal
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from random import uniform
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -33,6 +34,10 @@ WATCH_ID = re.compile(r"^[0-9a-f]{8}$", re.I)
 
 class TenhouError(Exception):
     pass
+
+
+class TenhouBackoff(TenhouError):
+    """The shared upstream circuit is cooling down or allowing one probe."""
 
 
 def watch_url(watch_id):
@@ -71,6 +76,24 @@ def grade_name(grade):
     if grade < 20:
         return "初段" if grade == 10 else "一二三四五六七八九十"[grade - 10] + "段"
     return "天鳳位" if grade == 20 else f"天鳳位+{grade - 20}"
+
+
+def format_start_players(game):
+    if int(game["info"]["playerlevel"]) >= 3:
+        return " / ".join(player["name"] for player in game["players"])
+    lines = []
+    for player in game["players"]:
+        try:
+            grade = grade_name(player["grade"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            grade = "段位未知"
+        try:
+            rate = float(player["rate"])
+            rating = f"R{rate:.0f}" if math.isfinite(rate) else "R未知"
+        except (KeyError, TypeError, ValueError, OverflowError):
+            rating = "R未知"
+        lines.append(f"{grade}{rating}  {player['name']}")
+    return "\n".join(lines)
 
 
 def history_rows(data, name):
@@ -143,12 +166,14 @@ def format_result(row):
         lines.append(f"{row[f'player{i}']}({score})")
     match = LOG_ID.search(row.get("url") or "")
     if match:
-        lines.extend(("", f"https://tenhou.net/4/?log={match[1]}"))
+        lines.append(f"https://tenhou.net/4/?log={match[1]}")
     return "\n".join(lines)
 
 
 class TenhouClient:
-    def __init__(self, transport=None, *, history_directory=None):
+    def __init__(
+        self, transport=None, *, history_directory=None, request_interval=1.8, history_ttl=90
+    ):
         # This Mac's default IPv6 route intermittently stalls at TLS. Pin the
         # public-data client to IPv4 without changing OS/VPN settings.
         self.http = httpx.AsyncClient(
@@ -158,7 +183,16 @@ class TenhouClient:
         )
         self.lock = asyncio.Lock()
         self.next_request = 0.0
-        self.cache = QueryCache(capacity=64)
+        self.cache = QueryCache(capacity=128)
+        self.request_interval = max(1.8, request_interval)
+        self.history_ttl = max(90, history_ttl)
+        self._clock = time.monotonic
+        self._retry_until = 0.0
+        self._backoff_attempts = 0
+        self._backoff_base = 0
+        self._backoff_reason = ""
+        self._probe_inflight = False
+        self._failed_queries = {}
         self.history_directory = Path(history_directory) if history_directory else None
         self._history_snapshots = {}
         self._history_tasks = {}
@@ -174,7 +208,61 @@ class TenhouClient:
         await self.cache.close()
         await self.http.aclose()
 
+    @property
+    def cooldown_seconds(self):
+        return max(0, math.ceil(self._retry_until - self._clock()))
+
+    @property
+    def source_status(self):
+        if self.cooldown_seconds:
+            return f"{self._backoff_reason}；冷却中，约{self.cooldown_seconds}秒后尝试恢复。"
+        if self._probe_inflight:
+            return "水表网正在探测恢复，暂缓其他请求。"
+        return ""
+
+    def _pause(self, reason, *, base=300, minimum=0):
+        # Several requests may already be in flight. Count the incident once.
+        if self.cooldown_seconds:
+            return
+        self._backoff_attempts = min(self._backoff_attempts + 1, 6)
+        self._backoff_base = max(self._backoff_base, base)
+        delay = max(minimum, min(1800, self._backoff_base * 2 ** (self._backoff_attempts - 1)))
+        self._retry_until = self._clock() + delay
+        self._backoff_reason = reason
+        logger.warning("%s；全局暂停水表网请求 %.0f 秒", reason, delay)
+
+    def _check_gate(self):
+        if self.cooldown_seconds or self._probe_inflight:
+            raise TenhouBackoff(self.source_status)
+
+    async def _pace(self):
+        async with self.lock:
+            self._check_gate()
+            await asyncio.sleep(max(0, self.next_request - self._clock()))
+            # A response can announce a challenge while another request waits.
+            self._check_gate()
+            probe = self._backoff_attempts > 0
+            self._probe_inflight = probe
+            self.next_request = self._clock() + self.request_interval + uniform(0, 0.3)
+            return probe
+
+    @staticmethod
+    def _retry_after(response):
+        value = response.headers.get("retry-after", "")
+        try:
+            seconds = float(value)
+        except ValueError:
+            try:
+                seconds = parsedate_to_datetime(value).timestamp() - time.time()
+            except (ValueError, TypeError, OverflowError):
+                return 0
+        return min(86400, max(0, seconds)) if math.isfinite(seconds) else 0
+
     async def _get(self, path, params=None, ttl=60, budget=60):
+        if path == "/api/listuser.php" and params and int(params.get("start", 1)) > 1:
+            # Round backwards only: share overlapping incremental queries without
+            # excluding any delayed records from the requested time range.
+            params = {**params, "start": str(max(1, int(params["start"]) // 300 * 300))}
         key = (path, tuple(sorted((params or {}).items())))
 
         disk_expiry = [None]
@@ -193,7 +281,21 @@ class TenhouClient:
                         return cached["data"]
                 except (OSError, ValueError, KeyError, TypeError):
                     pass
-            data = await self._fetch(path, params, budget)
+            failure = self._failed_queries.get(key)
+            if failure and failure[0] > self._clock():
+                raise TenhouError(failure[1])
+            self._failed_queries.pop(key, None)
+            try:
+                data = await self._fetch(path, params, budget)
+            except TenhouBackoff:
+                raise
+            except TenhouError as exc:
+                # An individual record may still be generating; do not keep
+                # reissuing the same failed query via commands or other groups.
+                self._failed_queries[key] = (self._clock() + 60, str(exc))
+                while len(self._failed_queries) > 128:
+                    self._failed_queries.pop(next(iter(self._failed_queries)))
+                raise
             if stored and isinstance(data, dict):
 
                 def save():
@@ -218,10 +320,12 @@ class TenhouClient:
         return result
 
     async def _fetch(self, path, params, budget):
+        self._check_gate()
         bootstrap = (
             path == "/api/listuser.php" and (params or {}).get("start") == "1" and budget > 60
         )
         async with self.history_requests if bootstrap else self.requests:
+            probe = False
             try:
                 hosts = (
                     self.preferred_host,
@@ -230,10 +334,7 @@ class TenhouClient:
                     else "https://www.nodocchi.moe",
                 )
                 for attempt in range(2):
-                    # Pace request starts, rather than serializing entire slow responses.
-                    async with self.lock:
-                        await asyncio.sleep(max(0, self.next_request - time.monotonic()))
-                        self.next_request = time.monotonic() + 1.1
+                    probe = await self._pace()
                     try:
                         host = hosts[attempt]
                         async with asyncio.timeout(budget):
@@ -242,50 +343,106 @@ class TenhouClient:
                                 params=params,
                                 timeout=httpx.Timeout(budget, connect=min(20, budget)),
                             )
+                        if response.headers.get("cf-mitigated") == "challenge":
+                            self._pause(
+                                "水表网要求访问验证，实时资料暂不可用",
+                                minimum=self._retry_after(response),
+                            )
+                            raise TenhouBackoff(self.source_status)
+                        retry_after = self._retry_after(response)
+                        if response.status_code in {403, 429} or (
+                            response.status_code >= 500 and retry_after
+                        ):
+                            self._pause(
+                                f"水表网暂不可用（HTTP {response.status_code}）",
+                                base=300 if response.status_code in {403, 429} else 60,
+                                minimum=retry_after,
+                            )
+                            raise TenhouBackoff(self.source_status)
+                        response.raise_for_status()
                         break
-                    except (httpx.TransportError, TimeoutError):
-                        if attempt:
+                    except httpx.HTTPStatusError as exc:
+                        if probe or attempt or exc.response.status_code not in {500, 502, 503, 504}:
                             raise
-                        await asyncio.sleep(1.1)
-                response.raise_for_status()
+                    except (httpx.TransportError, TimeoutError):
+                        if probe or attempt:
+                            raise
                 data = response.json()
+                self.preferred_host = host
+                if probe and not self.cooldown_seconds:
+                    self._backoff_attempts = 0
+                    self._backoff_base = 0
+                    self._retry_until = 0
+                    self._backoff_reason = ""
+                    logger.info("水表网探测成功，恢复正常限速轮询")
                 if isinstance(data, dict) and data.get("retry"):
                     raise TenhouError("nodocchi 正在生成数据，请稍后重试。")
                 if path == "/s/wg.js" and response.headers.get("last-modified"):
                     modified = parsedate_to_datetime(response.headers["last-modified"]).timestamp()
                     if time.time() - modified > 600:
                         raise TenhouError("观战快照已超过10分钟未更新，暂停开局播报。")
-                self.preferred_host = host
                 return data
+            except httpx.HTTPStatusError as exc:
+                message = f"天凤数据暂时不可用（HTTP {exc.response.status_code}）。"
+                if exc.response.status_code >= 500:
+                    self._pause(message, base=60, minimum=self._retry_after(exc.response))
+                    raise TenhouBackoff(self.source_status) from exc
+                raise TenhouError(message) from exc
             except (httpx.HTTPError, ValueError, TimeoutError) as exc:
-                raise TenhouError(f"天凤数据暂时不可用（{type(exc).__name__}）。") from exc
+                message = f"天凤数据暂时不可用（{type(exc).__name__}）。"
+                self._pause(message, base=60)
+                raise TenhouBackoff(self.source_status) from exc
+            finally:
+                if probe:
+                    self._probe_inflight = False
 
     async def history(self, name, start=0, budget=60):
         name = validate_name(name)
         if not start:
             return history_rows(await self._profile_history(name), name)
         data = await self._get(
-            "/api/listuser.php", {"name": name, "start": str(int(start))}, ttl=60, budget=budget
+            "/api/listuser.php",
+            {"name": name, "start": str(int(start))},
+            ttl=self.history_ttl,
+            budget=budget,
         )
         return history_rows(data, name)
 
     async def user_history(self, name):
         """Validated public history plus nodocchi's rate and PT-reset metadata."""
         name = validate_name(name)
-        data = await self._profile_history(name)
+        try:
+            data = await self._profile_history(name)
+        except TenhouError:
+            backup = await self._profile_backup(name)
+            if backup is None:
+                raise
+            saved, stamp = backup
+            data = {**saved, "_cached_at": stamp}
         history_rows(data, name)
         return data
 
     async def phoenix_stats(self, name, mode=4, length=None):
         name = validate_name(name)
-        data = await self._get("/api/phoenix_status.php", {"all": "1", "username": name}, ttl=900)
+        cached_at = None
+        try:
+            data = await self._get(
+                "/api/phoenix_status.php", {"all": "1", "username": name}, ttl=60
+            )
+        except TenhouError:
+            backup = await self._profile_backup(name, stats=True)
+            if backup is None:
+                raise
+            data, cached_at = backup
         if not isinstance(data, dict):
             raise TenhouError("天凤凤凰桌统计格式异常。")
         key = f"s{mode}" + (f"_{length}" if length else "")
         stats = data.get(key)
         if stats is not None and not isinstance(stats, dict):
             raise TenhouError("天凤凤凰桌统计格式异常。")
-        return stats or {}
+        return (
+            {**stats, "_cached_at": cached_at} if stats and cached_at is not None else stats or {}
+        )
 
     async def phoenix_percentiles(self, stats, mode=4, length=None):
         data = await self._get("/s/phoenix_scale_all.js", ttl=86400)
@@ -295,21 +452,47 @@ class TenhouClient:
         return phoenix_percentiles(stats, data.get(key))
 
     async def promotion(self, row, name):
+        result = await self.finished_progress(row, name)
+        return result.get("promotion") if result else None
+
+    async def finished_progress(self, row, name):
+        """Reconstruct rank and PT immediately after this recorded match."""
         identity = record_id(row)
         stamp = float(row["starttime"])
         mode = int(row["playernum"])
 
         async def load():
             data = await self._profile_history(name)
-            if not any(record_id(r) == identity for r in history_rows(data, name)):
+            if not any(
+                record_id(r) == identity and int(r["playernum"]) == mode
+                for r in history_rows(data, name)
+            ):
                 return None
             result = await asyncio.to_thread(
-                rank_history, data, name, mode, stamp + 0.5, include_promotions=True
+                rank_history,
+                data,
+                name,
+                mode,
+                stamp + 0.5,
+                include_promotions=True,
+                include_records=True,
             )
             promotion = next((p for p in result["promotions"] if p["starttime"] == stamp), None)
-            return grade_name(promotion["grade"]) if promotion else None
+            result["promotion"] = grade_name(promotion["grade"]) if promotion else None
+            indexed = [
+                r
+                for r in result.pop("current_records", [])
+                if int(r["playernum"]) == mode and r.get("sctype") in {"b", "c"}
+            ]
+            if any(
+                r.get("seq") is not None and not 1 <= int(r["seq"]) <= i
+                for i, r in enumerate(indexed, 1)
+            ):
+                result.pop("pt", None)
+                result.pop("pt_max", None)
+            return result
 
-        return await self.cache.get(("promotion", name, identity), 3600, load)
+        return await self.cache.get(("finished_progress", name, identity), 3600, load)
 
     def _snapshot_path(self, name):
         digest = hashlib.sha256(name.encode()).hexdigest()
@@ -351,7 +534,7 @@ class TenhouClient:
                 delta = await self._get(
                     "/api/listuser.php",
                     {"name": name, "start": str(max(1, int(latest) - 7200))},
-                    ttl=60,
+                    ttl=self.history_ttl,
                     budget=30,
                 )
                 history_rows(delta, name)
@@ -418,6 +601,37 @@ class TenhouClient:
                 raise TenhouError("天凤观战记录字段异常。") from exc
         return data
 
+    async def _profile_backup(self, name, *, stats=False):
+        """Read a bounded last-known-good profile without replacing live caches."""
+        if not self.history_directory:
+            return None
+        if stats:
+            key = ("/api/phoenix_status.php", tuple(sorted({"all": "1", "username": name}.items())))
+            digest = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()
+            path = self.history_directory / "public" / (digest + ".json")
+        else:
+            path = self._snapshot_path(name)
+
+        def read():
+            try:
+                saved = json.loads(path.read_text())
+                stamp = saved["fetched_at"] if stats else path.stat().st_mtime
+                values = saved["data"] if stats else saved
+                if not isinstance(values, dict) or not 0 <= time.time() - stamp <= 86400:
+                    return None
+                if stats:
+                    if not any(
+                        isinstance(values.get(k), dict) for k in ("s3", "s4", "s4_1", "s4_2")
+                    ):
+                        return None
+                else:
+                    history_rows(values, name)
+                return values, stamp
+            except (OSError, ValueError, KeyError, TypeError, TenhouError):
+                return None
+
+        return await asyncio.to_thread(read)
+
     async def profile(self, player, game, destination=None):
         """Incremental enrichment: partial results survive the card's deadline."""
         name = player["name"]
@@ -434,9 +648,15 @@ class TenhouClient:
 
         async def stats():
             try:
-                data = await self._get(
-                    "/api/phoenix_status.php", {"all": "1", "username": name}, ttl=900
-                )
+                try:
+                    data = await self._get(
+                        "/api/phoenix_status.php", {"all": "1", "username": name}, ttl=60
+                    )
+                except TenhouError:
+                    backup = await self._profile_backup(name, stats=True)
+                    if backup is None:
+                        raise
+                    data, profile["stats_cached_at"] = backup
                 values = data.get(scope) if isinstance(data, dict) else None
                 profile["stats"] = values if isinstance(values, dict) else {}
                 profile["stats_loaded"] = True
@@ -444,12 +664,18 @@ class TenhouClient:
                 population = scale.get(scope, {}) if isinstance(scale, dict) else {}
                 profile["percentiles"] = phoenix_percentiles(profile["stats"], population)
                 profile["scale_loaded"] = True
-            except (TenhouError, ValueError, TypeError):
-                pass
+            except (TenhouError, ValueError, TypeError) as exc:
+                logger.warning("Tenhou start statistics unavailable: player=%s error=%s", name, exc)
 
         async def history():
             try:
-                data = await self._profile_history(name)
+                try:
+                    data = await self._profile_history(name)
+                except TenhouError:
+                    backup = await self._profile_backup(name)
+                    if backup is None:
+                        raise
+                    data, profile["history_cached_at"] = backup
                 rows = history_rows(data, name)
                 profile["history_loaded"] = True
                 before = [
@@ -464,8 +690,8 @@ class TenhouClient:
                         data, name, mode, float(game["info"]["starttime"]), player.get("grade")
                     )
                 )
-            except (TenhouError, ValueError, TypeError, KeyError, IndexError):
-                pass
+            except (TenhouError, ValueError, TypeError, KeyError, IndexError) as exc:
+                logger.warning("Tenhou start history unavailable: player=%s error=%s", name, exc)
 
         await asyncio.gather(stats(), history())
         profile["tags"] = describe(profile)

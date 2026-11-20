@@ -3,6 +3,7 @@ import base64
 import logging
 import re
 from collections import deque
+from datetime import UTC, datetime
 from random import choice, randint
 
 import httpx
@@ -49,7 +50,9 @@ from .ms_ids import friend_to_account
 from .ms_options import parse_options
 from .ms_rank import group_ranking
 from .ms_style import style_lines
+from .ms_tag_help import tag_help
 from .ms_watch import WatchCommands
+from .naga import NagaClient, NagaError, command_url
 from .online_pool import OnlinePool
 from .paipuya import PaipuyaClient, PaipuyaError
 from .paipuya_auth import PaipuyaAccess
@@ -85,11 +88,12 @@ DEFAULT_GROUP_REACTION_GROUPS = {
     "alsz": frozenset({REPEAT_STOP_GROUP}),
     "fssz": frozenset({REPEAT_STOP_GROUP}),
 }
+DAILY_IDENTITY_RARE = "普普林"
+DAILY_IDENTITY_Y024_VARIANT = "y024:024型"
 DAILY_IDENTITY_REPLIES = {
-    "落黑": "今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！",
-    "落白": "今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！",
     "Fars": "今天你是Fars，一只无忧无虑的小猪。",
     "y024": "今天你是y024，去打一个Rating 99的谱吧。",
+    DAILY_IDENTITY_Y024_VARIANT: "今天你是y024，你的024型成功战胜了一口五个布丁的对碰",
     "阿落": "今天你是阿落，你去上学了。",
     "井棋风": "今天你是井棋风，好厉害。",
     "胖丁": "今天你是胖丁，呃我才是胖丁。",
@@ -98,6 +102,36 @@ DAILY_IDENTITY_REPLIES = {
     "梦幻情怀": "今天你是梦幻情怀，副露率不得低于40%。",
     "诺夜": "今天你是诺夜，去参与四象战并获得冠军。",
     "有木加奈": "今天你是有木加奈，去找到一个开子并给角田写举报信。",
+    "流觞": "今天你是流觞，带领复旦夺得冠军吧。",
+    "前锋之花": "今天你是前锋之花，带领北邮夺得冠军吧。",
+    "小桃": "今天你是小桃，去和小猪发四互顶。",
+    "九纹龙史进": "今天你是九紋龍史進，去打10场凤南。",
+    "七色花": "今天你是七色花，可以把所有群u变成可爱小猪好。",
+    "正确的每一打": "今天你是正确的每一打，去贴吧发10个帖子。",
+    "猫粮": "今天你是猫粮，可能会被群u痛骂，也可能会获得供品。",
+    "角田": "今天你是角田，掌握微波炉之力。",
+    "夜空": "今天你是夜空，去夜观天象今天升凤的国人。",
+    "花子": "今天你是花子，掌管弓张学园麻酱部。",
+    "MasterSun": "今天你是MasterSun，带领上海交通大学夺冠吧。",
+    "轻轻的飘": "今天你是轻轻的飘，在推特指点一下欧吉桑。",
+    "bipsd": "今天你是bipsd，铳率不得高于10%。",
+    "main": "今天你是main，帮正确的每一打讲个谱。",
+    "Kyron1": "今天你是Kyron1，晚上参加中国本部最高位战不要迟到。",
+    "云迪娅": "今天你是云迪娅，均rating不得低于y024。",
+    "CSU日麻小糕手": "今天你是CSU日麻小糕手，在5个群聊中发送赫赫挑衅群u。",
+    DAILY_IDENTITY_RARE: "恭喜你抽中了0.5%概率的普普林，请立刻登录ププリン帮普普林+90pt。",
+}
+DAILY_IDENTITY_COMMON = tuple(
+    name
+    for name in DAILY_IDENTITY_REPLIES
+    if name not in {DAILY_IDENTITY_RARE, DAILY_IDENTITY_Y024_VARIANT}
+)
+DAILY_IDENTITY_REQUIRED_MEMBERS = {"井棋风": "971468073", "阿落": "2889236442"}
+DAILY_IDENTITY_EXCLUSIONS = {1007527639: frozenset({"小桃"})}
+# Stored keys preserve the wording variant and existing assignments.
+DAILY_IDENTITY_DISPLAY_NAMES = {
+    "九纹龙史进": "九紋龍史進",
+    DAILY_IDENTITY_Y024_VARIANT: "y024",
 }
 logger = logging.getLogger(__name__)
 repeat_stops: dict[int, RepeatStop] = {}
@@ -122,17 +156,42 @@ async def handle_group_reactions(bot: Bot, event: Event):
     original = event.original_message
     is_plain_text = all(segment.type == "text" for segment in original)
     text = original.extract_plain_text() if is_plain_text else ""
-    if text.strip() == "/idreset":
+    identity_reset = re.fullmatch(
+        r"/?idreset(?:(?:\s*\+\s*|\s+)([0-9]+)(?:(?:\s*\+\s*|\s+)(.+))?)?",
+        text.strip(),
+    )
+    if identity_reset:
         if str(event.user_id) not in superusers:
             return
         replied_message_ids.append(key)
         try:
-            count = await db.reset_daily_identities()
-            await bot.send_group_msg(
-                group_id=event.group_id, message=Message(f"已重置今日身份（{count} 人）。")
-            )
+            target, requested_identity = identity_reset.groups()
+            if requested_identity:
+                identity = requested_identity.strip()
+                if identity == "九紋龍史進":
+                    identity = "九纹龙史进"
+                if identity not in DAILY_IDENTITY_REPLIES:
+                    reply = "找不到这个身份，请输入身份名称。"
+                elif identity in DAILY_IDENTITY_EXCLUSIONS.get(event.group_id, ()):
+                    reply = "该身份在本群不可用。"
+                else:
+                    await db.assign_daily_identity(target, identity, overwrite=True)
+                    display_name = DAILY_IDENTITY_DISPLAY_NAMES.get(identity, identity)
+                    reply = f"已将 {target} 的今日身份设为 {display_name}。"
+            elif target:
+                count = await db.reset_daily_identities((target,))
+                reply = f"已重置 {target} 的今日身份。" if count else f"{target} 今天还没有身份。"
+            else:
+                try:
+                    members = await group_member_ids(bot, event.group_id)
+                except GroupMembersError as exc:
+                    reply = str(exc)
+                else:
+                    count = await db.reset_daily_identities(members)
+                    reply = f"已重置本群成员的今日身份（{count} 人）。"
+            await bot.send_group_msg(group_id=event.group_id, message=Message(reply))
         except Exception:
-            logger.exception("重置今日身份失败")
+            logger.exception("修改今日身份失败")
         return
     toggle = re.fullmatch(r"(jqf|fudu|alsz|fssz) (on|off)", text)
     if toggle:
@@ -211,13 +270,35 @@ async def handle_group_reactions(bot: Bot, event: Event):
                 reply = "泥才是小🐷"
             message = Message(MessageSegment.text(reply))
         elif feature is None:
-            candidate = choice(tuple(DAILY_IDENTITY_REPLIES))
+            excluded = DAILY_IDENTITY_EXCLUSIONS.get(event.group_id, frozenset())
+            if randint(1, 200) == 1:
+                candidate = DAILY_IDENTITY_RARE
+            else:
+                try:
+                    members = await group_member_ids(bot, event.group_id)
+                except GroupMembersError:
+                    members = ()
+                pool = tuple(
+                    name
+                    for name in DAILY_IDENTITY_COMMON
+                    if name not in excluded
+                    and (
+                        name not in DAILY_IDENTITY_REQUIRED_MEMBERS
+                        or DAILY_IDENTITY_REQUIRED_MEMBERS[name] in members
+                    )
+                )
+                candidate = choice(pool)
+                if candidate == "y024" and randint(1, 2) == 1:
+                    candidate = DAILY_IDENTITY_Y024_VARIANT
             identity, assigned = await db.assign_daily_identity(
-                str(event.user_id), candidate, valid_identities=DAILY_IDENTITY_REPLIES
+                str(event.user_id),
+                candidate,
+                valid_identities=DAILY_IDENTITY_REPLIES.keys() - excluded,
             )
-            reply = (
-                DAILY_IDENTITY_REPLIES[identity] if assigned else f"忘记今天你是{identity}了吗？"
-            )
+            reply = DAILY_IDENTITY_REPLIES[identity]
+            if not assigned:
+                display_name = DAILY_IDENTITY_DISPLAY_NAMES.get(identity, identity)
+                reply = f"忘记今天你是{display_name}了吗？\n{reply}"
             message = Message(MessageSegment.text(reply))
         await bot.send_group_msg(group_id=event.group_id, message=message)
     except Exception:
@@ -244,11 +325,17 @@ async def restrict_group_commands(event: Event, state: T_State):
         monitor_owner=settings.monitor_owner,
         vip2=vip2,
         capsolver_users=batches.capsolver_users,
+        monitor_delegates=settings.monitor_delegates,
     )
 
 
+naga_client = NagaClient()
 db = Database(settings.database, legacy_follow_group=settings.legacy_follow_group)
-tenhou_client = TenhouClient(history_directory=settings.database.parent / "tenhou-history")
+tenhou_client = TenhouClient(
+    history_directory=settings.database.parent / "tenhou-history",
+    request_interval=settings.tenhou_request_interval,
+    history_ttl=settings.tenhou_monitor_interval,
+)
 tenhou_store = TenhouStore(db)
 tenhou_monitor = TenhouMonitor(tenhou_store, tenhou_client)
 
@@ -279,6 +366,7 @@ install_tenhou_commands(
     tenhou_rounds,
     manager=settings.monitor_owner,
     superusers=superusers,
+    delegates=settings.monitor_delegates,
 )
 paipuya_access = PaipuyaAccess(
     settings.paipuya_api_token,
@@ -304,6 +392,7 @@ majsoul_browser = BrowserSpectatorClient(
     enabled=settings.spectator_browser and not settings.live_api_url,
     records_enabled=settings.majsoul_record_browser,
     record_idle_seconds=settings.majsoul_record_idle_seconds,
+    record_keepalive=settings.majsoul_record_keepalive,
 )
 majsoul_rounds = MajsoulLiveWatch(db, majsoul_browser, send_observation_message)
 live = (
@@ -445,7 +534,8 @@ if settings.majsoul_record_browser and settings.majsoul_record_keepalive:
 
     @scheduler.scheduled_job(
         "interval",
-        minutes=30,
+        minutes=20,
+        next_run_time=datetime.now(UTC),
         id="pupulin_majsoul_record_keepalive",
         max_instances=1,
         coalesce=True,
@@ -511,6 +601,7 @@ watch_commands = WatchCommands(
     manager=settings.monitor_owner,
     clients={4: paipuya, 3: sanma},
     notify_starts=settings.monitor_notify_start,
+    delegates=settings.monitor_delegates,
 )
 auto_review_tasks: set[asyncio.Task] = set()
 install_commands(
@@ -530,6 +621,7 @@ review_cmd = on_command("mortal", aliases={"msreview"}, priority=10, block=True)
 capsolver_cmd = on_command("exmortal", priority=10, block=True, force_whitespace=True)
 capsolver_access_lock = asyncio.Lock()
 help_cmd = on_command("help", aliases={"mshelp"}, priority=20, block=True)
+tag_help_cmd = on_command("taghelp", priority=10, block=True, force_whitespace=True)
 stats_cmd = on_command("msstats", priority=10, block=True)
 rank_cmd = on_command("msrank", priority=10, block=True)
 vip2_cmd = on_command("vip2", priority=10, block=True, force_whitespace=True)
@@ -552,6 +644,7 @@ async def startup() -> None:
 
 @get_driver().on_shutdown
 async def shutdown() -> None:
+    await naga_client.close()
     await batches.close()
     for task in auto_review_tasks:
         task.cancel()
@@ -561,6 +654,7 @@ async def shutdown() -> None:
     await sanma.close()
     await majsoul_rounds.close()
     await tenhou_rounds.close()
+    await tenhou_monitor.close()
     await tenhou_client.close()
     await majsoul_browser.close()
 
@@ -966,6 +1060,11 @@ async def help_handler(bot: Bot, event: MessageEvent):
     await help_cmd.finish()
 
 
+@tag_help_cmd.handle()
+async def tag_help_handler(args=CommandArg()):
+    await tag_help_cmd.finish(tag_help(args.extract_plain_text()))
+
+
 async def send_auto_review(bot: Bot, group_id: int, nickname: str, game, account_id: int):
     if str(group_id) in settings.monitor_only_groups:
         return
@@ -1153,6 +1252,21 @@ async def health(event: GroupMessageEvent):
     await health_cmd.finish(await runtime_status(event.group_id))
 
 
+naga_cmd = on_command("naga", priority=10, block=True, force_whitespace=True)
+
+
+@naga_cmd.handle()
+async def naga_report_handler(args=CommandArg()):
+    try:
+        picture = await naga_client.picture(command_url(args.extract_plain_text()))
+    except NagaError as exc:
+        await naga_cmd.finish(str(exc))
+        return
+    await naga_cmd.finish(
+        MessageSegment.image("base64://" + base64.b64encode(picture).decode("ascii"))
+    )
+
+
 table_review_cmd = on_command("mstable", priority=10, block=True)
 extable_cmd = on_command("extable", priority=10, block=True, force_whitespace=True)
 
@@ -1179,9 +1293,15 @@ async def capsolver_table(event: GroupMessageEvent, args=CommandArg()):
         await extable_cmd.finish(str(exc))
 
 
-@scheduler.scheduled_job("interval", seconds=60, id="pupulin_tenhou_monitor", max_instances=1)
+@scheduler.scheduled_job(
+    "interval",
+    seconds=settings.tenhou_monitor_interval,
+    id="pupulin_tenhou_monitor",
+    max_instances=1,
+    coalesce=True,
+)
 async def poll_tenhou() -> None:
     bot = next(iter(get_driver().bots.values()), None)
     if not isinstance(bot, Bot):
         return
-    await tenhou_monitor.poll(send_observation_message)
+    await tenhou_monitor.poll(send_observation_message, wait=False)

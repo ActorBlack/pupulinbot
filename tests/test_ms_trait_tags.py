@@ -228,8 +228,8 @@ def test_selection_limits_total_ten_luck_three_and_achievements_three():
         "国士受害者",
         "门清流",
         "好调中",
-        "先发制人",
-        "神速立直",
+        "先声夺人",
+        "好形爱好者",
         "里宝超人",
         "一发超人",
         "生于罗马",
@@ -261,6 +261,38 @@ def test_assassin_combination_uses_the_newly_formed_hunter_before_the_tag_limit(
     assert select_tags(["默听流", "深度门清"], extra, 1) == ["静默猎手"]
 
 
+def test_shared_and_nested_combinations_are_independent_of_recipe_order():
+    from itertools import permutations
+
+    from pupulinbot.ms_trait_tags import combine_tags
+
+    rules = (
+        ("闪电战", "神速立直", "电光石火"),
+        ("闪电战", "副露进攻", "疾风连击"),
+        ("先发制人", "神速立直", "先声夺人"),
+    )
+    inputs = ["闪电战", "神速立直", "副露进攻", "先发制人"]
+    expected = combine_tags(inputs, rules)
+    assert set(expected) == {"电光石火", "疾风连击", "先声夺人"}
+    for order in permutations(rules):
+        assert combine_tags(inputs, order) == expected
+    assert combine_tags(["闪电战"], rules) == ["闪电战"]
+
+
+def test_preformed_combinations_preserve_evidence_for_later_combinations():
+    from pupulinbot.ms_trait_tags import TAG_COMBINATIONS, combine_tags
+
+    rules = (
+        *TAG_COMBINATIONS,
+        ("白手起家", "高效打点", "逆势成锋"),
+        ("静默猎手", "高打点", "无声重炮"),
+    )
+    assert set(combine_tags(["精打细算", "白手起家"], rules)) == {"精打细算", "逆势成锋"}
+    result = combine_tags(["暗杀星", "重炮手"], rules)
+    assert set(result) == {"暗杀星", "重炮手", "无声重炮"}
+    assert combine_tags(["暗杀星", "重炮手"], tuple(reversed(rules))) == result
+
+
 def test_new_traits_flow_into_ms_output_and_keep_existing_sample_and_mode_guards():
     rows = records(count=300)
     raw = sample_raw()
@@ -289,3 +321,51 @@ def test_throne_fallback_builds_new_traits_only_from_saint3(monkeypatch):
     assert reference["traits"]["里宝率"]["mean"] == pytest.approx(
         jade["levels"]["10503"]["extended"]["里宝率"]
     )
+
+
+def test_jinghong_uses_open_attack_evidence_inside_preformed_combination():
+    from pupulinbot.ms_style_rarity import rarity_tier
+    from pupulinbot.ms_tag_help import tag_help
+
+    extra = {"style": ["进退自如"], "luck": [], "achievement": []}
+    assert set(select_tags(["闪电战", "副露流"], extra, 2)) == {"惊鸿", "进退自如"}
+    assert select_tags(["闪电战"], {"style": ["副露流"], "luck": [], "achievement": []}, 2) == [
+        "闪电战",
+        "副露流",
+    ]
+    assert rarity_tier("惊鸿") == "easter_egg"
+    assert all(tag in tag_help("惊鸿") for tag in ("闪电战", "副露进攻", "副露流"))
+
+
+def test_jinghong_requires_all_three_tags_before_display_limit():
+    from itertools import combinations, permutations
+
+    from pupulinbot.ms_trait_tags import TAG_COMBINATIONS, combine_tags
+
+    required = ("闪电战", "副露进攻", "副露流")
+    extra = {"style": [], "luck": [], "achievement": []}
+    for length in (1, 2):
+        for subset in combinations(required, length):
+            assert "惊鸿" not in select_tags(list(subset), extra, 10)
+    for order in permutations(required):
+        assert select_tags(list(order), extra, 1) == ["惊鸿"]
+    assert combine_tags(list(required), tuple(reversed(TAG_COMBINATIONS))) == ["惊鸿"]
+
+
+def test_magician_requires_three_ingredients_and_keeps_rainbow_style():
+    from itertools import combinations, permutations
+
+    from pupulinbot.ms_style_rarity import rarity_tier
+    from pupulinbot.ms_trait_tags import TAG_COMBINATIONS, combine_tags
+
+    required = ("进退自如", "精打细算", "副露流")
+    extra = {"style": [], "luck": [], "achievement": []}
+    for length in (1, 2):
+        for subset in combinations(required, length):
+            assert "魔术师" not in select_tags(list(subset), extra, 10)
+    for order in permutations(required):
+        assert select_tags(list(order), extra, 1) == ["魔术师"]
+    expanded = ["副露进攻", "副露防守", "高效打点", "局收支重视", "副露流"]
+    assert combine_tags(expanded, TAG_COMBINATIONS) == ["魔术师"]
+    assert combine_tags(expanded, tuple(reversed(TAG_COMBINATIONS))) == ["魔术师"]
+    assert rarity_tier("魔术师") == "easter_egg"

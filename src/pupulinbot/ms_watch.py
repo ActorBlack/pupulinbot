@@ -1,15 +1,17 @@
 """One Mahjong Soul monitoring list per group, managed by the configured owner."""
 
 from .models import Player
+from .monitor_permissions import delegated_monitor
 from .ms_options import parse_options
 
 
 class WatchCommands:
-    def __init__(self, db, live, *, manager=None, clients=None, notify_starts=True):
+    def __init__(self, db, live, *, manager=None, clients=None, notify_starts=True, delegates=None):
         self.db, self.live = db, live
         self.manager = str(manager) if manager else None
         self.clients = clients or {}
         self.notify_starts = notify_starts
+        self.delegates = delegates or {}
 
     def boundary(self):
         if not self.notify_starts:
@@ -50,8 +52,8 @@ class WatchCommands:
                 label + "：" + ("、".join(r["nickname"] for r in rows if r["mode"] == mode) or "空")
                 for mode, label in ((4, "四麻"), (3, "三麻"))
             )
-        if not self.manager or str(user_id) != self.manager:
-            raise ValueError("仅 Bot 负责人可修改监控名单。")
+        if str(user_id) != self.manager and not delegated_monitor(group, user_id, self.delegates):
+            raise ValueError("仅 Bot 负责人或本群授权成员可修改监控名单。")
         if not options.player:
             raise ValueError("用法：mswatch on <昵称> / off <昵称>；清空用 off all")
         rows = await self.db.follows("group", group, options.mode, group_id=group)

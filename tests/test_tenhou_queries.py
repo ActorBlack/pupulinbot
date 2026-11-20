@@ -65,6 +65,54 @@ def client(name="applePie"):
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [
+        ("th", "applePie"),
+        ("th4", "applePie -i"),
+        ("thlife", "applePie"),
+        ("thlast", "applePie -l 2"),
+        ("thstyle", "applePie -r 凤南"),
+    ],
+)
+async def test_query_uses_bounded_cache_after_upstream_challenge(
+    store, tmp_path, command, arguments
+):
+    import hashlib
+    import time
+
+    real = TenhouClient(history_directory=tmp_path)
+    raw = history()
+    real._snapshot_path("applePie").write_text(json.dumps(raw))
+    key = ("/api/phoenix_status.php", (("all", "1"), ("username", "applePie")))
+    digest = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()
+    directory = tmp_path / "public"
+    directory.mkdir()
+    stats = json.loads((FIXTURES / "profile.json").read_text())["s4"]
+    stamp = time.time() - 100
+    (directory / (digest + ".json")).write_text(
+        json.dumps({"fetched_at": stamp, "data": {"s4_2": stats}})
+    )
+    real._get = AsyncMock(side_effect=TenhouError("水表网要求访问验证"))
+    try:
+        queries = TenhouQueries(store, real)
+        result = await queries.query(command, arguments, 42, 123)
+        if isinstance(result, bytes):
+            assert result.startswith(b"\x89PNG")
+        elif isinstance(result, list):
+            assert result and "资料缓存" in result[0]
+        else:
+            assert "资料缓存" in result and "applePie" in result
+        real._get.assert_awaited()
+        # A successful subsequent refresh must supersede the fallback immediately.
+        real._get = AsyncMock(return_value=raw)
+        refreshed = await real.user_history("applePie")
+        assert "_cached_at" not in refreshed
+    finally:
+        await real.close()
+
+
 def test_short_options_rooms_dates_zero_boundaries_and_quoted_names():
     opts = parse_tenhou_options('"Nick Name" -l 0 -r 凤凰东 mode=3 start=2026-11-01 end=2026-11-10')
     assert opts.name == "Nick Name" and opts.last == 500 and opts.mode == 3

@@ -61,10 +61,10 @@ def stats(count=100, **changes):
     [
         ("副露流", {"call_rate": 0.369}),
         ("门清流", {"call_rate": 0.268}),
-        ("高和高铳", {"win_rate": 0.235, "deal_in_rate": 0.149}),
+        ("狂战士", {"win_rate": 0.235, "deal_in_rate": 0.149}),
         ("稳健防守", {"win_rate": 0.21, "deal_in_rate": 0.108}),
         ("高打点", {"win_rate": 0.21, "raw": {"平均打点": 7100}}),
-        ("速攻流", {"win_rate": 0.235, "raw": {"平均打点": 6000, "和了巡数": 11.8}}),
+        ("闪电战", {"win_rate": 0.235, "raw": {"平均打点": 6000, "和了巡数": 11.8}}),
         ("立直流", {"riichi_rate": 0.217}),
         ("默听流", {"riichi_rate": 0.18, "raw": {"默听率": 0.177}}),
     ],
@@ -188,7 +188,7 @@ def test_priority_limit_preserves_calling_form_and_income_before_secondary_trait
     )
     tags = supplemental_tags(sample, records(ranks), 42)
     assert tags[:2] == ["副露流", "好调中"]
-    assert {"精打细算", "高和高铳", "高打点", "立直流", "火力全开"} <= set(tags)
+    assert {"精打细算", "狂战士", "高打点", "立直流", "火力全开"} <= set(tags)
     assert len(tags) <= 10
 
 
@@ -374,12 +374,12 @@ def test_reference_builder_rejects_fractional_exposure_and_inconsistent_ranks(fi
 def test_rate_sampling_guard_blocks_a_noisy_point_estimate_and_missing_hand_counts():
     rows = records()
     sample = stats(win_rate=0.26, deal_in_rate=0.149, raw={"_hand_count": 600})
-    assert "高和高铳" not in supplemental_tags(sample, rows, 42)
+    assert "狂战士" not in supplemental_tags(sample, rows, 42)
     sample.raw["_hand_count"] = 1200
-    assert "高和高铳" in supplemental_tags(sample, rows, 42)
+    assert "狂战士" in supplemental_tags(sample, rows, 42)
     for bad in (None, True, 599, 600.5, float("nan"), float("inf")):
         sample.raw["_hand_count"] = bad
-        assert "高和高铳" not in supplemental_tags(sample, rows, 42)
+        assert "狂战士" not in supplemental_tags(sample, rows, 42)
     sample = stats(call_rate=0.5, raw={"_hand_count": None, "count": 99999})
     assert "副露流" not in supplemental_tags(sample, rows, 42)
     assert wilson_interval(0.5, 100) == pytest.approx((0.40383, 0.59617), abs=0.00001)
@@ -390,10 +390,9 @@ def test_rate_sampling_guard_blocks_a_noisy_point_estimate_and_missing_hand_coun
 def test_high_win_high_deal_tag_requires_both_rates_to_clear_sampling_guard():
     rows = records()
     sample = stats(win_rate=0.235, deal_in_rate=0.17, raw={"_hand_count": 1200})
-    assert "高和高铳" not in supplemental_tags(sample, rows, 42)
-    sample.raw["_hand_count"] = 3600
-    assert "高和高铳" in supplemental_tags(sample, rows, 42)
     assert "狂战士" not in supplemental_tags(sample, rows, 42)
+    sample.raw["_hand_count"] = 3600
+    assert "狂战士" in supplemental_tags(sample, rows, 42)
 
 
 def test_state_needs_more_than_a_small_last_twenty_improvement():
@@ -417,3 +416,75 @@ async def test_api_retains_hand_count_separately_from_game_count(method):
         assert result.raw["_hand_count"] == 912
     finally:
         await client.close()
+
+
+@pytest.mark.parametrize(
+    "count,offset,expected", [(49, 350, False), (50, 349.99, False), (50, 350, True)]
+)
+def test_financial_combination_requires_stricter_sample_and_efficiency(count, offset, expected):
+    ref = reference_for("12")["traits"]["净打点效率"]["mean"]
+    sample = stats(
+        count,
+        win_rate=0.3,
+        deal_in_rate=0.1,
+        raw={"局收支": 200, "平均铳点": 5000, "平均打点": (ref + offset + 500) / 0.3},
+    )
+    tags = supplemental_tags(sample, records(count=count), 42, maximum=100)
+    assert ("精打细算" in tags) is expected
+    if not expected:
+        assert "高效打点" in tags and "局收支重视" in tags
+
+
+@pytest.mark.parametrize(
+    "count,offset,eligible",
+    [(49, 350, False), (50, 349.99, False), (50, 350, True)],
+)
+def test_magician_preserves_strict_financial_gate(count, offset, eligible):
+    ref = reference_for("12")
+    target = ref["traits"]["净打点效率"]["mean"] + offset
+    sample = stats(
+        count,
+        win_rate=0.3,
+        deal_in_rate=0.1,
+        call_rate=0.4,
+        raw={
+            "局收支": 200,
+            "平均铳点": 5000,
+            "平均打点": (target + 500) / 0.3,
+            "副露后和牌率": 0.55,
+            "副露后放铳率": 0.03,
+        },
+    )
+    tags = supplemental_tags(sample, records(count=count), 42, maximum=100)
+    assert ("魔术师" in tags) is eligible
+    if eligible:
+        assert not {"进退自如", "精打细算", "副露流"}.intersection(tags)
+    else:
+        assert {"进退自如", "副露流"}.issubset(tags)
+
+
+@pytest.mark.parametrize(
+    "count,negative,score,expected",
+    [
+        (99, 20, -100, False),
+        (100, 11, -100, False),
+        (100, 12, -100, True),
+        (100, 20, -100, True),
+        (200, 23, -100, False),
+        (200, 24, -100, True),
+        (201, 24, -100, False),
+        (201, 25, -100, True),
+        (100, 20, 0, False),
+    ],
+)
+def test_busted_tag_uses_selected_game_final_scores(count, negative, score, expected):
+    games = records(count=count)
+    for game in games[:negative]:
+        game.players[0]["score"] = score
+    sample = stats(count)
+    # Lifetime/profile negative rates cannot replace the selected game scores.
+    sample.negative_rate = 1.0
+    tags = supplemental_tags(sample, games, 42, maximum=100)
+    assert ("空中飞人" in tags) is expected
+    games[-1].players[0].pop("score")
+    assert "空中飞人" not in supplemental_tags(sample, games, 42, maximum=100)

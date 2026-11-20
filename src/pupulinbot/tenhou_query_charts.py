@@ -38,7 +38,7 @@ def render_activity(command, view, games, options):
     else:
         render_counts(c, view, stamps, yearly=options.year)
     c.text(42, 861, "水表网 nodocchi", 18, MUTED)
-    return c.png()
+    return c.png(view.get("cached_at"))
 
 
 def render_heat(c, view, stamps):
@@ -167,7 +167,7 @@ def render_sessions(view, games, gap):
     paint_plot(c, (54, 355, 991, 745), sequence)
     paint_plot(c, (1040, 355, 1544, 745), distribution)
     c.text(42, 791, "水表网 nodocchi", 18, MUTED)
-    return c.png()
+    return c.png(view.get("cached_at"))
 
 
 def render_comparison(view, games):
@@ -255,4 +255,4 @@ def render_comparison(view, games):
 
     paint_plot(c, (898, 358, 1547, 758), plot)
     c.text(42, 813, "水表网 nodocchi　PT 为公开历史推算", 18, MUTED)
-    return c.png()
+    return c.png(view.get("cached_at"))

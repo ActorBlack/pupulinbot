@@ -23,6 +23,7 @@ from ._batchmortal.metrics import parse_killerducky_bad_move_stats
 from .batch_limits import MAX_BATCH_COUNT
 from .capsolver import BROWSER, CAPSOLVER, PROVIDERS
 from .ms_ids import account_to_perspective
+from .online_worker import NON_HANCHAN_MESSAGE
 from .review import ReviewError, parse_review_link
 from .review_metadata import apply_report_result
 
@@ -64,6 +65,7 @@ STATUS_LABELS = {
     "waiting_human": "等待真人验证",
     "server_timeout": "分析服务任务超时",
     "captcha_rejected": "服务器拒绝验证，待重试",
+    "unsupported_game": "失败（非半庄牌谱）",
     "uncertain": "等待核对已提交场次",
     "retry_wait": "等待自动重试",
     "names_missing": "等待核验牌谱昵称",
@@ -449,6 +451,8 @@ class BatchReviews:
         if self.tasks:
             raise ReviewError("已有批量任务运行，请完成或暂停后再开始")
         job = self.load(job_id, group_id, owner)
+        if job["status"] == "unsupported_game":
+            raise ReviewError(NON_HANCHAN_MESSAGE)
         verification = job.get("verification", BROWSER)
         self.require_verification(verification, owner)
         if automatic and job["status"] != "retry_wait":
@@ -878,7 +882,7 @@ class BatchReviews:
                         status="waiting_human" if state == "waiting_human" else "failed",
                         error=message,
                     )
-                    if state in {"captcha_rejected", "server_timeout"}:
+                    if state in {"captcha_rejected", "server_timeout", "unsupported_game"}:
                         current["rows"][index]["online_submitted"] = False
                     if first:
                         if state in VERIFICATION_FAILURE_STATUSES or state == "capsolver_failed":
@@ -976,6 +980,8 @@ class BatchReviews:
             await self._stop_task(job_id)
             async with self.lock:
                 job = self.load(job_id, group_id, owner)
+                if job["status"] == "unsupported_game":
+                    return
                 job["status"] = "paused"
                 for field in ("next_retry_at", "phase", "message"):
                     job.pop(field, None)

@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlsplit
 
 PREFIX = "PUPULIN_ONLINE "
 TURNSTILE_TIMEOUT = 30
+NON_HANCHAN_MESSAGE = "Mortal 拒绝了这场牌谱：本局不是半庄（东南），请换用半庄牌谱。"
 
 
 def emit(**event):

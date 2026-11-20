@@ -116,6 +116,14 @@ async def test_tenhou_promotion_replay_is_tied_to_finished_game_and_ignores_late
     try:
         assert await client.promotion(row, "A") == "八段"
         assert await client.promotion(raw["list"][-1], "A") is None
+        progress = await client.finished_progress(row, "A")
+        expected = rank_history(raw, "A", case["mode"], float(row["starttime"]) + 0.5)
+        assert (progress["pt"], progress["pt_max"], progress["estimated_grade"]) == (
+            expected["pt"],
+            expected["pt_max"],
+            expected["estimated_grade"],
+        )
+        assert progress["promotion"] == "八段"
     finally:
         await client.close()
 
@@ -131,3 +139,30 @@ async def test_tenhou_result_includes_promotions_for_each_monitored_tablemate():
     assert "bipsd：欢迎新七段" in message
     assert "applePie：欢迎" not in message
     assert client.promotion.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_finish_lists_pt_for_each_watched_player_and_preserves_result_on_error():
+    row = json.loads((Path(__file__).parent / "fixtures/tenhou/result.json").read_text())
+    client = SimpleNamespace(
+        finished_progress=AsyncMock(
+            side_effect=[
+                {"estimated_grade": 16, "pt": 1234, "pt_max": 2800, "promotion": None},
+                {"estimated_grade": 17, "pt": 1600, "pt_max": 3200, "promotion": "八段"},
+            ]
+        )
+    )
+    monitor = TenhouMonitor(None, client)
+    message = await monitor.finish_message(row, ["bipsd", "applePie", "bipsd"])
+    assert "applePie：七段　推算 PT 1234 / 2800" in message
+    assert "bipsd：八段　推算 PT 1600 / 3200" in message
+    assert message.count("bipsd：欢迎新八段") == 1
+    assert client.finished_progress.await_count == 2
+    client.finished_progress.side_effect = RuntimeError("offline")
+    message = await monitor.finish_message(row, ["applePie", "bipsd"])
+    assert "applePie：PT 暂不可用" in message and "bipsd：PT 暂不可用" in message
+    assert "https://tenhou.net/4/?log=" in message
+    client.finished_progress.side_effect = None
+    client.finished_progress.return_value = {"estimated_grade": 20}
+    message = await monitor.finish_message(row, "applePie")
+    assert "applePie：天鳳位" in message and "推算 PT" not in message

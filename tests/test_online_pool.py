@@ -12,6 +12,8 @@ from pupulinbot.batchmortal_worker import atomic_json, browser_options
 from pupulinbot.models import Player
 from pupulinbot.online_pool import OnlinePool, SubmissionGate
 from pupulinbot.online_review import OnlinePaused, OnlineReviews
+from pupulinbot.online_worker import NON_HANCHAN_MESSAGE
+from pupulinbot.review import ReviewError
 from pupulinbot.review_cache import ReviewCache
 
 REPORT = "https://mjai.ekyu.moe/killerducky/?data=/report/abcdef0123456789.json"
@@ -611,6 +613,71 @@ async def test_verification_deadline_stops_unresponsive_chrome_before_permit(tmp
     terminate.assert_awaited_once()
     stdin.write.assert_called_once()
     on_submitted.assert_not_awaited()
+
+
+async def test_non_hanchan_job_notifies_once_and_frees_queue(tmp_path, monkeypatch):
+    pool = OnlinePool(tmp_path / "chrome")
+    batches = manager(tmp_path / "jobs", pool, count=2)
+    notify = batches.notify = AsyncMock()
+    job = await batches.create(2, "g", "u", Player(42, "player"))
+    other = await batches.create_links(
+        ["https://tenhou.net/4/?log=2026110806gm-00a9-0000-f946a576"],
+        "g",
+        "u",
+        resolve_names=False,
+    )
+
+    async def reject():
+        atomic_json(
+            pool.worker.profile / "submission-journal.json",
+            {"key": f"{job['id']}:0", "state": "rejected", "reason": "non_hanchan"},
+        )
+        return (
+            b"PUPULIN_ONLINE "
+            + json.dumps({"status": "unsupported_game", "message": NON_HANCHAN_MESSAGE}).encode()
+        )
+
+    events = iter(
+        [
+            b'PUPULIN_ONLINE {"status":"submitted"}\n',
+            None,
+            b'PUPULIN_ONLINE {"status":"submitted"}\n',
+            b"PUPULIN_ONLINE " + json.dumps({"status": "done", "url": REPORT}).encode(),
+        ]
+    )
+    stdin = SimpleNamespace(write=Mock(), drain=AsyncMock())
+
+    async def readline():
+        return next(events) or await reject()
+
+    pool.worker.process = SimpleNamespace(
+        returncode=None, stdin=stdin, stdout=SimpleNamespace(readline=readline)
+    )
+    fetch = AsyncMock(return_value=native_report())
+    monkeypatch.setattr(pool.worker, "_fetch", fetch)
+    batches.start(job["id"], "g", "u")
+    await asyncio.wait_for(batches.tasks[job["id"]], 1)
+    saved = batches.load(job["id"], "g", "u")
+    assert saved["status"] == "unsupported_game"
+    assert saved["message"] == NON_HANCHAN_MESSAGE
+    assert "next_retry_at" not in saved
+    assert saved["rows"][0]["online_submitted"] is False
+    assert [row["status"] for row in saved["rows"]] == ["failed", "pending"]
+    assert pool.worker.active_submitted_key is None and pool.pending_key is None
+    notify.assert_awaited_once()
+    fetch.assert_not_awaited()
+    await batches.retry_due()
+    with pytest.raises(ReviewError, match="不是半庄"):
+        batches.start(job["id"], "g", "u")
+
+    batches.start(other["id"], "g", "u")
+    await asyncio.wait_for(batches.tasks[other["id"]], 1)
+    finished = batches.load(other["id"], "g", "u")
+    assert finished["rows"][0]["status"] == "done"
+    assert [json.loads(call.args[0])["key"] for call in stdin.write.call_args_list] == [
+        f"{job['id']}:0",
+        f"{other['id']}:0",
+    ]
 
 
 @pytest.mark.asyncio

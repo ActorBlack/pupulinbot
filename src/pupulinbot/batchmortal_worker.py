@@ -20,7 +20,13 @@ from .capsolver import (
     CapSolverError,
     solve_review_form,
 )
-from .online_worker import TURNSTILE_TIMEOUT, emit, progress_report_url, trusted_result
+from .online_worker import (
+    NON_HANCHAN_MESSAGE,
+    TURNSTILE_TIMEOUT,
+    emit,
+    progress_report_url,
+    trusted_result,
+)
 from .review_metadata import report_game_result
 
 
@@ -134,11 +140,28 @@ class VerificationRejected(RuntimeError):
     pass
 
 
+class NonHanchanGame(RuntimeError):
+    pass
+
+
+def check_non_hanchan_rejection(state):
+    url = urlsplit(state.get("url", ""))
+    if (url.scheme, url.netloc, url.path.rstrip("/")) != ("https", "mjai.ekyu.moe", "/review"):
+        return
+    if re.match(
+        r"(?:[a-z0-9_@-]+:\s*)?not a hanchan game\b",
+        state.get("page_text", "").strip(),
+        re.IGNORECASE,
+    ):
+        raise NonHanchanGame(NON_HANCHAN_MESSAGE)
+
+
 def wait_for_submission_departure(read_state, log_prefix, timeout):
     """An accepted progress page is distinct from a still-unsubmitted form."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = read_state()
+        check_non_hanchan_rejection(state)
         url = state.get("url", "")
         text = state.get("page_text", "")
         if any(
@@ -328,6 +351,7 @@ class BrowserWorker:
                         )
                         return
                     state = self._read_review_state(sb)
+                    check_non_hanchan_rejection(state)
                     text = state.get("page_text", "")
                     if any(
                         marker in text
@@ -388,6 +412,12 @@ class BrowserWorker:
         atomic_json(self.journal_path, self.journal)
         emit(status="submitted")
 
+    def _reject_non_hanchan(self, key):
+        self.journal = {"key": key, "state": "rejected", "reason": "non_hanchan"}
+        atomic_json(self.journal_path, self.journal)
+        self.submitted = False
+        emit(status="unsupported_game", message=NON_HANCHAN_MESSAGE)
+
     def _done(self, url, artifacts=None):
         from .batch_review import report_metrics
 
@@ -443,6 +473,13 @@ class BrowserWorker:
         if self.journal.get("key") == key and self.journal.get("state") == "done":
             emit(status="done", url=self.journal["url"], report_file=self.journal["report_file"])
             return
+        if (
+            self.journal.get("key") == key
+            and self.journal.get("state") == "rejected"
+            and self.journal.get("reason") == "non_hanchan"
+        ):
+            emit(status="unsupported_game", message=NON_HANCHAN_MESSAGE)
+            return
         previously_submitted = request.get("submitted") or (
             self.journal.get("key") == key and self.journal.get("state") == "submitted"
         )
@@ -451,6 +488,8 @@ class BrowserWorker:
                 try:
                     self.automator._wait_for_result_or_error(self.sb, key, self.timeout)
                     self._done(self.sb.get_current_url())
+                except NonHanchanGame:
+                    self._reject_non_hanchan(key)
                 except Exception:
                     emit(status="uncertain", message="已提交场次尚未取得报告；不会自动重复提交")
             else:
@@ -486,6 +525,9 @@ class BrowserWorker:
             except SubmissionStopped:
                 emit(status="paused", message="批跑暂停，尚未提交本场")
                 return
+            except NonHanchanGame:
+                self._reject_non_hanchan(key)
+                return
             except Exception as exc:
                 logging.exception(
                     "Browser attempt failed: key=%s submitted=%s", key, self.submitted
@@ -499,6 +541,11 @@ class BrowserWorker:
                         state = self.automator._read_review_state(self.sb)
                     except Exception:
                         state = {}
+                    try:
+                        check_non_hanchan_rejection(state)
+                    except NonHanchanGame:
+                        self._reject_non_hanchan(key)
+                        return
                     # Only a visible explicit server rejection permits another submission.
                     page_text = state.get("page_text", "").strip()
                     if re.fullmatch(r"task timeout, been running for [0-9.]+s", page_text):

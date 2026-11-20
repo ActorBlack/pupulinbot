@@ -5,9 +5,19 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from itertools import zip_longest
 
 from .promotion import promotion_line
-from .tenhou import TenhouError, format_result, record_id, rule_name, validate_name, watch_url
+from .tenhou import (
+    TenhouError,
+    format_result,
+    format_start_players,
+    grade_name,
+    record_id,
+    rule_name,
+    validate_name,
+    watch_url,
+)
 from .tenhou_card import render_start
 
 log = logging.getLogger(__name__)
@@ -167,6 +177,11 @@ class TenhouMonitor:
         self.live_error = None
         self.live_checked = None
         self._cards = {}
+        self._jobs = {}
+        self._histories = {}
+        self._card_jobs = {}
+        self._closed = False
+        self._history_slots = asyncio.Semaphore(4)
 
     async def deliver(self, group, identity, event, message, send):
         subscriber = f"tenhou:group:{group}"
@@ -184,7 +199,7 @@ class TenhouMonitor:
         try:
             if callable(message):
                 message = await message()
-            await asyncio.wait_for(send(group, message), timeout=115)
+            await asyncio.wait_for(send(group, message), timeout=270)
         except BaseException:
             await self.store.db.release_event(uuid, subscriber, event)
             raise
@@ -193,15 +208,47 @@ class TenhouMonitor:
 
     async def finish_message(self, row, names):
         names = [names] if isinstance(names, str) else sorted(set(names))
-        lines = await asyncio.gather(
-            *(promotion_line(self.client, row, name, budget_seconds=10) for name in names)
-        )
-        congratulations = [
-            f"{name}：{line}" for name, line in zip(names, lines, strict=True) if line
-        ]
-        return "\n".join([format_result(row), *congratulations])
+
+        async def progress(name):
+            if not hasattr(self.client, "finished_progress"):
+                line = await promotion_line(self.client, row, name, budget_seconds=10)
+                return f"{name}：{line}" if line else ""
+            try:
+                async with asyncio.timeout(10):
+                    result = await self.client.finished_progress(row, name)
+                if not result:
+                    return f"{name}：PT 暂不可用"
+                grade = result.get("estimated_grade")
+                level = grade_name(grade) if grade is not None else ""
+                pt, cap = result.get("pt"), result.get("pt_max")
+                if pt is not None and cap is not None:
+                    line = f"{name}：{level}　推算 PT {pt:g} / {cap:g}"
+                elif grade is not None and grade >= 20:
+                    line = f"{name}：{level}"
+                else:
+                    line = f"{name}：PT 暂不可用"
+                if result.get("promotion"):
+                    line += "\n" + f"{name}：欢迎新{result['promotion']}"
+                return line
+            except Exception:
+                return f"{name}：PT 暂不可用"
+
+        lines = await asyncio.gather(*(progress(name) for name in names))
+        return "\n".join([format_result(row), *(line for line in lines if line)])
 
     async def start_message(self, game):
+        identity = (game["info"]["id"], game["info"]["starttime"])
+        task = self._card_jobs.get(identity)
+        if task is None or task.done():
+            task = asyncio.create_task(self._build_start_message(game))
+            self._card_jobs[identity] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if task.done() and self._card_jobs.get(identity) is task:
+                del self._card_jobs[identity]
+
+    async def _build_start_message(self, game):
         identity = (game["info"]["id"], game["info"]["starttime"])
         cached = self._cards.get(identity)
         if cached and time.monotonic() < cached[1]:
@@ -210,14 +257,21 @@ class TenhouMonitor:
 
         async def enrich(i, player):
             await self.client.profile(player, game, destination=profiles[i])
+            if not all(
+                profiles[i].get(key) for key in ("stats_loaded", "scale_loaded", "history_loaded")
+            ):
+                await asyncio.sleep(3)
+                await self.client.profile(player, game, destination=profiles[i])
 
         try:
-            async with asyncio.timeout(180):
+            async with asyncio.timeout(360):
                 await asyncio.gather(*(enrich(i, p) for i, p in enumerate(game["players"])))
         except TimeoutError:
-            pass
+            log.warning("Tenhou start card loading exceeded 360 seconds; keeping loaded fields")
         from .tenhou_profile import describe
 
+        if not any(p.get("stats_loaded") or p.get("history_loaded") for p in profiles):
+            raise TenhouError("观战资料暂不可用，保留任务等待重试。")
         for profile in profiles:
             profile["tags"] = describe(profile)
         picture = await asyncio.to_thread(render_start, game, profiles)
@@ -231,13 +285,89 @@ class TenhouMonitor:
         self.last_profiles = profiles
         return picture
 
-    async def poll(self, send):
+    def _launch(self, key, factory):
+        """Coalesce ticks while this group's previous delivery is still running."""
+        task = self._jobs.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(factory(), name=f"thwatch:{key}")
+            self._jobs[key] = task
+            task.add_done_callback(self._job_done)
+        return task
+
+    @staticmethod
+    def _job_done(task):
+        if not task.cancelled() and (error := task.exception()) is not None:
+            log.error("Tenhou monitoring worker failed", exc_info=error)
+
+    async def drain(self):
+        """Wait for workers, including start deliveries spawned by live discovery."""
+        while tasks := [task for task in self._jobs.values() if not task.done()]:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def close(self):
+        self._closed = True
+        tasks = {*self._jobs.values(), *self._histories.values(), *self._card_jobs.values()}
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._jobs.clear()
+        self._histories.clear()
+        self._card_jobs.clear()
+
+    async def poll(self, send, *, wait=True):
+        if self._closed or getattr(self.client, "cooldown_seconds", 0):
+            return
         subs = await self.store.subscriptions()
         if not subs:
             return
-        if hasattr(self.client, "warm_history"):
-            for name in {sub["name"] for sub in subs}:
-                self.client.warm_history(name)
+        self._jobs = {key: task for key, task in self._jobs.items() if not task.done()}
+        self._histories = {key: task for key, task in self._histories.items() if not task.done()}
+        groups = {}
+        starts = {}
+        for sub in subs:
+            groups.setdefault(sub["group_id"], []).append(sub)
+            name = sub["name"]
+            starts[name] = min(starts.get(name, sub["cursor"]), sub["cursor"])
+        histories = {}
+        ready = {
+            group: members
+            for group, members in groups.items()
+            if ("finish", group) not in self._jobs
+        }
+        # Interleave groups before entering the bounded network queue. A large
+        # watch list must not enqueue all its players ahead of smaller groups.
+        for turn in zip_longest(*ready.values()):
+            for sub in turn:
+                if sub is None:
+                    continue
+                name = sub["name"]
+                key = (name, starts[name])
+                task = self._histories.get(key)
+                if task is None:
+                    task = asyncio.create_task(self._history(name, starts[name]))
+                    self._histories[key] = task
+                histories[name] = task
+        for group, members in ready.items():
+            self._launch(
+                ("finish", group),
+                lambda members=members: self._finishes(members, histories, send),
+            )
+        # Live discovery and expensive start cards never hold up result delivery.
+        self._launch(("live",), lambda: self._starts(subs, send))
+        if wait:
+            await self.drain()
+
+    async def _history(self, name, start):
+        try:
+            async with self._history_slots:
+                async with asyncio.timeout(75):
+                    return await self.client.history(name, start)
+        except TimeoutError:
+            return TenhouError("战绩查询超时，下轮继续尝试。")
+        except Exception as exc:
+            return exc
+
+    async def _starts(self, subs, send):
         try:
             live = await self.client.live()
             self.live_error = None
@@ -250,7 +380,17 @@ class TenhouMonitor:
             self.live_error = str(exc)
             log.warning("Tenhou spectator source: %s", exc)
         self.live_checked = time.time()
+        groups = {}
         for pending in await self.store.pending():
+            groups.setdefault(pending["group_id"], []).append(pending)
+        for group, rows in groups.items():
+            self._launch(
+                ("start", group),
+                lambda rows=rows: self._start_group(rows, subs, send),
+            )
+
+    async def _start_group(self, pending_rows, subs, send):
+        for pending in pending_rows:
             game = json.loads(pending["payload"])
             names = {p["name"] for p in game["players"]}
             active = any(s["group_id"] == pending["group_id"] and s["name"] in names for s in subs)
@@ -270,7 +410,7 @@ class TenhouMonitor:
                     text = (
                         rule_name(info)
                         + " 对局开始\n"
-                        + " / ".join(p["name"] for p in game["players"])
+                        + format_start_players(game)
                         + f"\n观战：{watch_url(watch_id)}\n逐局播报：thlive {watch_id}"
                     )
                     notice = TenhouStartNotice(picture, text) if picture is not None else text
@@ -280,17 +420,13 @@ class TenhouMonitor:
                     log.exception("Tenhou start delivery failed; retained for retry")
                     continue
             await self.store.dequeue(pending["group_id"], pending["game_id"])
-        # One history request per player, regardless of number of subscribed groups.
-        histories = {}
+
+    async def _finishes(self, subs, histories, send):
+        # Each group owns its cursor and retry path; another group's slow send
+        # cannot hold the next scheduled tick or consume this group's worker.
         for sub in subs:
             name = sub["name"]
-            if name not in histories:
-                start = min(s["cursor"] for s in subs if s["name"] == name)
-                try:
-                    histories[name] = await self.client.history(name, start)
-                except TenhouError as exc:
-                    histories[name] = exc
-            rows = histories[name]
+            rows = await asyncio.shield(histories[name])
             if isinstance(rows, Exception):
                 await self.store.health(sub, str(rows))
                 continue

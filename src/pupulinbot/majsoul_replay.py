@@ -13,7 +13,7 @@ import httpx
 from websockets.asyncio.client import connect
 from websockets.exceptions import WebSocketException
 
-from .majsoul_rounds import replay_yakuman_victims, replay_yakuman_wins
+from .majsoul_rounds import replay_max_wind, replay_yakuman_victims, replay_yakuman_wins
 from .spectator_wire import decode_list, fields, first
 
 LOBBY_URL = "https://game.maj-soul.com/1/"
@@ -40,32 +40,63 @@ LOBBY_RENDER_LIMIT = """
 (() => {
     if (location.href !== 'https://game.maj-soul.com/1/' ||
         !window.unityInstance) return false;
+    // Authentication has completed. Keep Unity logic and networking running,
+    // but stop expensive software drawing in this service-only lobby.
+    if (!window.__pupulinLobbyDrawCalls) {
+        window.__pupulinLobbyDrawCalls = [];
+        for (const type of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
+            if (!type) continue;
+            for (const key of ['clear', 'drawArrays', 'drawElements', 'drawArraysInstanced',
+                               'drawElementsInstanced', 'drawRangeElements', 'blitFramebuffer']) {
+                const descriptor = Object.getOwnPropertyDescriptor(type.prototype, key);
+                if (!descriptor || typeof descriptor.value !== 'function' ||
+                    !descriptor.writable) continue;
+                window.__pupulinLobbyDrawCalls.push([type.prototype, key, descriptor]);
+                Object.defineProperty(type.prototype, key, {...descriptor, value: function() {}});
+            }
+        }
+    }
     if (window.__pupulinLobbyFrames) return true;
     const request = window.requestAnimationFrame.bind(window);
     const cancel = window.cancelAnimationFrame.bind(window);
     const pending = new Map();
-    let lastFrame = -Infinity;
+    let nextId = 0, frame = 0, timer = null, lastFrame = -Infinity;
+    const schedule = () => {
+        if (!pending.size || frame || timer !== null) return;
+        const delay = Math.max(0, lastFrame + 1000 - performance.now());
+        if (delay === 0) frame = request(render);
+        else timer = setTimeout(() => {
+            timer = null;
+            if (pending.size) frame = request(render);
+        }, delay);
+    };
+    const render = timestamp => {
+        frame = 0;
+        lastFrame = timestamp;
+        const batch = [...pending.entries()];
+        for (const [handle, callback] of batch) {
+            if (pending.delete(handle)) callback(timestamp);
+        }
+        schedule();
+    };
     window.requestAnimationFrame = function(callback) {
         if (typeof callback !== 'function') return request(callback);
-        let handle;
-        const tick = timestamp => {
-            if (!pending.has(handle)) return;
-            if (timestamp === lastFrame || timestamp - lastFrame >= 1000) {
-                lastFrame = timestamp;
-                pending.delete(handle);
-                callback(timestamp);
-            } else {
-                pending.set(handle, request(tick));
-            }
-        };
-        handle = request(tick);
-        pending.set(handle, handle);
+        const handle = ++nextId;
+        pending.set(handle, callback);
+        schedule();
         return handle;
     };
     window.cancelAnimationFrame = function(handle) {
-        const active = pending.get(handle);
-        pending.delete(handle);
-        cancel(active === undefined ? handle : active);
+        if (!pending.delete(handle)) {
+            cancel(handle);
+            return;
+        }
+        if (!pending.size) {
+            if (frame) cancel(frame);
+            frame = 0;
+            if (timer !== null) clearTimeout(timer);
+            timer = null;
+        }
     };
     window.__pupulinLobbyFrames = true;
     return true;
@@ -75,6 +106,10 @@ LOBBY_RENDER_LIMIT = """
 
 class ReplayBrowserUnavailable(RuntimeError):
     pass
+
+
+class MajsoulReplayRateLimited(RuntimeError):
+    """The official server rejected a replay read with error 540."""
 
 
 class MajsoulConnectionLost(RuntimeError):
@@ -332,6 +367,7 @@ class LobbyKeepalive:
         self.target = None
         self.watch = None
         self.last_received = 0.0
+        self.replay_retry_at = 0.0
 
     async def open(self, browser, origin):
         target = await official_tab(browser, renew=not self._online())
@@ -353,6 +389,8 @@ class LobbyKeepalive:
                 return await request_observation(page, uuid)
 
     async def replay_wire(self, uuid):
+        if time.monotonic() < self.replay_retry_at:
+            raise MajsoulReplayRateLimited
         async with chrome_browser(self.profile) as (browser, origin):
             target = await self.open(browser, origin)
             if target is None:
@@ -360,7 +398,13 @@ class LobbyKeepalive:
             async with chrome_page(origin, target) as page:
                 result = await request_lobby(page, "record", uuid)
         if "wire" in result:
-            return bytes(result["wire"])
+            wire = bytes(result["wire"])
+            response = fields(first(fields(wire), 2, b""))
+            if first(fields(first(response, 1, b"")), 1) == 540:
+                # Client backoff; the server does not specify its reset time.
+                self.replay_retry_at = time.monotonic() + 600
+                raise MajsoulReplayRateLimited
+            return wire
         return None
 
     async def yakuman_victims(self, game):
@@ -377,6 +421,18 @@ class LobbyKeepalive:
     async def yakuman_wins(self, game, account_id):
         wire = await self.replay_wire(game.uuid)
         return await replay_wins(wire, game, account_id) if wire else None
+
+    async def max_wind(self, game):
+        wire = await self.replay_wire(game.uuid)
+        if not wire:
+            return None
+        details = await replay_details(
+            wire,
+            game.uuid,
+            game.started_at.timestamp(),
+            {p["account_id"] for p in game.players},
+        )
+        return replay_max_wind(details[0]) if details is not None else None
 
     async def public_heads(self, filters):
         async with chrome_browser(self.profile) as (browser, origin):

@@ -21,9 +21,12 @@ class Settings(BaseSettings):
     cap_timeout: float = Field(default=60, gt=0, le=180)
     hashwx_library: str | None = None
     monitor_interval: int = Field(default=60, ge=20)
+    tenhou_monitor_interval: int = Field(default=90, ge=90, le=600)
+    tenhou_request_interval: float = Field(default=1.8, ge=1.8, le=10)
     monitor_notify_start: bool = True
     monitor_owner: str | None = None
     monitor_only_groups: set[str] = Field(default_factory=set)
+    monitor_delegates: dict[str, set[str]] = Field(default_factory=dict)
     monitor_catchup_limit: int = Field(default=200, ge=20, le=2000)
     monitor_page_size: int = Field(default=20, ge=1, le=200)
     mortal_api_url: str | None = None

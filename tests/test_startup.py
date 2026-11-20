@@ -7,6 +7,7 @@ import sys
 
 def test_plugin_loads_with_real_dependencies(tmp_path):
     script = """
+import asyncio
 import nonebot
 from nonebot.adapters.onebot.v11 import Adapter
 nonebot.init(driver='~fastapi')
@@ -15,8 +16,8 @@ assert nonebot.load_plugin('pupulinbot.plugin') is not None
 from nonebot.rule import TrieRule
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from types import SimpleNamespace
-for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats', 'ms4',
-                'msstyle', 'msstyle3', 'msrank', 'msstatus', 'mswatch', 'mslive',
+for command in ('help', 'mshelp', 'taghelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstats',
+                'ms4', 'msstyle', 'msstyle3', 'msrank', 'msstatus', 'mswatch', 'mslive',
                 'mslife', 'msreview', 'mstable', 'exmortal', 'extable',
                 'thwatch', 'thstatus', 'thlast',
                 'thbind', 'thunbind', 'th2', 'th', 'th4', 'th3', 'thlife', 'thdetail', 'thrank',
@@ -26,6 +27,16 @@ for command in ('help', 'mshelp', 'msbind', 'msunbind', 'ms2', 'mslast', 'msstat
     assert TrieRule.get_value(None, event, {})['command'] is not None, command
 event = SimpleNamespace(get_type=lambda: 'message', get_message=lambda: Message('/msmonitor on'))
 assert TrieRule.get_value(None, event, {})['command'] != ('msmonitor',)
+
+async def verify_tag_help():
+    from unittest.mock import AsyncMock, patch
+    from pupulinbot.plugin import tag_help_cmd, tag_help_handler
+
+    with patch.object(tag_help_cmd, 'finish', new_callable=AsyncMock) as finish:
+        await tag_help_handler(Message(' ＃进退自如 '))
+        finish.assert_awaited_once_with('【进退自如】\\n副露后既较容易和牌，又较少放铳。')
+
+asyncio.run(verify_tag_help())
 # Longer commands must retain their own argument, rather than be captured by ms.
 event = SimpleNamespace(get_type=lambda: 'message',
                         get_message=lambda: Message('/mslife 普普林 last=100'))
@@ -40,7 +51,6 @@ parsed = TrieRule.get_value(None, event, {})
 assert parsed['command'] == ('ms2',)
 assert parsed['command_arg'][0].data['qq'] == '234567'
 assert parsed['command_arg'].extract_plain_text().strip() == '。不记仇的钟会'
-import asyncio
 from nonebot.message import _apply_run_preprocessors
 from nonebot.adapters.onebot.v11 import GroupMessageEvent
 from pupulinbot.plugin import (
@@ -499,7 +509,7 @@ async def verify_tenhou_picture_delivery():
         })
     fake = FakeBot()
     caption = '四特南喰赤 · 对局开始\\nlingran / [CQ:at,qq=all]'
-    async def poll(send):
+    async def poll(send, *, wait=True):
         await send('1131357545', TenhouStartNotice(b'png', caption))
     with patch('pupulinbot.plugin.Bot', FakeBot), \
          patch('pupulinbot.plugin.get_driver', return_value=SimpleNamespace(bots={'1':fake})), \
@@ -510,7 +520,7 @@ async def verify_tenhou_picture_delivery():
     assert isinstance(payload['message'], list)
     assert [s['type'] for s in payload['message']] == ['text', 'image']
     assert payload['message'][0]['data']['text'] == caption + '\\n'
-    fake.get_msg.assert_awaited_once_with(message_id=123, _timeout=4)
+    fake.get_msg.assert_awaited_once_with(message_id=123, _timeout=5)
 asyncio.run(verify_tenhou_picture_delivery())
 
 async def verify_group_phrase_replacement():
@@ -759,6 +769,10 @@ async def verify_daily_identity():
     send = AsyncMock()
     now = datetime(2026, 11, 12, 15, 59, 59, tzinfo=UTC)
     command = MessageSegment.at(100) + ' 今日身份'
+    roster = AsyncMock(side_effect=lambda *, group_id, no_cache: [
+        {'user_id': qq}
+        for qq in ([42, 49, 971468073, 2889236442] if group_id == 1131357545 else [42])
+    ])
 
     def event(message_id, message=command, *, user=42, group=1131357545):
         return GroupMessageEvent.model_construct(
@@ -770,9 +784,12 @@ async def verify_daily_identity():
     async def dispatch(update):
         assert await _apply_event_preprocessors(bot, update, {}, show_log=False)
 
-    candidates = ['落黑', 'y024', '落白', 'Fars', '落白', '井棋风']
+    candidates = ['Fars', '花子', '阿落', 'Fars', '阿落', '花子', '花子', 'y024', 'y024', '花子']
+    rolls = [2] * 5 + [1, 200, 2, 2, 1, 2, 2, 2]
     with patch.object(bot, 'send_group_msg', new=send), \\
+         patch.object(bot, 'get_group_member_list', new=roster), \\
          patch('pupulinbot.plugin.choice', side_effect=candidates) as choose, \\
+         patch('pupulinbot.plugin.randint', side_effect=rolls) as roll, \\
          patch('pupulinbot.db.datetime') as clock:
         clock.now.side_effect = lambda tz: now.astimezone(tz)
         for message_id, message in enumerate((
@@ -787,47 +804,143 @@ async def verify_daily_identity():
         await dispatch(event(66, user=100))
         send.assert_not_awaited()
         choose.assert_not_called()
+        roll.assert_not_called()
+        await db.assign_daily_identity('42', '落黑')
         await dispatch(event(67))
         await dispatch(event(67))
         reopened = Database(db.path)
         with patch('pupulinbot.plugin.db', reopened):
             await dispatch(event(68, group=706530575))
+            await db.assign_daily_identity('43', '落白')
             await dispatch(event(69, user=43))
             await db.assign_daily_identity('44', '路人')
             await dispatch(event(70, user=44))
             now = datetime(2026, 11, 12, 16, 0, tzinfo=UTC)
             await dispatch(event(71))
         results = await asyncio.gather(
-            db.assign_daily_identity('49', '落黑'),
-            reopened.assign_daily_identity('49', '落白'),
+            db.assign_daily_identity('49', 'Fars'),
+            reopened.assign_daily_identity('49', 'y024'),
         )
         assert results[0][0] == results[1][0]
         assert sum(assigned for _, assigned in results) == 1
+        await db.assign_daily_identity('51', '阿落')
         reset = Message('/idreset')
         await dispatch(event(72, reset, user=43))
         await dispatch(event(73, reset, user=285843647))
         await dispatch(event(73, reset, user=285843647))
         async with db.connect() as conn:
             async with conn.execute('SELECT qq_id FROM daily_identities ORDER BY qq_id') as rows:
-                assert [row['qq_id'] for row in await rows.fetchall()] == ['43', '44']
+                assert [row['qq_id'] for row in await rows.fetchall()] == ['43', '44', '51']
         await dispatch(event(74))
+        await dispatch(event(75))
+        await db.assign_daily_identity('50', '九纹龙史进')
+        await dispatch(event(76, user=50))
+        await dispatch(event(77, Message('/idreset 51'), user=43))
+        await dispatch(event(78, Message('/idreset 51'), user=285843647))
+        await dispatch(event(79, Message('/idreset 51'), user=285843647))
+        await dispatch(event(80, user=52))
+        await dispatch(event(81, user=53))
+        await dispatch(event(82, user=52))
 
-    identities = ('落黑', '落白', 'Fars', 'y024', '阿落', '井棋风', '胖丁', '星若明檀',
-                  '火龙果', '梦幻情怀', '诺夜', '有木加奈')
-    assert choose.call_args_list == [call(identities)] * 6
+    identities = ('Fars', 'y024', '阿落', '井棋风', '胖丁', '星若明檀',
+                  '火龙果', '梦幻情怀', '诺夜', '有木加奈', '流觞', '前锋之花', '小桃',
+                  '九纹龙史进', '七色花', '正确的每一打', '猫粮', '角田', '夜空', '花子',
+                  'MasterSun', '轻轻的飘', 'bipsd', 'main', 'Kyron1', '云迪娅', 'CSU日麻小糕手')
+    assert roll.call_args_list == [
+        *[call(1, 200)] * 8, call(1, 200), call(1, 2), call(1, 200), call(1, 2), call(1, 200),
+    ]
+    without_members = tuple(name for name in identities if name not in {'井棋风', '阿落'})
+    assert choose.call_args_list == [
+        call(identities), call(without_members), *[call(identities)] * 8
+    ]
     replies = [
         (item.kwargs['group_id'], str(item.kwargs['message'])) for item in send.await_args_list
     ]
     assert replies == [
-        (1131357545, '今天你是落黑，想办法诋毁阿落，击穿落白的保护吧！'),
-        (706530575, '忘记今天你是落黑了吗？'),
-        (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
         (1131357545, '今天你是Fars，一只无忧无虑的小猪。'),
-        (1131357545, '今天你是落白，想办法保护阿落，阻止落黑的诋毁吧！'),
-        (1131357545, '已重置今日身份（2 人）。'),
-        (1131357545, '今天你是井棋风，好厉害。'),
+        (706530575, '忘记今天你是Fars了吗？\\n今天你是Fars，一只无忧无虑的小猪。'),
+        (1131357545, '今天你是阿落，你去上学了。'),
+        (1131357545, '今天你是Fars，一只无忧无虑的小猪。'),
+        (1131357545, '今天你是阿落，你去上学了。'),
+        (1131357545, '已重置本群成员的今日身份（2 人）。'),
+        (1131357545, '恭喜你抽中了0.5%概率的普普林，请立刻登录ププリン帮普普林+90pt。'),
+        (1131357545, '忘记今天你是普普林了吗？\\n'
+                     '恭喜你抽中了0.5%概率的普普林，请立刻登录ププリン帮普普林+90pt。'),
+        (1131357545, '忘记今天你是九紋龍史進了吗？\\n今天你是九紋龍史進，去打10场凤南。'),
+        (1131357545, '已重置 51 的今日身份。'),
+        (1131357545, '51 今天还没有身份。'),
+        (1131357545, '今天你是y024，你的024型成功战胜了一口五个布丁的对碰'),
+        (1131357545, '今天你是y024，去打一个Rating 99的谱吧。'),
+        (1131357545, '忘记今天你是y024了吗？\\n'
+                     '今天你是y024，你的024型成功战胜了一口五个布丁的对碰'),
     ]
 asyncio.run(verify_daily_identity())
+
+async def verify_group_identity_exclusion():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+    command = MessageSegment.at(100) + ' 今日身份'
+    restricted = 1007527639
+
+    def choose(pool):
+        return '小桃' if '小桃' in pool else 'Fars'
+
+    async def dispatch(group, message_id, user):
+        event = GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=message_id,
+            group_id=group, user_id=user, self_id=100, original_message=command,
+            message=Message('今日身份'),
+        )
+        assert await _apply_event_preprocessors(bot, event, {}, show_log=False)
+        return str(send.await_args.kwargs['message'])
+
+    with patch.object(bot, 'send_group_msg', new=send), \\
+         patch.object(bot, 'get_group_member_list', new=AsyncMock(return_value=[])), \\
+         patch('pupulinbot.plugin.choice', side_effect=choose), \\
+         patch('pupulinbot.plugin.randint', return_value=2):
+        assert '今天你是小桃' in await dispatch(1131357545, 950, 61)
+        assert '小桃' not in await dispatch(restricted, 951, 61)
+        assert '今天你是Fars' in await dispatch(restricted, 952, 62)
+        assert '今天你是小桃' in await dispatch(1131357545, 953, 63)
+asyncio.run(verify_group_identity_exclusion())
+
+async def verify_manual_daily_identity():
+    from unittest.mock import AsyncMock, patch
+    from nonebot.adapters.onebot.v11 import Bot
+    from nonebot.message import _apply_event_preprocessors
+
+    bot = Bot(nonebot.get_adapter(Adapter), '100')
+    send = AsyncMock()
+
+    async def dispatch(ordinal, message, user=285843647, group=1131357545):
+        before = send.await_count
+        event = GroupMessageEvent.model_construct(
+            post_type='message', message_type='group', message_id=970 + ordinal,
+            group_id=group, user_id=user, self_id=100, original_message=message,
+            message=message,
+        )
+        assert await _apply_event_preprocessors(bot, event, {}, show_log=False)
+        if send.await_count > before:
+            return str(send.await_args.kwargs['message'])
+
+    with patch.object(bot, 'send_group_msg', new=send), \\
+         patch('pupulinbot.plugin.randint', return_value=1):
+        assert '设为 MasterSun' in await dispatch(1, Message('idreset 123450 MasterSun'))
+        assert await dispatch(2, Message('/idreset 123450 小桃'), user=42) is None
+        assert '找不到' in await dispatch(3, Message('/idreset 123450 没有此身份'))
+        assert '本群不可用' in await dispatch(4, Message('/idreset 123450 小桃'), group=1007527639)
+        identity, assigned = await db.assign_daily_identity('123450', '胖丁')
+        assert (identity, assigned) == ('MasterSun', False)
+        assert '设为 bipsd' in await dispatch(5, Message('/idreset+123450+bipsd'))
+        reply = await dispatch(6, MessageSegment.at(100) + ' 今日身份', user=123450)
+        assert '今天你是bipsd，铳率不得高于10%。' in reply
+        assert '已重置' in await dispatch(7, Message('/idreset 123450'))
+        assert await db.assign_daily_identity('123450', '胖丁') == ('胖丁', True)
+asyncio.run(verify_manual_daily_identity())
 
 from pupulinbot.help_menu import BATCH_ACTIONS
 assert 'report' in BATCH_ACTIONS and '报告' not in BATCH_ACTIONS

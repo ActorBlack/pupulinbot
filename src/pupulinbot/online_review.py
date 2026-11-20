@@ -198,7 +198,7 @@ class OnlineReviews:
                         self.last_submission = asyncio.get_running_loop().time()
                         await on_submitted()
                         continue
-                    if status in {"captcha_rejected", "server_timeout"}:
+                    if status in {"captcha_rejected", "server_timeout", "unsupported_game"}:
                         self.active_submitted_key = None
                     if status in VERIFICATION_FAILURE_STATUSES:
                         if request["submitted"] or self.active_submitted_key is not None:

@@ -276,3 +276,21 @@ async def test_original_tenhou_final_scores_supply_placement_independent_of_rati
     results = await asyncio.gather(*(resolver.seat_result({**row, "seat": i}) for i in range(4)))
     assert [r["rank"] for r in results] == [2, 1, 4, 3]
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_official_names_precede_paipuya_and_fallback_on_missing_head(monkeypatch):
+    browser = SimpleNamespace(record_head=AsyncMock(return_value={"official": True}))
+    resolver = RecordNames(majsoul_browser=browser)
+    resolver._paipuya_names = AsyncMock(return_value=["backup"] * 4)
+    resolver._remember_results = lambda *args: None
+    expected = [dict(name=f"player{i}", rank=i + 1) for i in range(4)]
+    monkeypatch.setattr(
+        "pupulinbot.record_names.majsoul_head_seats", lambda head, uuid: expected if head else []
+    )
+    log = SimpleNamespace(source="majsoul", game_id="uuid", url="url")
+    assert await resolver._majsoul(log) == [p["name"] for p in expected]
+    resolver._paipuya_names.assert_not_awaited()
+    browser.record_head.return_value = None
+    assert await resolver._majsoul(log) == ["backup"] * 4
+    resolver._paipuya_names.assert_awaited_once()

@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 import os
+import re
 import signal
 import sys
 import time
@@ -17,11 +18,14 @@ from websockets.exceptions import WebSocketException
 from .live import LiveGame, LiveServiceError
 from .majsoul_observe import decode_observation
 from .majsoul_replay import (
+    ORIGIN,
     LobbyKeepalive,
     MajsoulConnectionLost,
+    MajsoulReplayRateLimited,
     ReplayBrowserUnavailable,
     chrome_browser,
     chrome_page,
+    decode_record,
     fetch_replay_head,
     official_tab,
     request_observation,
@@ -84,7 +88,15 @@ def parse_head(head, *, now=None):
 
 
 class BrowserSpectatorClient:
-    def __init__(self, profile, *, enabled=False, records_enabled=False, record_idle_seconds=0):
+    def __init__(
+        self,
+        profile,
+        *,
+        enabled=False,
+        records_enabled=False,
+        record_idle_seconds=0,
+        record_keepalive=False,
+    ):
         self.profile, self.enabled = Path(profile), enabled
         self.records_enabled = records_enabled
         self.process = None
@@ -94,6 +106,7 @@ class BrowserSpectatorClient:
         self.lock = asyncio.Lock()
         self.record_lock = asyncio.Lock()
         self.record_idle_seconds = record_idle_seconds
+        self.record_keepalive = record_keepalive
         self.record_idle_task = None
         self.record_lobby = LobbyKeepalive(self.profile)
         self.last_error = None
@@ -190,6 +203,23 @@ class BrowserSpectatorClient:
             async with asyncio.timeout(165), self.record_session():
                 if time.monotonic() < self.record_session_retry_at:
                     return None
+                if self.record_keepalive:
+                    if not re.fullmatch(r"[A-Za-z0-9-]{8,100}", uuid) or not re.fullmatch(
+                        re.escape(ORIGIN + uuid) + r"(?:_a[0-9]+(?:_[0-9]+)?)?", url
+                    ):
+                        return None
+                    for attempt in range(2):
+                        try:
+                            wire = await self.record_lobby.replay_wire(uuid)
+                            return decode_record(wire, uuid) if wire else None
+                        except ReplayBrowserUnavailable:
+                            if attempt:
+                                raise
+                            await self.start()
+                        except MajsoulConnectionLost:
+                            if attempt:
+                                raise
+                            await self.record_lobby.close()
                 # The replay replaces the lobby before signing in.
                 await self.record_lobby.close()
                 try:
@@ -200,6 +230,9 @@ class BrowserSpectatorClient:
                 except MajsoulConnectionLost:
                     # Reloading the replay makes the official client reconnect.
                     return await fetch_replay_head(self.profile, url, uuid)
+        except MajsoulReplayRateLimited:
+            self.record_session_retry_at = self.record_lobby.replay_retry_at
+            return None
         except (
             ReplayBrowserUnavailable,
             MajsoulConnectionLost,
@@ -212,12 +245,15 @@ class BrowserSpectatorClient:
             return None
 
     async def yakuman_victims(self, game):
-        return await self._replay_yakuman(game, (), self.record_lobby.yakuman_victims)
+        return await self._replay_result(game, (), self.record_lobby.yakuman_victims)
 
     async def yakuman_wins(self, game, account_id):
-        return await self._replay_yakuman(game, (account_id,), self.record_lobby.yakuman_wins)
+        return await self._replay_result(game, (account_id,), self.record_lobby.yakuman_wins)
 
-    async def _replay_yakuman(self, game, accounts, read):
+    async def max_wind(self, game):
+        return await self._replay_result(game, (), self.record_lobby.max_wind)
+
+    async def _replay_result(self, game, accounts, read):
         if not self.records_enabled:
             return None
 
@@ -232,10 +268,11 @@ class BrowserSpectatorClient:
                     raise MajsoulConnectionLost
                 return result
 
-        key = (game.uuid, game.started_at, accounts)
+        key = (getattr(read, "__name__", type(read).__name__), game.uuid, game.started_at, accounts)
         try:
             return await self.replay_yakuman_cache.get(key, 86400, load)
         except (
+            MajsoulReplayRateLimited,
             ReplayBrowserUnavailable,
             MajsoulConnectionLost,
             LiveServiceError,
@@ -257,7 +294,9 @@ class BrowserSpectatorClient:
             try:
                 return await self.record_lobby.click()
             except ReplayBrowserUnavailable:
-                # The next record lookup can launch Chrome if it was closed.
+                if self.record_keepalive:
+                    await self.start()
+                    return await self.record_lobby.click()
                 return False
 
     async def observation(self, uuid):

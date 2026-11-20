@@ -34,6 +34,7 @@ def test_group_command_access(group, user, vip2, mortal, monitor, manage):
                 "ms4",
                 "msrecent",
                 "mswith",
+                "taghelp",
                 "thbind",
                 "th2",
                 "thlife",

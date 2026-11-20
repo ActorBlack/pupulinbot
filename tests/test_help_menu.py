@@ -17,11 +17,12 @@ async def test_help_is_one_forward_with_multiple_readable_nodes(kind):
     args, kwargs = bot.call_api.call_args
     assert args == (f"send_{kind}_forward_msg",)
     assert kwargs["group_id" if kind == "group" else "user_id"] == (456 if kind == "group" else 789)
-    assert len(kwargs["messages"]) == 8
+    assert len(kwargs["messages"]) == 9
     text = "\n".join(n["data"]["content"][0]["data"]["text"] for n in kwargs["messages"])
     assert "/mslife" in text and "/msbind" in text and "/mswatch on" in text
     assert "自动播报对局结算" in text and "不会自动跑完" in text
     assert "/mslive" in text and "/thlive" in text
+    assert "/naga -r <报告链接>" in text
     assert all(n["data"]["uin"] == "123" for n in kwargs["messages"])
 
 

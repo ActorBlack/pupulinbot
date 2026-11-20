@@ -35,6 +35,16 @@ def replay_rounds(data):
     return map(wrapper, filter(None, records))
 
 
+def replay_max_wind(data):
+    """Read the furthest round wind in a complete replay."""
+    winds = [
+        first(fields(body), 1) for name, body in replay_rounds(data) if name == "RecordNewRound"
+    ]
+    if not winds or any(type(wind) is not int or wind not in range(4) for wind in winds):
+        return None
+    return max(winds)
+
+
 def named_yakuman(win):
     names = []
     for entry in win.get(12, []):

@@ -9,11 +9,13 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from .ms_candidate_tags import candidate_tags
+from .ms_candidate_tags import assassin_menzen_eligible, candidate_tags
 from .ms_sample import number
 from .ms_tag_reference import build_reference
 from .ms_trait_tags import (
+    TAG_COMBINATIONS,
     achievement_tags,
+    efficiency_metrics,
     exposures,
     is_pupulin_profile,
     select_tags,
@@ -26,6 +28,8 @@ RANK_MIN_GAMES = 50
 MIN_HANDS = 100
 MIN_WINS = 30
 MAX_TAGS = 10
+FINANCIAL_MIN_GAMES = 50
+FINANCIAL_EFFICIENCY_OFFSET = 350
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +125,29 @@ def sample_round_income(raw, games, account_id, hands):
     return sum(value - 25000 for value in scores) / hands
 
 
+def first_strike_eligible(raw, reference, hands):
+    """Extra gate for 先声夺人; parent tags keep their independent rules."""
+    if reference is None or hands is None or hands < 400:
+        return False
+    riichi = _rate(raw.get("立直率"))
+    first = _rate(raw.get("先制率"))
+    turn = number(raw.get("立直巡目"))
+    refs = reference.get("traits", {})
+    first_mean = number(refs.get("先制率", {}).get("mean"))
+    turn_mean = number(refs.get("立直巡目", {}).get("mean"))
+    return (
+        riichi is not None
+        and math.floor(hands * riichi + 1e-6) >= 100
+        and first is not None
+        and first_mean is not None
+        and first >= first_mean + 0.08 - 1e-9
+        and turn is not None
+        and 0 < turn <= 30
+        and turn_mean is not None
+        and turn <= turn_mean - 0.7 + 1e-9
+    )
+
+
 def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
     """Classify one matched room sample; never substitute a player's lifetime stats."""
     if mode != 4 or stats is None or maximum <= 0:
@@ -164,6 +191,7 @@ def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
         deal=deal,
         call=call,
         riichi=riichi,
+        reference_levels=reference["levels"] if reference else None,
         fallback=reference["levels"]
         if reference and reference["reference_kind"] == "saint3_fallback"
         else None,
@@ -195,6 +223,16 @@ def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
         form = _recent_form(ranks, reference)
         if form:
             tags.append(form)
+    if count >= 100:
+        scores = [number(game.seat(account_id).get("score")) for game in finished]
+        if all(
+            score is not None and score.is_integer() and abs(score) <= 10_000_000
+            for score in scores
+        ):
+            busts = sum(score < 0 for score in scores)
+            bust_rate = busts / count
+            if busts >= 12 and bust_rate >= 0.12:
+                tags.append("空中飞人")
     if reliable_hands and hands >= 300:
         income = sample_round_income(raw, finished, account_id, hands)
         if _at_least(income, cut["income_high"]):
@@ -220,7 +258,7 @@ def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
             and _above(win, hands, mean["和牌率"])
             and _above(deal, hands, mean["放铳率"])
         ):
-            tags.append("高和高铳")
+            tags.append("狂战士")
         elif (
             _at_most(deal, cut["deal_low"])
             and _at_least(win, cut["win_floor"])
@@ -239,7 +277,7 @@ def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
                 and _at_least(win, cut["win_high"])
                 and _above(win, hands, mean["和牌率"])
             ):
-                tags.append("速攻流")
+                tags.append("闪电战")
             dama = _rate(raw.get("默听率"))
             if (
                 _at_least(dama, cut["dama_high"])
@@ -264,4 +302,31 @@ def supplemental_tags(stats, games, account_id, *, mode=4, maximum=MAX_TAGS):
         extra = {"style": [], "luck": [], "achievement": achievement_tags(raw, finished)}
     extra["luck"].extend(candidate_luck)
     tags.extend(candidates)
-    return select_tags(tags, extra, maximum, easter_egg=easter_egg)
+    efficiency = efficiency_metrics(raw).get("净打点效率")
+    efficiency_reference = reference["traits"].get("净打点效率")
+    financial = (
+        count >= FINANCIAL_MIN_GAMES
+        and efficiency is not None
+        and efficiency_reference is not None
+        and efficiency >= efficiency_reference["mean"] + FINANCIAL_EFFICIENCY_OFFSET
+    )
+    relaxed_assassin = "深度门清" not in candidates and assassin_menzen_eligible(
+        raw,
+        room,
+        hands=hands if known_hands else None,
+        win=win,
+        deal=deal,
+        call=call,
+        riichi=riichi,
+        reference_levels=reference["levels"],
+        fallback=reference["levels"] if reference["reference_kind"] == "saint3_fallback" else None,
+    )
+    combination_rules = tuple(
+        ("无声快刀", "默听流", "暗杀星") if rule[-1] == "暗杀星" and relaxed_assassin else rule
+        for rule in TAG_COMBINATIONS
+        if (rule[-1] != "精打细算" or financial)
+        and (rule[-1] != "先声夺人" or first_strike_eligible(raw, reference, hands))
+    )
+    return select_tags(
+        tags, extra, maximum, easter_egg=easter_egg, combination_rules=combination_rules
+    )

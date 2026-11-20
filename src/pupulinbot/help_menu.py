@@ -54,6 +54,7 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "战绩图表",
             "/mslife [玩家] -l 100：段位积分走势\n"
             "/msstyle [玩家] [-l 场数]：四麻牌风雷达\n"
+            "/taghelp <成就名称>：查看四麻牌风成就说明\n"
             "/msstyle3 [玩家] [-l 场数]：三麻牌风雷达，默认最近 200 场\n"
             "/mscompare [玩家] -l 100：前后半段对比\n"
             "/msvs <对手> -l 200：自己与对手的同桌统计\n"
@@ -128,6 +129,10 @@ def help_sections(*, live_enabled=False, mortal_enabled=False):
             "/exmortal [玩家] [-l 1–100]：批量，默认 10 场，支持房间和日期筛选。需单独授权。\n"
             "/exmortal add <QQ号或@群友>、delete <QQ号或@群友>、list：仅超级管理员管理授权。\n"
             "跑谱完成后会在结果消息中 @任务发起者。\n" + mortal,
+        ),
+        (
+            "NAGA 报告",
+            "/naga -r <报告链接>：将已有 NAGA 报告生成四人、多模型汇总图片。",
         ),
         (
             "使用规则",

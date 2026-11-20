@@ -9,15 +9,56 @@ from math import floor
 from pathlib import Path
 
 from .ms_level import seat_delta
+from .ms_replay_tags import WEST_MIN_GAMES, WEST_MIN_RATE
 from .ms_sample import number
 from .ms_trait_tags import exposures, rate
 
 # Each condition is (metric, minimum, maximum). A mean-relative condition uses
 # the corresponding weighted reference metric from the room baseline.
 RULES = {
+    "得不偿失": (("铳点高于打点", 1, 1),),
+    "天意弄人": (
+        ("games", 50, None),
+        ("hands", 400, None),
+        ("riichis", 100, None),
+        ("立直好型2差", 0.08, None),
+        ("立直后和牌率差", None, -0.06),
+    ),
+    "出奇制胜": (
+        ("games", 50, None),
+        ("hands", 400, None),
+        ("riichis", 100, None),
+        ("立直好型2差", None, -0.08),
+        ("立直后和牌率差", 0.06, None),
+    ),
+    "高开低走": (
+        ("games", 50, None),
+        ("hands", 400, None),
+        ("wins", 80, None),
+        ("平均起手向听差", None, -0.05),
+        ("和牌率差", None, -0.01),
+        ("和了巡数差", 0.3, None),
+    ),
+    "逆流而上": (
+        ("games", 50, None),
+        ("hands", 400, None),
+        ("wins", 80, None),
+        ("平均起手向听差", 0.05, None),
+        ("和牌率差", 0.01, None),
+        ("和了巡数差", None, -0.2),
+    ),
+    "进退失据": (
+        ("games", 50, None),
+        ("hands", 400, None),
+        ("calls", 150, None),
+        ("riichis", 100, None),
+        ("副露后和牌率差", None, -0.04),
+        ("立直后和牌率差", None, -0.04),
+        ("放铳率差", 0.02, None),
+    ),
     "燕返": (("riichis", 100, None), ("宣言铳率差", 0.02, None), ("立直后非瞬间放铳率差", None, 0)),
     "立直提款机": (("riichis", 100, None), ("立直收支差", 650, None), ("立直后放铳率差", None, 0)),
-    "立直引战": (("riichis", 100, None), ("被追率差", 0.05, None), ("先制率差", 0, None)),
+    "众矢之的": (("riichis", 100, None), ("被追率差", 0.05, None), ("先制率差", 0, None)),
     "副露拉锯战": (
         ("calls", 100, None),
         ("副露率差", 0.04, None),
@@ -43,12 +84,21 @@ RULES = {
         ("second_rate", 0.20, None),
         ("third_rate", 0.20, None),
     ),
-    "略胜一筹": (("games", 50, None), ("close_first", 3, None)),
-    "棋差一着": (("games", 50, None), ("close_second", 3, None)),
+    "略胜一筹": (
+        ("games", 50, None),
+        ("close_first", 3, None),
+        ("close_first_sample_rate", 0.03, None),
+    ),
+    "棋差一着": (
+        ("games", 50, None),
+        ("close_second", 3, None),
+        ("close_second_sample_rate", 0.03, None),
+    ),
+    "无功而返": (("games", 50, None), ("zero_pt_games", 2, None), ("zero_pt_rate", 0.02, None)),
     "签到游戏": (("games", 50, None), ("pt_range", 600, None), ("pt_net", -100, 100)),
     "精选立直": (("riichis", 100, None), ("立直率差", None, -0.03), ("立直好型2差", 0.08, None)),
     "振听达人": (("riichis", 150, None), ("振听立直率", 0.03, None), ("振听立直率差", 0.015, None)),
-    "爱撞大运": (("deals", 40, None), ("放铳率差", None, -0.02), ("平均铳点差", 800, None)),
+    "偶失荆州": (("deals", 40, None), ("放铳率差", None, -0.02), ("平均铳点差", 800, None)),
     "深度门清": (
         ("wins", 60, None),
         ("副露率差", None, -0.03),
@@ -59,17 +109,31 @@ RULES = {
     "一骑绝尘": (
         ("games", 50, None),
         ("firsts", 15, None),
+        ("firsts_sample_rate", 0.15, None),
         ("runaway", 5, None),
+        ("runaway_sample_rate", 0.05, None),
         ("runaway_share", 0.40, None),
     ),
     "越挫越勇": (
         ("games", 50, None),
         ("after_fourth", 10, None),
+        ("after_fourth_sample_rate", 0.10, None),
         ("rebound", 4, None),
+        ("rebound_sample_rate", 0.04, None),
         ("rebound_rate", 0.50, None),
     ),
-    "悬崖勒马": (("games", 50, None), ("close_third", 3, None)),
-    "鏖战": (("dealer_streak", 6, None),),
+    "悬崖勒马": (
+        ("games", 50, None),
+        ("close_third", 3, None),
+        ("close_third_sample_rate", 0.03, None),
+    ),
+    "咫尺天涯": (
+        ("games", 50, None),
+        ("close_fourth", 3, None),
+        ("close_fourth_sample_rate", 0.03, None),
+    ),
+    "独裁者": (("dealer_streak", 6, None),),
+    "鏖战": (("west_games", WEST_MIN_GAMES, None), ("west_rate", WEST_MIN_RATE, None)),
     "一击必杀": (
         ("riichi_wins", 40, None),
         ("立直收入差", 700, None),
@@ -77,15 +141,49 @@ RULES = {
     ),
     "以小搏大": (("deals", 50, None), ("放铳率差", 0.01, None), ("平均铳点差", None, -650)),
     "被炸仙人": (("hands", 800, None), ("被炸率", 0.14, None), ("平均被炸点数", 11600, None)),
-    "零点逃生": (("games", 50, None), ("zero_escape", 2, None)),
+    "零点逃生": (
+        ("games", 50, None),
+        ("zero_escape", 2, None),
+        ("zero_escape_sample_rate", 0.02, None),
+    ),
     "连败之道": (("games", 50, None), ("fourth_streak", 5, None)),
     "连胜之道": (("games", 50, None), ("first_streak", 5, None)),
     "顺位集邮": (("games", 80, None), ("rank_album", 0.16, None)),
-    "马拉松": (("games", 50, None), ("long_games", 8, None), ("long_top2", 0.70, None)),
-    "体面结局": (("games", 50, None), ("fourths", 10, None), ("healthy_fourth", 0.35, None)),
+    "马拉松": (
+        ("games", 50, None),
+        ("long_games", 8, None),
+        ("long_games_sample_rate", 0.08, None),
+        ("long_top2", 0.70, None),
+    ),
+    "体面结局": (
+        ("games", 50, None),
+        ("fourths", 10, None),
+        ("fourths_sample_rate", 0.10, None),
+        ("healthy_fourth", 0.35, None),
+    ),
 }
 
+# Per-match counts use all selected matches as denominator. Keep exposure
+# minima (games/hands/wins/riichis) and consecutive streaks independent.
+GAME_COUNT_METRICS = frozenset(
+    {
+        "close_first",
+        "close_second",
+        "close_third",
+        "close_fourth",
+        "zero_escape",
+        "long_games",
+        "firsts",
+        "runaway",
+        "after_fourth",
+        "rebound",
+        "fourths",
+    }
+)
+
 RATE_BASES = {
+    "和牌率": "hands",
+    "副露后和牌率": "calls",
     "放铳率": "hands",
     "副露率": "hands",
     "立直率": "hands",
@@ -103,6 +201,7 @@ RATE_BASES = {
     "立直后和牌率": "riichis",
 }
 AVERAGE_BASES = {
+    "平均起手向听": "hands",
     "立直收支": "riichis",
     "和了巡数": "wins",
     "平均打点": "wins",
@@ -125,7 +224,7 @@ def hand_features(raw, hands, *, win=None, deal=None, call=None, riichi=None):
         counts["deals"] = hands * deal
     metrics = {key: rate(raw.get(key)) for key in RATE_BASES}
     metrics.update((key, number(raw.get(key))) for key in AVERAGE_BASES)
-    for key, value in (("放铳率", deal), ("副露率", call), ("立直率", riichi)):
+    for key, value in (("和牌率", win), ("放铳率", deal), ("副露率", call), ("立直率", riichi)):
         if value is not None:
             metrics[key] = value
     metrics["被炸率"] = rate(raw.get("被炸率"))
@@ -182,6 +281,8 @@ def _score_features(games, ranks, account_id):
             counts["close_second"] += 1
         if rank == 3 and 0 < third - fourth <= 1000:
             counts["close_third"] += 1
+        if rank == 4 and 0 < third - fourth <= 1000:
+            counts["close_fourth"] += 1
         if rank == 1 and first - second >= 20000:
             counts["runaway"] += 1
         if rank == 3 and 0 <= third <= 3000:
@@ -238,11 +339,76 @@ def _matches(value, low, high):
     )
 
 
-def candidate_tags(raw, games, ranks, account_id, *, hands, win, deal, call, riichi, fallback=None):
-    means = candidate_means().get(str(games[0].mode), {})
+def room_means(room, *, reference_levels=None, fallback=None):
+    means = candidate_means().get(str(room), {})
     if fallback is not None:
         means = build_candidate_means(fallback)
+    if reference_levels is not None and fallback is None:
+        means = {**build_candidate_means(reference_levels), **means}
+    return means
+
+
+def assassin_menzen_eligible(
+    raw, room, *, hands, win, deal, call, riichi, reference_levels=None, fallback=None
+):
+    """Reuse deep-menzen requirements, excluding only the riichi-win share."""
+    if hands is None:
+        return False
+    means = room_means(room, reference_levels=reference_levels, fallback=fallback)
+    metrics, counts = hand_features(raw, hands, win=win, deal=deal, call=call, riichi=riichi)
+    call_rate, call_mean = metrics.get("副露率"), means.get("副露率")
+    values = {
+        "wins": counts["wins"],
+        "默听率": metrics.get("默听率"),
+        "副露率差": call_rate - call_mean
+        if call_rate is not None and call_mean is not None
+        else None,
+    }
+    return all(
+        _matches(values.get(metric), low, high)
+        for metric, low, high in RULES["深度门清"]
+        if metric != "riichi_win_share"
+    )
+
+
+def candidate_tags(
+    raw,
+    games,
+    ranks,
+    account_id,
+    *,
+    hands,
+    win,
+    deal,
+    call,
+    riichi,
+    fallback=None,
+    reference_levels=None,
+):
+    means = room_means(games[0].mode, reference_levels=reference_levels, fallback=fallback)
     values = {"games": len(games)}
+    win_points = number(raw.get("平均打点"))
+    deal_points = number(raw.get("平均铳点"))
+    if win_points is not None and deal_points is not None and win_points > 0 and deal_points > 0:
+        # This user-defined comparison is strictly greater, without threshold tolerance.
+        values["铳点高于打点"] = int(deal_points > win_points)
+    # Use the exact per-match grading delta, never a rounded display value,
+    # final table score, or a zero-filled missing field.
+    zero_pt_games = sum(
+        number(seat.get("gradingScore", seat.get("grading_score"))) == 0
+        for game in games
+        if game.ended_at and (seat := game.seat(account_id))
+    )
+    values.update(zero_pt_games=zero_pt_games, zero_pt_rate=zero_pt_games / len(games))
+    winds = raw.get("_replay_winds")
+    if isinstance(winds, dict):
+        values["west_games"] = sum(
+            game.mode in {"9", "12", "16"}
+            and type(winds.get(game.uuid)) is int
+            and winds[game.uuid] in (2, 3)
+            for game in games
+        )
+        values["west_rate"] = values["west_games"] / len(games)
     if hands is not None:
         metrics, counts = hand_features(raw, hands, win=win, deal=deal, call=call, riichi=riichi)
         if games[0].started_at < GOOD_SHAPE_SINCE:
@@ -266,6 +432,11 @@ def candidate_tags(raw, games, ranks, account_id, *, hands, win, deal, call, rii
     streak = number(raw.get("最大连庄"))
     if streak is not None and streak.is_integer():
         values["dealer_streak"] = streak
+    values.update(
+        (f"{metric}_sample_rate", values[metric] / len(games))
+        for metric in GAME_COUNT_METRICS
+        if values.get(metric) is not None
+    )
     return [
         name
         for name, conditions in RULES.items()

@@ -45,7 +45,7 @@ async def test_failed_rank_forward_returns_an_error(failure):
 def bot_with_history(*messages):
     return SimpleNamespace(
         send_group_msg=AsyncMock(return_value={"message_id": 123}),
-        get_msg=AsyncMock(side_effect=messages),
+        get_msg=AsyncMock(side_effect=[*messages, *([messages[-1]] * 8 if messages else [])]),
     )
 
 
@@ -66,7 +66,7 @@ async def test_acknowledged_empty_image_is_not_success_and_does_not_resend_immed
         with pytest.raises(RuntimeError, match="未找到图片"):
             await send_verified_image(bot, "42", Message(MessageSegment.image("base64://aA==")))
     bot.send_group_msg.assert_awaited_once()
-    assert bot.get_msg.await_count == 3
+    assert bot.get_msg.await_count == 8
 
 
 @pytest.mark.asyncio
@@ -101,3 +101,14 @@ async def test_missing_message_id_is_failure():
     with pytest.raises(RuntimeError, match="消息 ID"):
         await send_verified_image(bot, "42", Message())
     bot.get_msg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_image_cache_can_take_longer_than_original_three_checks():
+    image = {"message": [{"type": "image", "data": {"file": "ready.png"}}]}
+    bot = bot_with_history(*[{"message": []}] * 4, image)
+    with patch("pupulinbot.qq_delivery.asyncio.sleep", new=AsyncMock()) as sleep:
+        assert await send_verified_image(bot, "42", Message()) == {"message_id": 123}
+    assert bot.get_msg.await_count == 5
+    bot.send_group_msg.assert_awaited_once_with(group_id=42, message=Message(), _timeout=180)
+    assert [call.args for call in sleep.await_args_list] == [(5,)] * 4

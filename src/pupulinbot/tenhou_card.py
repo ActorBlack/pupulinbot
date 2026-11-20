@@ -304,6 +304,15 @@ def render_start(game, profiles):
             right = left - 7
         if index == 2 and len(profiles) == 3:
             text(803, y + 145, "三人麻雀", 24, MUTED, "title", "mm")
+    cached_at = [
+        p[key]
+        for p in profiles
+        for key in ("stats_cached_at", "history_cached_at")
+        if finite(p.get(key))
+    ]
+    if cached_at:
+        stamp = datetime.fromtimestamp(min(cached_at), CN).strftime("%m-%d %H:%M")
+        text(1056, 778, "资料缓存 " + stamp, 12, MUTED, anchor="rm")
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()

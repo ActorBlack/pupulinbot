@@ -19,7 +19,9 @@ from pupulinbot.batchmortal_worker import (
     VerificationTimeout,
     atomic_json,
     browser_options,
+    check_non_hanchan_rejection,
     validate_request,
+    wait_for_submission_departure,
 )
 from pupulinbot.online_review import OnlineReviews
 from pupulinbot.review import ReviewError
@@ -333,6 +335,49 @@ def test_explicit_backend_task_timeout_can_be_retried(tmp_path):
         worker.run(request())
         assert emit.call_args.kwargs["status"] == "server_timeout"
     assert json.loads(worker.journal_path.read_text())["state"] == "rejected"
+
+
+@pytest.mark.parametrize("recovering", [False, True])
+def test_non_hanchan_response_stops_submission_or_recovery_immediately(tmp_path, recovering):
+    worker = fake_worker(tmp_path)
+    state = {
+        "url": "https://mjai.ekyu.moe/review",
+        "page_text": (
+            "261117-c1b858ad-9cb6-4f93-8e53-baa96e7bcd2b: not a hanchan game. "
+            "ゲームは半荘（東南）ではない. 游戏长度不是半庄（东南）\n"
+        ),
+    }
+    req = request()
+
+    def analyze(sb, task):
+        worker._record_submission()
+        wait_for_submission_departure(lambda: state, worker.key, 60)
+
+    worker.automator.analyze_single = analyze
+    worker.automator._wait_for_result_or_error = lambda *_: check_non_hanchan_rejection(state)
+    with (
+        patch("pupulinbot.batchmortal_worker.emit") as emit,
+        patch("pupulinbot.batchmortal_worker.time.sleep") as sleep,
+    ):
+        if recovering:
+            worker.key = req["key"]
+            worker._record_submission()
+        worker.run(req)
+        assert [call.kwargs["status"] for call in emit.call_args_list] == [
+            "submitted",
+            "unsupported_game",
+        ]
+        assert "不是半庄" in emit.call_args.kwargs["message"]
+        sleep.assert_not_called()
+        assert not worker.submitted
+        worker.key = None
+        worker.run({**req, "submitted": True})
+        assert emit.call_args.kwargs["status"] == "unsupported_game"
+    assert json.loads(worker.journal_path.read_text()) == {
+        "key": req["key"],
+        "state": "rejected",
+        "reason": "non_hanchan",
+    }
 
 
 @pytest.mark.asyncio

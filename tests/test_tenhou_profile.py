@@ -6,11 +6,92 @@ from pathlib import Path
 import httpx
 import pytest
 
-from pupulinbot.tenhou import TenhouClient
+from pupulinbot.tenhou import TenhouClient, TenhouError
 from pupulinbot.tenhou_profile import describe, percentile, rank_history
 
 FIXTURES = Path(__file__).parent / "fixtures/tenhou"
 CASES = json.loads((FIXTURES / "rank-oracle.json").read_text())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [502, 503])
+async def test_http_failure_tries_the_other_public_host(status):
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.url.host == "www.nodocchi.moe":
+            return httpx.Response(status)
+        return httpx.Response(200, json={"s4_2": {"totalrecord": 10}})
+
+    client = TenhouClient(httpx.MockTransport(respond))
+    try:
+        assert await client.phoenix_stats("applePie", length=2) == {"totalrecord": 10}
+        assert [r.url.host for r in requests] == ["www.nodocchi.moe", "nodocchi.moe"]
+        assert all(r.url.params["username"] == "applePie" for r in requests)
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_challenge_is_reported_and_a_later_request_can_recover():
+    blocked = True
+
+    def respond(request):
+        if blocked:
+            return httpx.Response(403, headers={"cf-mitigated": "challenge"})
+        return httpx.Response(200, json={"s4_2": {"totalrecord": 11}})
+
+    client = TenhouClient(httpx.MockTransport(respond))
+    try:
+        with pytest.raises(TenhouError, match="要求访问验证"):
+            await client.phoenix_stats("applePie", length=2)
+        blocked = False
+        client._retry_until = 0  # Simulate the shared cooldown expiring.
+        client.next_request = 0
+        assert await client.phoenix_stats("applePie", length=2) == {"totalrecord": 11}
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_blocked_profile_uses_saved_statistics_and_history(tmp_path):
+    import hashlib
+
+    game = json.loads((FIXTURES / "live.json").read_text())[0]
+    player = game["players"][0]
+    name = player["name"]
+    raw = json.loads((FIXTURES / "result.json").read_text())
+    raw["player1"] = name
+    history = {"name": name, "list": [raw]}
+    stats = {"s4_2": {"agariC": 0.22, "houjuuC": 0.12, "totalrecord": 312}}
+    key = ("/api/phoenix_status.php", tuple(sorted({"all": "1", "username": name}.items())))
+    digest = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()
+    public = tmp_path / "public"
+    public.mkdir()
+    (public / (digest + ".json")).write_text(
+        json.dumps({"fetched_at": time.time() - 100, "data": stats})
+    )
+    client = TenhouClient(history_directory=tmp_path)
+    client._snapshot_path(name).write_text(json.dumps(history))
+
+    async def blocked(*args, **kwargs):
+        raise TenhouError("HTTP 403")
+
+    client._get = blocked
+    try:
+        profile = await client.profile(player, game)
+        assert profile["stats"] == stats["s4_2"]
+        assert profile["count"] == 1
+        assert profile["stats_loaded"] and profile["history_loaded"]
+        assert profile["stats_cached_at"] < time.time()
+        assert profile["history_cached_at"] < time.time()
+        (public / (digest + ".json")).write_text(
+            json.dumps({"fetched_at": time.time() - 90000, "data": stats})
+        )
+        assert await client._profile_backup(name, stats=True) is None
+    finally:
+        await client.close()
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c["label"])
@@ -47,13 +128,16 @@ def test_tags_have_minimum_samples_and_no_four_player_model_assumption():
 
 
 @pytest.mark.asyncio
-async def test_concurrent_fetches_share_requests_but_keep_one_qps_start_spacing():
+async def test_concurrent_fetches_share_requests_but_keep_configured_start_spacing():
     starts = []
     completed = []
+    both_started = asyncio.Event()
 
     async def respond(request):
         starts.append(time.monotonic())
-        await asyncio.sleep(1.2)
+        if len(starts) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), 5)
         completed.append(time.monotonic())
         return httpx.Response(200, json={"ok": True})
 
@@ -61,7 +145,7 @@ async def test_concurrent_fetches_share_requests_but_keep_one_qps_start_spacing(
     try:
         await asyncio.gather(client._get("/one"), client._get("/two"), client._get("/one"))
         assert len(starts) == 2
-        assert starts[1] - starts[0] >= 1.05
+        assert starts[1] - starts[0] >= 1.75
         assert starts[1] < completed[0]  # overlap slow responses, no extra QPS
     finally:
         await client.close()
@@ -187,7 +271,7 @@ async def test_bootstrap_download_cannot_starve_normal_stats_requests():
     try:
         await started.wait()
         normal = await asyncio.wait_for(
-            asyncio.gather(client._get("/stat-one"), client._get("/stat-two")), 4
+            asyncio.gather(client._get("/stat-one"), client._get("/stat-two")), 8
         )
         assert normal == [{"ok": True}, {"ok": True}] and not task.done()
     finally:
