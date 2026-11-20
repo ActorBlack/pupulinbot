@@ -13,6 +13,8 @@ from .ms_candidate_tags import assassin_menzen_eligible, candidate_tags
 from .ms_sample import number
 from .ms_tag_reference import build_reference
 from .ms_trait_tags import (
+    HIGH_EFFICIENCY_MIN_GAMES,
+    HIGH_EFFICIENCY_OFFSET,
     TAG_COMBINATIONS,
     achievement_tags,
     efficiency_metrics,
@@ -28,8 +30,8 @@ RANK_MIN_GAMES = 50
 MIN_HANDS = 100
 MIN_WINS = 30
 MAX_TAGS = 10
-FINANCIAL_MIN_GAMES = 50
-FINANCIAL_EFFICIENCY_OFFSET = 350
+FINANCIAL_MIN_GAMES = HIGH_EFFICIENCY_MIN_GAMES
+FINANCIAL_EFFICIENCY_OFFSET = HIGH_EFFICIENCY_OFFSET
 
 
 @lru_cache(maxsize=1)

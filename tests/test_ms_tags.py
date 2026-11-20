@@ -421,7 +421,7 @@ async def test_api_retains_hand_count_separately_from_game_count(method):
 @pytest.mark.parametrize(
     "count,offset,expected", [(49, 350, False), (50, 349.99, False), (50, 350, True)]
 )
-def test_financial_combination_requires_stricter_sample_and_efficiency(count, offset, expected):
+def test_financial_combination_and_efficiency_share_numerical_gates(count, offset, expected):
     ref = reference_for("12")["traits"]["净打点效率"]["mean"]
     sample = stats(
         count,
@@ -432,7 +432,7 @@ def test_financial_combination_requires_stricter_sample_and_efficiency(count, of
     tags = supplemental_tags(sample, records(count=count), 42, maximum=100)
     assert ("精打细算" in tags) is expected
     if not expected:
-        assert "高效打点" in tags and "局收支重视" in tags
+        assert "高效打点" not in tags and "局收支重视" in tags
 
 
 @pytest.mark.parametrize(

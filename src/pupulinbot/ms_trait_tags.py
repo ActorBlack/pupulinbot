@@ -11,6 +11,10 @@ from functools import lru_cache
 from .majsoul_rounds import yakuman_yaku
 from .ms_sample import number
 
+# Shared numerical gates for 高效打点 and the 精打细算 combination.
+HIGH_EFFICIENCY_MIN_GAMES = 50
+HIGH_EFFICIENCY_OFFSET = 350
+
 # key: (denominator, minimum events, high/low offsets, category, high/low names)
 RATE_TRAITS = {
     "里宝率": ("riichi_wins", 30, 0.08, 0.08, "luck", "里宝超人", "里宝绝缘体"),
@@ -31,7 +35,7 @@ AVERAGE_TRAITS = {
     "平均起手向听": ("hands", 300, 0.1, 0.1, "luck", "白手起家", "生于罗马"),
     "打点效率": ("hands", 400, 200, None, "style", "火力全开", None),
     "铳点损失": ("hands", 400, 150, None, "style", "散财童子", None),
-    "净打点效率": ("hands", 400, 250, 250, "style", "高效打点", "低效打点"),
+    "净打点效率": ("hands", 400, HIGH_EFFICIENCY_OFFSET, 250, "style", "高效打点", "低效打点"),
 }
 # Upstream dates collection to *around* 2021-09-10. Leave a rollout buffer.
 MULTISIDED_SINCE = datetime(2021, 10, 1, tzinfo=UTC)
@@ -404,7 +408,10 @@ def trait_tags(
             counts["deals"] is None or math.floor(counts["deals"] + 1e-6) < 30
         ):
             continue
-        if high_name and value >= ref["high"]:
+        high_cutoff = ref["mean"] + HIGH_EFFICIENCY_OFFSET if key == "净打点效率" else ref["high"]
+        if high_name and value >= high_cutoff:
+            if key == "净打点效率" and len(games) < HIGH_EFFICIENCY_MIN_GAMES:
+                continue
             result[category].append(high_name)
         elif low_name and value <= ref["low"]:
             result[category].append(low_name)
