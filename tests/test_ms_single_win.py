@@ -105,4 +105,4 @@ async def test_query_attaches_verified_single_win_evidence(tmp_path):
     )
     assert "一鸣惊人" in supplemental_tags(result, games, 42)
     assert "_single_win_first_replays" not in original.raw
-    assert "至少2场" in tag_help("一鸣惊人")
+    assert "一次和牌" in tag_help("一鸣惊人")

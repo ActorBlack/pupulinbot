@@ -123,7 +123,7 @@ async def test_query_enriches_tag_and_reuses_cache(tmp_path):
     assert "_passerby_replays" not in original.raw
     assert "吃瓜群众" not in supplemental_tags(enriched, records(count=2)[1:], 42)
     assert "吃瓜群众" not in supplemental_tags(enriched, games, 42, mode=3)
-    assert "均为0" in TAG_DESCRIPTIONS["吃瓜群众"]
+    assert "均未出现" in TAG_DESCRIPTIONS["吃瓜群众"]
 
 
 @pytest.mark.parametrize(

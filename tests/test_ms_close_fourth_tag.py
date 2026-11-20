@@ -55,4 +55,4 @@ def test_incomplete_scores_do_not_invent_close_fourths():
     games = sample()
     games[-1].players[-1].pop("score")
     assert "咫尺天涯" not in supplemental_tags(stats(50), games, 42, maximum=100)
-    assert "1～1000" in tag_help("咫尺天涯")
+    assert "微小点差" in tag_help("咫尺天涯")

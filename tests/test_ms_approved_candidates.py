@@ -285,7 +285,7 @@ def test_assassin_drops_riichi_share_without_granting_deep_menzen():
         count, win_rate=0.25, call_rate=0.15, riichi_rate=0.05, raw={**raw, "和了巡数": 14}
     )
     assert "暗杀星" not in supplemental_tags(late, records(count=count), 42, maximum=100)
-    assert "不要求立直和牌占比" in tag_help("暗杀星")
+    assert "副露少、默听多" in tag_help("暗杀星")
 
 
 def test_qianlong_requires_all_parents_and_resolves_nested_cannon():
